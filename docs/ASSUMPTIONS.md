@@ -22,6 +22,39 @@ Last updated: 2026-10-10.
 | V5 | The server node has system Python 3.12.3 with no `torch`, and no `uv`, `conda`, `mamba` or `apptainer` on the login PATH. | `python3 --version`, `python3 -c "import torch"`, `command -v ...` in a login shell, 2026-10-10. |
 | V6 | The server node has git 2.43.0. | `git --version`, 2026-10-10. |
 
+## Third-party pins
+
+Shallow clones in `third_party/` (git-ignored), read on 2026-10-10. Nothing installed.
+
+| Repo | Commit | Commit date |
+| --- | --- | --- |
+| allenai/vla-evaluation-harness | `41bd8a44dbe5ba0f7902adb5b7c121c1c174dc84` | 2026-10-01 |
+| huggingface/lerobot | `b9cb121cb7d4e3e26ec5c906d08dda68d151ba52` | 2026-10-08 |
+
+The harness pins LeRobot to tag `v0.6.0` (`src/vla_eval/model_servers/lerobot.py`, script header). Our LeRobot clone is the newer main branch, so re-check LeRobot line numbers against `v0.6.0` before relying on them.
+
+## Read in source code (at the pins above, not run)
+
+Paths are relative to each clone. H = harness, L = LeRobot.
+
+| ID | Claim | File |
+| --- | --- | --- |
+| R1 | The harness protocol is WebSocket carrying msgpack. Message types: `hello`, `observation`, `action`, `episode_start`, `episode_end`, `error`. Each message has `type`, `payload`, `seq`, `timestamp`. Default server URL in configs is `ws://localhost:8000`. Settles U10. | H `src/vla_eval/protocol/messages.py`, `src/vla_eval/connection.py` |
+| R2 | The benchmark client sends one observation per environment step and gets one action back. Action chunks are buffered inside the model server (`ActionChunkBuffer`); the client never sees a chunk or a chunk boundary. | H `src/vla_eval/model_servers/predict.py`, `chunking.py` |
+| R3 | A model server is a Python class with `on_observation`, `on_episode_start`, `on_episode_end`; the simple form overrides `predict(obs, ctx)` and returns `{"actions": array}`. | H `src/vla_eval/model_servers/base.py`, `predict.py` |
+| R4 | The harness serves π0.5 from `lerobot/pi05_libero_finetuned` with `chunk_size: 10`. | H `configs/model_servers/lerobot/pi05_libero.yaml` |
+| R5 | The harness's SmolVLA config points at `lerobot/smolvla_base`, verified only as a smoke test, with the note "no benchmark-ready finetune published". We must supply the LIBERO checkpoint, camera mapping and chunk size ourselves. | H `configs/model_servers/lerobot/smolvla.yaml`, `README.md` in that folder |
+| R6 | The harness authors measured per-chunk inference on an A100: π0.5 0.11 s compiled (0.49 s eager), GR00T N1.7 0.24 s, SmolVLA 0.31 s. | H `configs/model_servers/lerobot/README.md` |
+| R7 | `configs/benchmarks/libero/long.yaml` runs `libero_90` (90 tasks). The 10-task long-horizon suite is `10.yaml` (`libero_10`). Defaults are 50 episodes per task, seed 7. | H `configs/benchmarks/libero/long.yaml`, `10.yaml` |
+| R8 | LIBERO-Plus in the harness uses a separate Docker image and runs about 10,030 variants at 1 episode each across four suites. | H `configs/benchmarks/libero_plus/all.yaml` |
+| R9 | The client runs in Docker by default; `--no-docker` runs it directly, and a Charliecloud runtime exists. Model servers are `uv` scripts needing Python 3.12 and `torch>=2.7,<2.12`. | H `src/vla_eval/cli/main.py`, `cli/_charliecloud.py`, `model_servers/lerobot.py` header |
+| R10 | The harness resets each episode with `env.set_init_state(...)` from LIBERO's stored initial states. Mid-episode save and restore is not something it does. | H `src/vla_eval/benchmarks/libero/benchmark.py` line 210 |
+| R11 | SmolVLA inference samples fresh Gaussian noise when none is passed, and accepts a `noise` argument. Defaults: `chunk_size=50`, `n_action_steps=50`, 10 denoising steps, `compile_model=False`. Supports A5; still needs a run to measure the spread. | L `src/lerobot/policies/smolvla/modeling_smolvla.py` (`sample_actions`), `configuration_smolvla.py` |
+| R12 | LeRobot's π0.5 config accepts only `bfloat16` or `float32` as dtype. `lerobot/pi05_libero_finetuned` was fine-tuned in bfloat16. FP16 is not an option on this path. | L `src/lerobot/policies/pi05/configuration_pi05.py` line 144, `docs/source/libero.mdx` |
+| R13 | LeRobot reports π0.5 at 97.0 / 99.0 / 98.0 / 96.0 on Spatial / Object / Goal / LIBERO-10 (10 episodes per task), and quotes openpi at 98.8 / 98.2 / 98.0 / 92.4. | L `docs/source/libero.mdx` |
+| R14 | Installing LIBERO-Plus replaces vanilla LIBERO (`import libero` resolves to the fork); both cannot live in one environment. Linux only. Contradicts A6 for LIBERO-Plus. | L `docs/source/libero_plus.mdx` |
+| R15 | LeRobot's docs give no SmolVLA LIBERO success numbers, only a training command. | L `docs/source/libero.mdx` |
+
 ## Stated in source (not tested by us)
 
 Items marked (summary) were read through a summarizing web fetch on 2026-10-10, not from the raw file. Re-read the raw source before relying on them.
@@ -51,7 +84,9 @@ Items marked (summary) were read through a summarizing web fetch on 2026-10-10, 
 | --- | --- | --- |
 | A1 | The RTX 8000s (Turing) lack native BF16, so models need FP16 or FP32. | Read which dtype each policy config requests; run one step on the cluster. |
 | A2 | Both VLAs give correct results in FP16 on Turing. | Compare clean-suite success on the cluster to published numbers. |
-| A3 | Our router can sit as a proxy between the harness's benchmark client and the model servers. | Read the harness client/server protocol code. |
+| A3 | Our router can sit between the harness's benchmark client and the models. The protocol allows it (R1), but chunks are buffered server-side (R2), so a pass-through proxy would see single actions, not chunks. Likely form: a custom model server that owns the chunk buffer and calls both models. | Design discussion, then a stub server answering the harness client. |
+| A10 | SmolVLA is cheaper per decision than π0.5. The harness's A100 numbers (R6) show the opposite per chunk: 0.31 s vs 0.11 s, though SmolVLA was uncompiled and produced 50 actions against 10. | Time both on one GPU with matched settings (compiled or not, same chunk length). |
+| A11 | π0.5 runs acceptably on Turing in bfloat16 or float32 (R12 rules out FP16 through LeRobot). | One inference step on an RTX 8000 in each dtype; record latency and memory. |
 | A4 | MuJoCo state can be saved and restored exactly. | Save state, apply fixed actions, restore, repeat, compare the max absolute state difference. |
 | A5 | SmolVLA's action generation is stochastic enough for sampling spread to mean something. | Read the installed policy source for where noise is sampled; run one observation twice with different seeds. |
 | A6 | LIBERO-Plus and LIBERO-Para install alongside LIBERO in one environment. | Read each repo's install instructions, then try it. |
