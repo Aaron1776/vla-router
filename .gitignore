@@ -1,0 +1,34 @@
+# OS and editor
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Course material (not ours to publish)
+L11-mega-assignment.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+
+# Third-party clones (pinned by commit hash in docs, not vendored)
+third_party/
+
+# Large and regenerable
+data/
+outputs/
+checkpoints/
+wandb/
+*.mp4
+*.safetensors
+*.ckpt
+*.pt
