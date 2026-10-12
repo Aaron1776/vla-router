@@ -34,4 +34,14 @@ Later sessions only need `. .venv/bin/activate`. The virtual environment points 
 Notes:
 
 - The `dataset` extra is required even for inference: importing `lerobot.policies` pulls in the dataset code, which needs the `av` package.
-- The π0.5 checkpoint's preprocessor loads its tokenizer from `google/paligemma-3b-pt-224`, which is gated on Hugging Face. `scripts/time_models.py` avoids it by using placeholder token ids.
+- The π0.5 checkpoint's preprocessor loads its tokenizer from `google/paligemma-3b-pt-224`, which is gated on Hugging Face (accept Google's terms on the model page first). To keep credentials off the server node, download only the tokenizer files on a machine that is logged in, then copy the cache folder across:
+
+  ```bash
+  huggingface-cli download google/paligemma-3b-pt-224 \
+    --include "tokenizer*" "special_tokens_map.json" "added_tokens.json" "config.json" \
+    --cache-dir <temp-dir>
+  rsync -a <temp-dir>/models--google--paligemma-3b-pt-224 <server>:<hf-cache>/hub/
+  ```
+
+  `config.json` is needed as well: without it the tokenizer loader cannot pick its class. On the server node, run π0.5 with `-e HF_HUB_OFFLINE=1` so the libraries use the local cache instead of asking the Hub.
+- `scripts/time_models.py` does not use the tokenizer; it feeds placeholder token ids.

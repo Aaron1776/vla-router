@@ -1,13 +1,16 @@
 """Time one VLA checkpoint: latency per action chunk and peak GPU memory.
 
-Feeds synthetic observations shaped to the checkpoint's own config, so it needs
-neither a simulator nor the checkpoint's tokenizer. Latency does not depend on
-image content, but the numbers are for the model call only: no preprocessing,
-no tokenizing, no network.
+Two modes, neither of which needs a simulator:
 
-Token ids are random placeholders. This is why the script can time pi0.5
-without the gated PaliGemma tokenizer; rerun with real tokens before quoting
-numbers as final.
+- --pipeline model (default): synthetic tensors and placeholder token ids, timing
+  the model call only. Needs no tokenizer. Supports batch sizes above 1.
+- --pipeline full: random uint8 camera frames and real text instructions through
+  the checkpoint's own preprocessor (real tokenizer), the model and the
+  postprocessor, as the evaluation harness does. pi0.5 needs the gated PaliGemma
+  tokenizer in the local cache for this (see envs/README.md).
+
+Images are random in both modes; latency does not depend on image content.
+Neither mode includes network or simulator time.
 
 Example:
     python scripts/time_models.py --policy smolvla \
@@ -79,6 +82,91 @@ def make_batch(config, batch_size: int, device: str, real_tokens: int) -> dict[s
     return batch
 
 
+# Instructions in the style of LIBERO's long-horizon suite, used by --pipeline full.
+INSTRUCTIONS = [
+    "put both the alphabet soup and the tomato sauce in the basket",
+    "turn on the stove and put the moka pot on it",
+    "put the black bowl in the bottom drawer of the cabinet and close it",
+    "put the white mug on the left plate and put the yellow and white mug on the right plate",
+    "pick up the book and place it in the back compartment of the caddy",
+]
+
+
+def sync(device: str) -> None:
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+
+def run_full_pipeline(policy, config, checkpoint: str, args) -> dict:
+    """Time raw observation -> preprocessor (real tokenizer) -> model -> postprocessor.
+
+    Mirrors the evaluation harness's LeRobot model server: uint8 HWC frames and a
+    text instruction go through the checkpoint's own saved processors.
+    """
+    import numpy as np
+    from lerobot.policies import make_pre_post_processors
+    from lerobot.policies.utils import prepare_observation_for_inference
+
+    device = torch.device(args.device)
+    preprocess, postprocess = make_pre_post_processors(
+        config, checkpoint, preprocessor_overrides={"device_processor": {"device": str(device)}}
+    )
+    rng = np.random.default_rng(0)
+
+    def one_call(index: int):
+        # Dataset-style camera names; a checkpoint that uses other names renames them itself.
+        frame = {
+            "observation.images.image": rng.integers(0, 256, (*LIBERO_IMAGE_HW, 3), dtype=np.uint8),
+            "observation.images.image2": rng.integers(0, 256, (*LIBERO_IMAGE_HW, 3), dtype=np.uint8),
+            OBS_STATE: rng.standard_normal(LIBERO_STATE_DIM).astype(np.float32),
+        }
+        task = INSTRUCTIONS[index % len(INSTRUCTIONS)]
+        sync(args.device)
+        t0 = time.perf_counter()
+        batch = prepare_observation_for_inference(frame, device, task=task, robot_type="")
+        batch = preprocess(batch)
+        sync(args.device)
+        t1 = time.perf_counter()
+        with torch.inference_mode():
+            chunk = policy.predict_action_chunk(batch)
+        sync(args.device)
+        t2 = time.perf_counter()
+        actions = postprocess(chunk).squeeze(0).detach().to("cpu").numpy()
+        t3 = time.perf_counter()
+        n_tokens = int(batch[OBS_LANGUAGE_ATTENTION_MASK].sum().item())
+        return (t1 - t0, t2 - t1, t3 - t2, t3 - t0), actions, n_tokens
+
+    policy.reset()
+    first, actions, _ = one_call(0)
+    for i in range(args.warmup):
+        one_call(i)
+    if args.device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    stages, token_counts = [], []
+    for i in range(args.calls):
+        times, actions, n_tokens = one_call(i)
+        stages.append(times)
+        token_counts.append(n_tokens)
+
+    def med(column: int) -> float:
+        return round(1000 * statistics.median(s[column] for s in stages), 1)
+
+    return {
+        "pipeline": "full",
+        "first_call_s": round(first[3], 3),
+        "preprocess_ms": med(0),
+        "model_ms": med(1),
+        "postprocess_ms": med(2),
+        "median_ms": med(3),
+        "p95_ms": round(1000 * percentile([s[3] for s in stages], 0.95), 1),
+        "real_tokens_min_max": [min(token_counts), max(token_counts)],
+        "chunk_shape": list(actions.shape),
+        "action_abs_max": round(float(np.abs(actions).max()), 3),
+        "finite_output": bool(np.isfinite(actions).all()),
+        "peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2) if args.device == "cuda" else None,
+    }
+
+
 def timed_call(policy, batch, device: str) -> tuple[float, torch.Tensor]:
     if device == "cuda":
         torch.cuda.synchronize()
@@ -108,6 +196,13 @@ def main() -> None:
     parser.add_argument("--calls", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--real-tokens", type=int, default=32, help="unmasked placeholder tokens per prompt")
+    parser.add_argument(
+        "--pipeline",
+        default="model",
+        choices=["model", "full"],
+        help="model: synthetic tensors, model call only. full: raw frames and real "
+        "instructions through the checkpoint's own processors (batch size 1)",
+    )
     parser.add_argument("--label", default="", help="free-text machine label for the output row")
     args = parser.parse_args()
 
@@ -119,6 +214,22 @@ def main() -> None:
     n_params = sum(p.numel() for p in policy.parameters())
     param_dtypes = sorted({str(p.dtype) for p in policy.parameters()})
     weights_gb = torch.cuda.memory_allocated() / 1e9 if args.device == "cuda" else float("nan")
+
+    if args.pipeline == "full":
+        row = {
+            "label": args.label,
+            "device": torch.cuda.get_device_name(0) if args.device == "cuda" else args.device,
+            "policy": args.policy,
+            "checkpoint": args.checkpoint,
+            "param_dtypes": param_dtypes,
+            "compiled": args.compile,
+            "compile_mode": args.compile_mode if args.compile else None,
+            "calls": args.calls,
+            "weights_gb": round(weights_gb, 2),
+            **run_full_pipeline(policy, config, args.checkpoint, args),
+        }
+        print("RESULT " + json.dumps(row), flush=True)
+        return
 
     for batch_size in [int(b) for b in args.batch_sizes.split(",")]:
         batch = make_batch(config, batch_size, args.device, args.real_tokens)

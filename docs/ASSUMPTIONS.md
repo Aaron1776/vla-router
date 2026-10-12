@@ -29,6 +29,7 @@ Last updated: 2026-10-10.
 | V7 | A container on the server node can use the GPU. The existing `nvcr.io/nvidia/pytorch:25.11-py3` image has Python 3.12.3 and PyTorch 2.10.0a0 (CUDA 13.0, `sm_120` in its arch list), reports bfloat16 as supported, and computes a bfloat16 matmul correctly. Settles U6. | `docker run --rm --device nvidia.com/gpu=all <image> python -c ...` |
 | V8 | LeRobot `v0.6.0` with extras `pi,smolvla,dataset` installs into a venv on top of that container without replacing PyTorch, and both policy classes import. Setup is in `envs/README.md`. | `pip install -c envs/spark-constraints.txt ...`, then imports. |
 | V9 | `google/paligemma-3b-pt-224` (the tokenizer π0.5's preprocessor loads) is gated: an anonymous request returns HTTP 401, and our Hugging Face account is "not in the authorized list". | `curl` status code from the server node; Hub lookup with our account. |
+| V14 | After accepting Google's terms on our account (2026-10-12), the PaliGemma tokenizer loads on the server node from the local cache with `HF_HUB_OFFLINE=1` and no credential on that machine. It tokenizes "put the black bowl on the plate" to 8 ids and decodes them back. Needs the five tokenizer files plus `config.json`. | `AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")` in the container; steps in `envs/README.md`. |
 | V10 | Both models run on the server node and return finite 50-action chunks (shape `[1, 50, 7]`, 10 denoising steps). Settles the server-node half of U5 for the LeRobot path. | `scripts/time_models.py`, rows below. |
 | V11 | Both models sample stochastically: two calls on one observation differ (mean absolute difference 0.06 to 0.08 in normalized action units for `lerobot/smolvla_libero` and π0.5). Settles A5 as far as "spread is nonzero"; whether it predicts failure is still unknown. | `resample_mean_abs_diff` in the timing rows. |
 | V12 | `lerobot/smolvla_libero` takes LIBERO's two cameras and 8-D state. Its config lists a 6-D state and three cameras (left over from the base model), but its normalizer statistics are 8-D, its preprocessor renames `image`/`image2` to `camera1`/`camera2`, and the unused third camera is skipped because `empty_cameras` is 0. | Normalizer `.safetensors` header; `policy_preprocessor.json`; installed `modeling_smolvla.py` `prepare_images`. |
@@ -47,6 +48,17 @@ Timing on the server node (NVIDIA GB10), model call only: synthetic observations
 | π0.5 `lerobot/pi05_libero_finetuned` | uncompiled, bfloat16 | 248.9 | 250.7 | 9.52 |
 | π0.5 `lerobot/pi05_libero_finetuned` | uncompiled, float32 | 410.8 | 413.2 | 16.90 |
 | π0.5 `lerobot/pi05_libero_finetuned` | `torch.compile` default mode, bfloat16 | 176.6 | 178.4 | 9.49 |
+
+End to end on the server node (2026-10-12): random uint8 camera frames and real text instructions through each checkpoint's own preprocessor (real tokenizer), the model and the postprocessor, as the evaluation harness does. Batch size 1, 100 calls, `scripts/time_models.py --pipeline full`.
+
+| Model | Setting | Preprocess ms | Model ms | Total median ms | Total p95 ms | Real tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| SmolVLA `lerobot/smolvla_libero` | uncompiled | 11.4 | 93.8 | 106.9 | 135.9 | 13 to 22 |
+| π0.5 `lerobot/pi05_libero_finetuned` | uncompiled, bfloat16 | 5.8 | 260.3 | 267.5 | 285.5 | 41 to 58 |
+
+Caveat: an unrelated CPU workload was running on the server node during these runs (load average about 12, nothing else on the GPU). The model times are 4 to 14 percent above the idle model-only numbers below, so treat them as slightly pessimistic and rerun on an idle machine before quoting them as final. Compiled full-pipeline rows are pending.
+
+Both return finite `[50, 7]` action chunks with values inside about plus or minus 1. Whether those actions solve tasks is untested (U1).
 
 On this machine SmolVLA (`lerobot/smolvla_libero`) is 3.0x faster than π0.5 uncompiled and 4.2x faster compiled, which supports A10 here. The checkpoint's own `max-autotune` compile mode was not run. The first compiled call took 112 s for π0.5 and 125 s for SmolVLA (208 s more for a new batch size). Limits of these numbers: one machine; placeholder tokens; the server node is not the edge node, so the SmolVLA figures are not onboard latency.
 
