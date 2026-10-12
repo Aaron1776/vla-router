@@ -22,6 +22,34 @@ Last updated: 2026-10-10.
 | V5 | The server node has system Python 3.12.3 with no `torch`, and no `uv`, `conda`, `mamba` or `apptainer` on the login PATH. | `python3 --version`, `python3 -c "import torch"`, `command -v ...` in a login shell, 2026-10-10. |
 | V6 | The server node has git 2.43.0. | `git --version`, 2026-10-10. |
 
+### Server node: environment and model timing (2026-10-11)
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V7 | A container on the server node can use the GPU. The existing `nvcr.io/nvidia/pytorch:25.11-py3` image has Python 3.12.3 and PyTorch 2.10.0a0 (CUDA 13.0, `sm_120` in its arch list), reports bfloat16 as supported, and computes a bfloat16 matmul correctly. Settles U6. | `docker run --rm --device nvidia.com/gpu=all <image> python -c ...` |
+| V8 | LeRobot `v0.6.0` with extras `pi,smolvla,dataset` installs into a venv on top of that container without replacing PyTorch, and both policy classes import. Setup is in `envs/README.md`. | `pip install -c envs/spark-constraints.txt ...`, then imports. |
+| V9 | `google/paligemma-3b-pt-224` (the tokenizer π0.5's preprocessor loads) is gated: an anonymous request returns HTTP 401, and our Hugging Face account is "not in the authorized list". | `curl` status code from the server node; Hub lookup with our account. |
+| V10 | Both models run on the server node and return finite 50-action chunks (shape `[1, 50, 7]`, 10 denoising steps). Settles the server-node half of U5 for the LeRobot path. | `scripts/time_models.py`, rows below. |
+| V11 | Both models sample stochastically: two calls on one observation differ (mean absolute difference 0.06 to 0.08 in normalized action units for `lerobot/smolvla_libero` and π0.5). Settles A5 as far as "spread is nonzero"; whether it predicts failure is still unknown. | `resample_mean_abs_diff` in the timing rows. |
+| V12 | `lerobot/smolvla_libero` takes LIBERO's two cameras and 8-D state. Its config lists a 6-D state and three cameras (left over from the base model), but its normalizer statistics are 8-D, its preprocessor renames `image`/`image2` to `camera1`/`camera2`, and the unused third camera is skipped because `empty_cameras` is 0. | Normalizer `.safetensors` header; `policy_preprocessor.json`; installed `modeling_smolvla.py` `prepare_images`. |
+| V13 | The two SmolVLA LIBERO checkpoints are different sizes: `lerobot/smolvla_libero` has 450M parameters, `HuggingFaceVLA/smolvla_libero` has 605M. The π0.5 checkpoint has 4,143M parameters as loaded (PLAN.md says 3.6B). | `params_millions` in the timing rows. |
+
+Timing on the server node (NVIDIA GB10), model call only: synthetic observations, placeholder token ids, batch size 1 unless noted, 100 calls after warmup, no preprocessing or network. Peak memory is PyTorch's `max_memory_allocated`.
+
+| Model | Setting | Median ms | p95 ms | Peak GB |
+| --- | --- | --- | --- | --- |
+| SmolVLA `lerobot/smolvla_libero` | uncompiled | 82.1 | 83.0 | 0.97 |
+| SmolVLA `lerobot/smolvla_libero` | uncompiled, batch 4 | 140.2 | 141.7 | 1.05 |
+| SmolVLA `lerobot/smolvla_libero` | uncompiled, batch 8 | 236.4 | 238.1 | 1.16 |
+| SmolVLA `lerobot/smolvla_libero` | `torch.compile` default mode | 41.8 | 42.1 | 0.97 |
+| SmolVLA `lerobot/smolvla_libero` | `torch.compile` default mode, batch 8 | 162.9 | 164.5 | 1.20 |
+| SmolVLA `HuggingFaceVLA/smolvla_libero` | uncompiled | 150.1 | 162.0 | 1.28 |
+| π0.5 `lerobot/pi05_libero_finetuned` | uncompiled, bfloat16 | 248.9 | 250.7 | 9.52 |
+| π0.5 `lerobot/pi05_libero_finetuned` | uncompiled, float32 | 410.8 | 413.2 | 16.90 |
+| π0.5 `lerobot/pi05_libero_finetuned` | `torch.compile` default mode, bfloat16 | 176.6 | 178.4 | 9.49 |
+
+On this machine SmolVLA (`lerobot/smolvla_libero`) is 3.0x faster than π0.5 uncompiled and 4.2x faster compiled, which supports A10 here. The checkpoint's own `max-autotune` compile mode was not run. The first compiled call took 112 s for π0.5 and 125 s for SmolVLA (208 s more for a new batch size). Limits of these numbers: one machine; placeholder tokens; the server node is not the edge node, so the SmolVLA figures are not onboard latency.
+
 ## Third-party pins
 
 Shallow clones in `third_party/` (git-ignored), read on 2026-10-10. Nothing installed.
@@ -89,7 +117,7 @@ Items marked (summary) were read through a summarizing web fetch on 2026-10-10, 
 | A11 | π0.5 runs acceptably on Turing in bfloat16 or float32 (R12 rules out FP16 through LeRobot). | One inference step on an RTX 8000 in each dtype; record latency and memory. |
 | A4 | MuJoCo state can be saved and restored exactly. | Save state, apply fixed actions, restore, repeat, compare the max absolute state difference. |
 | A5 | SmolVLA's action generation is stochastic enough for sampling spread to mean something. | Read the installed policy source for where noise is sampled; run one observation twice with different seeds. |
-| A6 | LIBERO-Plus and LIBERO-Para install alongside LIBERO in one environment. | Read each repo's install instructions, then try it. |
+| A6 | LIBERO-Plus and LIBERO-Para install alongside LIBERO in one environment. False for LIBERO-Plus per R14; open for LIBERO-Para. | Read each repo's install instructions, then try it. |
 | A7 | The LeRobot π0.5 LIBERO checkpoint used by the harness matches openpi's `pi05_libero` in quality. | Read the harness config and the checkpoint's model card. |
 | A8 | `tc` needs root and will not be available on the shared cluster; delay can be injected inside the proxy instead. | Ask the cluster admins; test `tc qdisc show`. |
 | A9 | At 100 episodes per model, a success gap must be roughly 14 points to be clear of noise at 95% (worst case at 50% success). | Arithmetic: 1.96 * sqrt(2 * 0.25 / 100). Recheck once real success rates are known. |
