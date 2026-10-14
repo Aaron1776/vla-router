@@ -55,8 +55,10 @@ End to end on the server node (2026-10-12): random uint8 camera frames and real 
 | --- | --- | --- | --- | --- | --- | --- |
 | SmolVLA `lerobot/smolvla_libero` | uncompiled | 11.4 | 93.8 | 106.9 | 135.9 | 13 to 22 |
 | π0.5 `lerobot/pi05_libero_finetuned` | uncompiled, bfloat16 | 5.8 | 260.3 | 267.5 | 285.5 | 41 to 58 |
+| SmolVLA `lerobot/smolvla_libero` | `torch.compile` default mode | 5.7 | 44.8 | 50.8 | 60.7 | 13 to 22 |
+| π0.5 `lerobot/pi05_libero_finetuned` | `torch.compile` default mode, bfloat16 | 12.6 | 184.8 | 199.1 | 216.1 | 41 to 58 |
 
-Caveat: an unrelated CPU workload was running on the server node during these runs (load average about 12, nothing else on the GPU). The model times are 4 to 14 percent above the idle model-only numbers below, so treat them as slightly pessimistic and rerun on an idle machine before quoting them as final. Compiled full-pipeline rows are pending.
+Caveat: an unrelated CPU workload was running on the server node during these runs (load average about 12, nothing else on the GPU). The model times are 4 to 14 percent above the idle model-only numbers below, so treat them as slightly pessimistic and rerun on an idle machine before quoting them as final. The first compiled call took 165 s for π0.5 and 108 s for SmolVLA.
 
 Both return finite `[50, 7]` action chunks with values inside about plus or minus 1. Whether those actions solve tasks is untested (U1).
 
