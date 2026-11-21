@@ -10,7 +10,7 @@ Arrays are numpy arrays; they are typed as `Any` so this module imports without 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, Protocol
+from typing import Any, Literal, Optional, Protocol, get_args
 
 Mode = Literal["routed", "xvla_only", "pi05_only"]
 Profile = Literal["none", "router", "cascader_nospread", "cascader_chunkspread", "cascader_full"]
@@ -19,6 +19,25 @@ Choice = Literal["local", "escalate"]
 PointKind = Literal["chunk", "mid"]
 EndReason = Literal["success", "step_limit", "time_limit", "network"]   # network: π0.5 alone hit the retry cap (§5)
 Array = Any
+
+MODES: tuple[str, ...] = get_args(Mode)
+PROFILES: tuple[str, ...] = get_args(Profile)
+
+
+def check_reset(mode: str, profile: str, time_limit: bool) -> None:
+    """The `reset()` arguments every implementation enforces (§15). `time_limit=True` is accepted only in routed
+    mode with a decider's profile (not `none`): a live limit is for runs with a live learned decider (DAgger
+    rollouts, evaluation); every other run is scripted, runs uncut and is scored offline (§5, amendment 19)."""
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {PROFILES}")
+    if not isinstance(time_limit, bool):
+        raise TypeError(f"time_limit must be True or False, not {time_limit!r}")
+    if time_limit and (mode != "routed" or profile == "none"):
+        raise ValueError(f"time_limit=True needs routed mode and a decider profile (not 'none'), got mode={mode!r} "
+                         f"with profile={profile!r}: a live time limit is only for runs with a live learned decider; "
+                         "scripted runs run uncut and are scored offline (SPEC §5, §15)")
 
 
 @dataclass(frozen=True)
@@ -37,7 +56,9 @@ class CommonInputs:
     features_wrist: Array          # mean of X-VLA's wrist-camera image tokens, 1024
     robot_state: Array             # measured robot state; layout fixed by the adapters and the datacard
     budget_remaining_steps: int
-    time_remaining_s: float        # under the decider's own profile; inf in scripted runs
+    time_remaining_s: float        # under the decider's own profile; inf in scripted runs. Training never copies
+                                   # it from a collected rollout: labels.remaining_time_s recomputes it from the
+                                   # event log under each decider's own profile (§6, amendment 23)
     steps_elapsed: int
 
 
@@ -97,6 +118,8 @@ class EpisodeResult:
     pi05_failed_requests: int
     sim_time_s: float              # live clock under the run's profile
     record_id: Optional[str]       # where the event log and trajectory were written (record=full)
+    time_limit: bool               # the run had a live time limit, so its outcome is scored only under its own
+                                   # profile (amendments 20-21); False for scripted runs and branches
 
 
 @dataclass(frozen=True)
@@ -137,7 +160,9 @@ class HarnessClient(Protocol):
         """Set up an episode (scene, initial state, settle steps). The scene seed is not a parameter: the
         harness sets it from the initial state (SPEC §3). Routed mode returns the first point. `time_limit`
         applies the task's time limit live under `profile` (runs with a live learned decider, §5); scripted
-        runs leave it off, run uncut and are scored offline from their event logs."""
+        runs leave it off, run uncut and are scored offline from their event logs. Arguments are checked with
+        `check_reset`: `time_limit=True` only in routed mode with a profile other than `none` (amendment 19).
+        The flag is recorded in the start event and the episode result (amendment 20)."""
 
     def restore(self, snapshot_id: str) -> DecisionPoint:
         """Resume from a snapshot taken at a decision point (no settle steps)."""

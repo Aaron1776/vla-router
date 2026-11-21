@@ -1,4 +1,6 @@
-"""Labels (SPEC §7) and time-limit calibration (SPEC §5, §11 step 6) on synthetic event logs. Pure Python; the
+"""Labels (SPEC §7) and time-limit calibration (SPEC §5, §11 step 6) on synthetic event logs, with the label rules
+for time (amendments 21-23): labels from a parent cut live under another profile, points already past the limit
+excluded per profile, and the remaining-time input recomputed under each decider's own profile. Pure Python; the
 same code runs on real branch logs in tests/reference/test_clock_live.py."""
 
 import math
@@ -23,10 +25,10 @@ ORDER = ("none", "router", "cascader_chunkspread", "cascader_full")     # non-de
 class Log:
     """Builds event logs with decision points every 10 steps, as the engine writes them."""
 
-    def __init__(self, events=None, *, task=0, mode="routed", time_limit_s=None):
+    def __init__(self, events=None, *, task=0, mode="routed", profile="none", time_limit_s=None):
         self.ev = list(events) if events is not None else [
             {"t": "start", "task_id": task, "init_idx": 0, "scene_seed": 142, "rollout_seed": 1, "mode": mode,
-             "profile": "none", "time_limit_s": time_limit_s}]
+             "profile": profile, "time_limit": time_limit_s is not None, "time_limit_s": time_limit_s}]
         self.queue = 0
 
     def point(self, step, budget=260):
@@ -72,8 +74,8 @@ def run_to(log, step, success_at, limit=120):
         log.point(step)
 
 
-def prefix_at(d=2, budget=20):
-    log = Log()
+def prefix_at(d=2, budget=20, **start):
+    log = Log(**start)
     for k in range(d):
         log.point(10 * k, budget).local(10 * k)
     return log.point(10 * d, budget).ev
@@ -84,7 +86,7 @@ def branch(prefix, name, seed, calls, *, escalations, success_at, attempts=(True
     log.queue = 10                                            # point 2 is a mid point (queue of 10 left)
     log.ev.append({"t": "restore", "step": 20, "index": 2, "snapshot_id": "ep/dp02"})
     log.ev.append({"t": "branch", "branch": name, "seed_index": seed, "pi05_calls": calls, "index": 2,
-                   "rollout_seed": 100 + seed, "parent_rollout_seed": 1})
+                   "rollout_seed": 100 + seed, "parent_rollout_seed": 1, "time_limit": False})
     step = 20
     for k in range(escalations):
         log.escalate(step, attempts)
@@ -94,8 +96,10 @@ def branch(prefix, name, seed, calls, *, escalations, success_at, attempts=(True
     return full[len(prefix):]
 
 
-def setup_point():
-    prefix = prefix_at()
+def setup_point(**start):
+    """A base-rollout point (the parent's continuation is seed 1 of b1_continue). With `start` fields, the parent
+    is another kind of run, e.g. one cut live under a decider's profile."""
+    prefix = prefix_at(**start)
     ref = plan.DecisionPointRef("ep/dp02", "ep", "base", 0, 0, 2, 20)
     _, entries = plan.branch_plan("labels", [ref], branches=CFG["branches"], step_limit=120, interval=10, seeds=3,
                                   enabled=list(C.BRANCHES), tier_one_seeds=2, order_seed=1)
@@ -125,12 +129,15 @@ def test_planner_entry_shares_b3_and_b4_when_the_budget_allows_two_calls():
 
 def test_labels_without_a_time_limit_are_success_fractions():
     prefix, entry, parent, own = setup_point()
-    lab = L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=1e9, parent_log=parent)
+    pl = L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=1e9, parent_log=parent)
+    lab = pl.labels
+    assert pl.excluded == ()
     for p in PROFILES:
         assert (lab["b1_continue"][p].successes, lab["b2_one_call"][p].successes) == (2, 2)
         assert lab["b3_three_calls"][p] == lab["b4_max"][p] == L.Label(1 / 3, 1, 3)
+    # A limit the point has already passed under every profile: the point is in no profile's data (amendment 22).
     zero = L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=0.0, parent_log=parent)
-    assert all(lab.value == 0 for b in zero.values() for lab in b.values())
+    assert zero.excluded == PROFILES and zero.labels == {b: {} for b in entry["shares"]}
 
 
 def test_labels_follow_each_profiles_clock():
@@ -141,14 +148,21 @@ def test_labels_follow_each_profiles_clock():
     # A limit between b1 seed 2's time under `none` and under `cascader_full` separates the profiles.
     limit = times[("b1_continue", 2)]["none"]
     assert times[("b1_continue", 2)]["cascader_full"] > limit
-    lab = L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=limit, parent_log=parent)
+    pl = L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=limit, parent_log=parent)
+    # Under cascader_full the point itself is already past this limit (7.3 s > 5.26 s), so no live decider of that
+    # type reaches it: excluded rather than labelled 0 everywhere (amendment 22).
+    assert clk.replay(prefix, "cascader_full", CH) > limit >= clk.replay(prefix, "cascader_chunkspread", CH)
+    assert pl.excluded == ("cascader_full",)
+    lab = pl.labels
+    kept = [p for p in PROFILES if p != "cascader_full"]
     for b, canon in entry["shares"].items():
-        for p in PROFILES:
+        assert set(lab[b]) == set(kept)
+        for p in kept:
             expect = sum(clk.score(full[(canon, s)], p, CH).within(limit) for s in (1, 2, 3)) / 3
             assert lab[b][p].value == expect
-        values = [lab[b][p].value for p in ORDER]
+        values = [lab[b][p].value for p in ORDER if p in kept]
         assert values == sorted(values, reverse=True)       # more overhead never helps
-    assert lab["b1_continue"]["none"].value > lab["b1_continue"]["cascader_full"].value
+    assert lab["b1_continue"]["none"].value > lab["b1_continue"]["cascader_chunkspread"].value
 
 
 def test_labels_refuse_logs_that_do_not_fit():
@@ -172,6 +186,84 @@ def test_labels_refuse_logs_that_do_not_fit():
         L.point_labels(prefix, entry, own, parent_log=bad_parent, **kw)
     with pytest.raises(L.LabelError, match="ends with its decision point"):
         L.point_labels(prefix[:-1], entry, own, parent_log=parent, **kw)
+    cut_branch = dict(own)
+    log = list(own[("b2_one_call", 1)])
+    cut_branch[("b2_one_call", 1)] = [log[0], dict(log[1], time_limit=True)] + log[2:]
+    with pytest.raises(L.LabelError, match="runs uncut"):
+        L.point_labels(prefix, entry, cut_branch, parent_log=parent, **kw)
+
+
+def test_points_past_the_limit_are_excluded_per_profile():
+    """Amendment 22: a point whose clock under P, from the parent's log, already exceeds the limit is one no live
+    decider of type P reaches, so it is left out of P's data; 'exceeds' is strict, as for the live cut."""
+    prefix, entry, parent, own = setup_point()
+    t = {p: clk.replay(prefix, p, CH) for p in PROFILES}
+    assert t["none"] < t["router"] == t["cascader_nospread"] < t["cascader_chunkspread"] < t["cascader_full"]
+    kw = dict(seeds=3, charges=CH, parent_log=parent)
+    lim = (t["router"] + t["cascader_chunkspread"]) / 2
+    pl = L.point_labels(prefix, entry, own, limit_s=lim, **kw)
+    assert pl.excluded == ("cascader_chunkspread", "cascader_full")
+    assert all(set(v) == {"none", "router", "cascader_nospread"} for v in pl.labels.values())
+    assert pl.time_s == t and pl.remaining_s == {p: lim - t[p] for p in PROFILES}
+    at = L.point_labels(prefix, entry, own, limit_s=t["cascader_full"], **kw)       # exactly at the limit: kept
+    assert at.excluded == ()
+    assert all(v["cascader_full"].value == 0 for v in at.labels.values())          # but nothing can succeed in time
+    below = L.point_labels(prefix, entry, own, limit_s=math.nextafter(t["cascader_full"], 0.0), **kw)
+    assert below.excluded == ("cascader_full",)
+    report = L.exclusion_report([pl, at, below])
+    assert report["cascader_full"] == {"points": 3, "excluded": 2, "kept": 1}
+    assert report["cascader_chunkspread"] == {"points": 3, "excluded": 1, "kept": 2}
+    assert all(report[p] == {"points": 3, "excluded": 0, "kept": 3} for p in ("none", "router", "cascader_nospread"))
+
+
+def dagger_point(limit):
+    """A point of a DAgger-style parent: routed, cut live under `router` with the task limit `limit`. The parent
+    provides no seed, so b1_continue seed 1 is a branch job too."""
+    prefix, entry, parent, own = setup_point(profile="router", time_limit_s=limit)
+    own[("b1_continue", 1)] = branch(prefix, "b1_continue", 1, 0, escalations=0, success_at=45)
+    return prefix, entry, parent, own
+
+
+def test_labels_from_a_parent_cut_under_another_profile():
+    """Amendment 21 as scoped: the snapshot's log of a parent cut live under `router` is re-scored under every
+    profile (it ends at a point the parent reached, and branches run uncut); the parent's own full log is refused
+    as a seed under any profile but `router`."""
+    base = setup_point()
+    t = {p: clk.replay(base[0], p, CH) for p in PROFILES}
+    for limit in (1e9, (t["router"] + t["cascader_chunkspread"]) / 2):
+        prefix, entry, parent, own = dagger_point(limit)
+        assert prefix[0]["time_limit"] is True and prefix[0]["profile"] == "router"
+        dagger_entry = dict(entry, parent_seeds={})              # a DAgger parent provides no seeds (§7)
+        pl = L.point_labels(prefix, dagger_entry, own, seeds=3, charges=CH, limit_s=limit)
+        same = L.point_labels(base[0], dagger_entry, own, seeds=3, charges=CH, limit_s=limit)   # an uncut parent
+        assert pl == same                                        # only the parent's start event differs
+        for b, canon in entry["shares"].items():
+            for p in pl.labels[b]:
+                assert pl.labels[b][p].value == sum(
+                    clk.score(prefix + own[(canon, s)], p, CH).within(limit) for s in (1, 2, 3)) / 3
+        if limit < 1e9:
+            assert pl.excluded == ("cascader_chunkspread", "cascader_full")
+    prefix, entry, parent, own = dagger_point(1e9)
+    with pytest.raises(L.LabelError, match="cut live under 'router'"):
+        L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=1e9, parent_log=parent)
+    own_only = L.point_labels(prefix, entry, own, seeds=3, charges=CH, limit_s=1e9, parent_log=parent,
+                              profiles=("router",))
+    assert set(own_only.labels["b1_continue"]) == {"router"}
+
+
+def test_remaining_time_is_recomputed_under_each_deciders_profile():
+    """Amendment 23: at a training point, a decider's remaining-time input is the limit minus the clock under its
+    own profile, replayed from the event log; never what the collecting decider saw."""
+    limit = 60.0
+    prefix, entry, _, own = dagger_point(limit)
+    collector_saw = limit - clk.replay(prefix, "router", CH)        # the live router decider's own input
+    pl = L.point_labels(prefix, dict(entry, parent_seeds={}), own, seeds=3, charges=CH, limit_s=limit)
+    for p in PROFILES:
+        expect = limit - clk.replay(prefix, p, CH)
+        assert L.remaining_time_s(prefix, p, CH, limit) == pl.remaining_s[p] == expect
+    assert pl.remaining_s["router"] == pl.remaining_s["cascader_nospread"] == collector_saw
+    assert pl.remaining_s["cascader_full"] < pl.remaining_s["cascader_chunkspread"] < collector_saw
+    assert pl.remaining_s["none"] > collector_saw
 
 
 # ---------------------------------------------------------------- calibration
@@ -255,8 +347,8 @@ def test_calibration_refuses_the_wrong_runs():
     with pytest.raises(cal.CalibrationError, match="X-VLA alone"):
         cal.calibrate(base + [escalated], parity, CFG)
     cut = xvla_episode(2, 120)
-    cut[0] = dict(cut[0], time_limit_s=30.0)
-    with pytest.raises(cal.CalibrationError, match="uncut"):
+    cut[0] = dict(cut[0], profile="router", time_limit=True, time_limit_s=30.0)
+    with pytest.raises(cal.CalibrationError, match="uncut runs; this episode had a live time limit under profile 'router'"):
         cal.calibrate(base + [cut], parity, CFG)
     with pytest.raises(cal.CalibrationError, match="tasks \\[3\\]"):
         cal.calibrate([e for e in base if e[0]["task_id"] != 3], parity, CFG)

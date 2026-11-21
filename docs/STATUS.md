@@ -1,7 +1,7 @@
 # Project status
 
-Last updated: 2026-11-21, describing the code at commit `272f64b` on branch `harness-v1` (effort step 4); later
-commits change only documents.
+Last updated: 2026-11-21, describing the code on branch `harness-v1` after the step-4 follow-ups (amendments 19-23,
+the commit after `11e999a`).
 
 This page is for someone who has seen nothing of the project so far: what it is, where things are, how far the
 work has got, what comes next and how to run it. It is a summary; where it and [SPEC.md](SPEC.md) disagree, the spec
@@ -92,8 +92,9 @@ results count for parity and determinism, because rendering and floating-point r
 | `25794f7` | Effort step 3: the episode engine (decision points, handoff rules between the models, budget, run modes); the scene/rollout seed split; the reference run's result files and checks |
 | `b3e93da` | Decisions 9-12 recorded, the milestone rule, the first HANDOFF.md |
 | `272f64b` | Effort step 4: network model, event log, simulated clock under every overhead profile with offline re-scoring, live time limit, branch runs, label computation, time-limit calibration, handoff diagnostics |
+| after `11e999a` | Step-4 follow-ups (amendments 19-23): a live time limit only in routed runs with a decider profile, recorded as an explicit flag in every log and result; a time-cut run scored only under its own profile, while labels from a cut parent's log up to a decision point are computed for every profile; decision points already past the limit under a profile left out of that profile's data, counted per profile; the remaining-time input recomputed under each decider's own profile |
 
-Test results at `272f64b` (Mac): unit tests 84 passed, 6 skipped; simulator tests 46 passed, 6 skipped; X-VLA server
+Test results after the follow-ups (Mac): unit tests 106 passed, 6 skipped; simulator tests 48 passed, 6 skipped; X-VLA server
 tests 2 passed. The skipped tests need model weights or both servers running, so they run on the VM.
 
 Not started: request batching in the servers (effort step 5), rendering only the camera images that are used, the
@@ -104,8 +105,8 @@ The §18 milestone (all seven must hold before the harness build counts as compl
 
 | §18 item | State |
 | --- | --- |
-| 1. Effort steps 4 and 5 done, tests passing on the Mac | partial: step 4 done (`272f64b`), step 5 not started |
-| 2. Both servers implement every endpoint, with batching and per-call seeds | partial: all endpoints and per-call seeds exist; batching missing |
+| 1. Effort steps 4 and 5 done, tests passing on the Mac | partial: step 4 done (`272f64b`, follow-ups after `11e999a`), step 5 next |
+| 2. Both servers implement every endpoint, with batching and per-call seeds | partial: all endpoints and per-call seeds exist; batch-invariant batching missing |
 | 3. Measurement recording and the snapshot store | partial: snapshot store done; measurement recording (proposal, spread, drift, probes) not started |
 | 4. Job queue, spend guard and packaging implemented and tested | partial: implemented and unit-tested against a local stand-in for cloud storage; the real cloud storage path is untested; the engine is not yet wired to the queue |
 | 5. Three container images and lockfiles build and pass local tests | not started |
@@ -117,19 +118,16 @@ evaluation have not started.
 
 ## What's next, in order
 
-1. Four approved follow-ups to step 4, not yet implemented (details in HANDOFF.md, "Next step 1"): accept a live
-   time limit only in routed runs with a decider profile; record that flag in every episode's metadata and event
-   log; refuse to re-score a time-cut run under any profile but its own; and leave a decision point out of profile
-   P's training and validation data when its clock under P, from the parent's log, already exceeds the time limit,
-   counting the exclusions per profile. Each with tests and a §17 entry.
-2. Effort step 5: dynamic batching in both model servers, and a check that batched and single requests give the same
-   actions.
-3. Render camera images only when they are used, provided it passes the same exact-equality tests.
-4. Decider inputs (`observe()`) and measurement recording at every decision point; the dataset format (Parquet);
+1. Effort step 5: dynamic batching in both model servers, batch-invariant (amendment 24): a request's output must be
+   bit-identical whatever else shares its batch, so every batch runs at one fixed padded size per endpoint with
+   deterministic GPU settings and per-request noise generators; checked on the CPU now and bit for bit on the L4,
+   where the cost of the padding is also measured.
+2. Render camera images only when they are used, provided it passes the same exact-equality tests.
+3. Decider inputs (`observe()`) and measurement recording at every decision point; the dataset format (Parquet);
    queue workers that run episodes and branches.
-5. The three container images with lockfiles.
-6. Complete the VM re-run list and announce the §18 milestone, then wait for an explicit go-ahead.
-7. Only then: create the Google Cloud bucket, budget alerts and Spot VM, and run Phase 0 on the VM: measure latencies,
+4. The three container images with lockfiles.
+5. Complete the VM re-run list and announce the §18 milestone, then wait for an explicit go-ahead.
+6. Only then: create the Google Cloud bucket, budget alerts and Spot VM, and run Phase 0 on the VM: measure latencies,
    batching, gripper thresholds and upload size; re-run every equality and determinism test; π0.5 parity (100
    episodes); X-VLA base rollouts (500 episodes); compute the time limits; choose five "golden" snapshots replayed at
    every start-up; freeze the harness as v1.0.
@@ -143,7 +141,7 @@ guard stops all work at $45.
 
 ## Key decisions so far
 
-The full list, with dates, is SPEC §17 (18 entries). The most important:
+The full list, with dates, is SPEC §17 (24 entries). The most important:
 - **Two seeds per episode.** The scene seed fixes the scene (some LIBERO fixtures move by up to 19 mm with it) and
   is 142 + k for initial state k in every run except π0.5's parity check (1000 + k, its own reference's value). A
   separate rollout seed drives all other randomness (model noise, the network, random exploration), different for
@@ -159,6 +157,13 @@ The full list, with dates, is SPEC §17 (18 entries). The most important:
   encoder-only X-VLA call between X-VLA's action chunks (at a chunk's start the features come free with X-VLA's own
   call), the cascaders extra X-VLA samples. Nothing is charged once the budget is spent, since no decision is left to
   make. Data is collected once and scored under every profile afterwards, exactly.
+- **Live time limits.** Only runs driven by a live learned decider (DAgger rollouts, evaluation) are cut at the time
+  limit, under that decider's profile; every log records whether its run was cut. A cut run's outcome is scored only
+  under its own profile. Labels and the "remaining time" input at a training point are recomputed from the event
+  log under each decider type's own profile, and a point already past the limit under a profile is left out of that
+  profile's data.
+- **Batch invariance.** The model servers batch requests from many simulator workers, but a request's result must
+  not depend on its batch: otherwise exact replay of snapshots and runs would break whenever batching differed.
 - **Leave-one-task-out folds.** Ten folds: task i is the test task, task i+1 (mod 10) the validation task, the other
   eight the training tasks; splits are always by whole task.
 
@@ -173,7 +178,6 @@ The full list, with dates, is SPEC §17 (18 entries). The most important:
   Face account; the VM needs that account's access.
 - **Placeholders until Phase 0.** Model latencies, batching settings, gripper thresholds, the upload size (a Mac
   estimate of 20,290 bytes) and the time limits are placeholders marked as such in `src/vlar_harness/configs/harness-v1.yaml`.
-- **Four approved follow-ups from step 4** are next in line, not yet implemented (see "What's next").
 
 ## Running the tests
 

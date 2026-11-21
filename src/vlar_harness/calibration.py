@@ -6,7 +6,8 @@ in `time_limit.margin_candidates` (1.25, 1.5, 1.75, 2.0) such that at least `mar
 π0.5's successful parity episodes, pooled over tasks and timed under profile `none` with the network model, finish
 within their task's limit. No candidate reaching the share is an error. The percentile is NumPy's default (linear)
 method, computed here in pure Python with NumPy's arithmetic. A completion time is the clock right after the
-success step.
+success step. Runs with a live time limit (`time_limit: true` in the start event) are refused: their outcome can
+be scored only under their own profile, never under `none` (amendment 21).
 
     python -m vlar_harness.calibration --base base.jsonl ... --parity parity.jsonl ... [--write]
 
@@ -63,8 +64,9 @@ def completion_times(logs: Iterable[Sequence[Mapping]], charges: clk.Charges, *,
         start = eventlog.check(events)
         if start["mode"] not in modes:
             raise CalibrationError(f"expected modes {tuple(modes)}, got a {start['mode']} episode")
-        if start["time_limit_s"] is not None:
-            raise CalibrationError("calibration uses uncut runs; this episode had a live time limit")
+        if start["time_limit"]:                   # a cut run is scored only under its own profile (amendment 21)
+            raise CalibrationError(f"calibration uses uncut runs; this episode had a live time limit under profile "
+                                   f"{start['profile']!r}")
         kinds = {e["t"] for e in events}
         if kinds & {"restore", "branch"}:
             raise CalibrationError("calibration uses whole episodes, not branches or restored runs")

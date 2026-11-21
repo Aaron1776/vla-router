@@ -42,8 +42,11 @@ Event log (§5). Every run records plain JSON events; the last column is the clo
 The engine keeps one clock per profile, charging each step as it runs and every other event as it is emitted,
 and checks at the end of every episode that each equals the offline replay of the log. Scripted runs (base,
 exploration, branches, scripted baselines) run uncut and are scored offline for any profile and time limit;
-runs with a live learned decider pass `time_limit=True`, and the run's own profile is then checked against the
-task's limit after every step and every model call (end reason `time_limit`).
+runs with a live learned decider pass `time_limit=True` (routed mode with a decider profile only, amendment
+19), and the run's own profile is then checked against the task's limit after every step and every model call
+(end reason `time_limit`). The start event records `time_limit` true or false next to `time_limit_s`, the
+branch event records false (branches run uncut), and the episode result carries the flag (amendment 20); a cut
+run's outcome is scored only under its own profile (clock.py, amendment 21).
 
 Model noise seeds come from `seeding.call_seed(rollout_seed, ...)`.
 """
@@ -57,7 +60,7 @@ import numpy as np
 
 from . import clock as clk
 from . import seeding
-from .api import DecisionPoint, EpisodeResult, SegmentOutcome
+from .api import DecisionPoint, EpisodeResult, SegmentOutcome, check_reset
 from .config import BRANCHES, PROFILES
 from .network import DirectLink, RemoteLink, RemoteOutcome, SimulatedNetwork, check_outcome  # noqa: F401
 
@@ -86,6 +89,7 @@ class EpisodeState:
     mode: str
     episode_id: str = ""
     profile: str = "none"                 # the decider's profile: its clock is the one a live limit checks
+    time_limit: bool = False              # the limit is applied live (amendments 19-20)
     time_limit_s: Optional[float] = None  # set only when the limit is applied live
     decision_index: int = -1
     point_kind: Optional[str] = None
@@ -145,22 +149,21 @@ class Episode:
     def start(self, init_idx: int, rollout_seed: int, mode: str = "routed", episode_id: str = "", *,
               profile: str = "none", time_limit: bool = False) -> Optional[DecisionPoint]:
         """Set up an episode. `profile` is the decider's (§5); `time_limit=True` applies the task's limit live,
-        for runs with a live learned decider. Scripted runs leave it off and are scored offline."""
-        if mode not in MODES:
-            raise ValueError(f"mode must be one of {MODES}")
-        if profile not in PROFILES:
-            raise ValueError(f"profile must be one of {PROFILES}")
+        for runs with a live learned decider: routed mode with a profile other than `none` (amendment 19).
+        Scripted runs leave it off and are scored offline."""
+        check_reset(mode, profile, time_limit)                # before anything touches the simulator
         scene = seeding.scene_seed(init_idx, self.scene_offset)
         self.sim.setup_episode(init_idx, env_seed=scene)
         self.xvla.reset()
         limit = float(self.cfg.time_limit_s(self.sim.task_id)) if time_limit else None
-        self.state = EpisodeState(self.sim.task_id, init_idx, scene, int(rollout_seed), mode, episode_id,
-                                  profile, limit)
+        self.state = EpisodeState(task_id=self.sim.task_id, init_idx=init_idx, scene_seed=scene,
+                                  rollout_seed=int(rollout_seed), mode=mode, episode_id=episode_id, profile=profile,
+                                  time_limit=time_limit, time_limit_s=limit)
         self.events, self.log_offset, self.trajectory, self.last_act_response = [], 0, [], None
         self.clocks = {p: clk.Clock(self.charges, p) for p in PROFILES}
         self._emit({"t": "start", "log_version": LOG_VERSION, "task_id": self.sim.task_id, "init_idx": init_idx,
                     "scene_seed": scene, "rollout_seed": int(rollout_seed), "mode": mode, "profile": profile,
-                    "time_limit_s": limit, "episode_id": episode_id,
+                    "time_limit": time_limit, "time_limit_s": limit, "episode_id": episode_id,
                     "config_hash": getattr(self.cfg, "hash", None)})
         if mode == "routed":
             return self._decision_point()
@@ -436,7 +439,8 @@ class Episode:
                              end_reason=st.end_reason or "step_limit", steps=self.sim.steps,
                              success_step=st.success_step, pi05_steps=st.pi05_steps, pi05_requests=st.pi05_requests,
                              pi05_failed_requests=st.pi05_failed_requests,
-                             sim_time_s=self.clocks[st.profile].t if self.clocks else float("nan"), record_id=None)
+                             sim_time_s=self.clocks[st.profile].t if self.clocks else float("nan"), record_id=None,
+                             time_limit=st.time_limit)
 
     def snapshot(self, header: Optional[dict] = None):
         """Snapshot of the current decision point (after its calls), §7."""
@@ -451,6 +455,8 @@ class Episode:
         from . import snapshot as snap
         fields = snap.restore(snapshot, self.sim, self.xvla)
         self.state = EpisodeState(**fields)
+        if self.state.time_limit != (self.state.time_limit_s is not None):
+            raise ValueError("snapshot's episode fields: time_limit and time_limit_s disagree (amendment 20)")
         self.events = list(snapshot.event_log)
         self.log_offset = len(self.events)
         self.trajectory, self.last_act_response = [], None
@@ -485,9 +491,10 @@ class Episode:
                              f"{points_left} decision points left")
         parent = st.rollout_seed
         st.rollout_seed = seeding.branch_rollout_seed(parent, dp.index, branch, seed_index)
-        st.time_limit_s = None                    # branches run uncut; time limits are applied offline (§5, §7)
+        st.time_limit, st.time_limit_s = False, None    # branches run uncut; limits are applied offline (§5, §7)
         self._emit({"t": "branch", "branch": branch, "seed_index": int(seed_index), "pi05_calls": int(pi05_calls),
-                    "index": dp.index, "rollout_seed": st.rollout_seed, "parent_rollout_seed": parent})
+                    "index": dp.index, "rollout_seed": st.rollout_seed, "parent_rollout_seed": parent,
+                    "time_limit": False})
         made = 0
         while dp is not None:
             if made < pi05_calls:

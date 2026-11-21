@@ -39,13 +39,13 @@ Where each item stands now (not complete; do not announce):
 
 | Item | State |
 | --- | --- |
-| 1. Steps 4 and 5 | step 4 done on the Mac (uncommitted until the user asks); step 5 not started |
-| 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` exist, single-request, with per-call seeds (CPU generators); π0.5 `/upload_bytes` added for Phase 0 step 2; dynamic batching missing (step 5) |
+| 1. Steps 4 and 5 | step 4 done on the Mac (`272f64b`) with its follow-ups (amendments 19-23); step 5 next |
+| 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` exist, single-request, with per-call seeds (CPU generators); π0.5 `/upload_bytes` added for Phase 0 step 2; batch-invariant dynamic batching missing (step 5, amendment 24) |
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; proposal, free signals, spread/drift and probe recording not started; snapshot sync to the bucket not wired |
 | 4. Queue, spend guard, packaging | implemented and unit-tested against a local stand-in for the bucket (`src/vlar_ops`); the Cloud Storage backend is untested without credentials; the episode engine (now with `run_branch`) is not yet wired to the queue |
 | 5. Container images, lockfiles | not started |
 | 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
-| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-4 (`test_clock_live.py` and the Phase 0 step 2 upload measurement added); step 5 and the containers still to add; parity tooling and reference files are committed (`25794f7`) |
+| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-4 and the follow-ups (`test_clock_live.py`, the Phase 0 step 2 upload measurement); step 5 (batch invariance on the L4, the padding cost) and the containers still to add; parity tooling and reference files are committed (`25794f7`) |
 
 ## Status
 
@@ -56,18 +56,21 @@ Where each item stands now (not complete; do not announce):
 | Effort step 2: exact snapshot capture/restore, determinism tests | done on Mac; VM re-run pending | `5d92d97` |
 | Effort step 3: episode engine (`src/vlar_harness/episode.py`): handoff rules, controller mode switching, budget, run modes; scene/rollout seed split; reference-run files and checks | done on Mac; VM re-run pending | `25794f7` |
 | Decisions 9-12 recorded, relative VM handoff test, this file, `CLAUDE.md` | done | `b3e93da` |
-| Decisions 13-16 recorded (network failures, upload size, no overhead without budget, `reset(time_limit)`), Google Cloud readiness noted | done | uncommitted |
-| Effort step 4: network model, event log, live clocks for every profile and offline replay, live time cut, π0.5-alone retries with the 20-attempt cap, `run_branch`, labels, time-limit calibration, handoff diagnostics, upload-size tooling (`network.py`, `clock.py`, `episode.py`, `labels.py`, `calibration.py`, `eventlog.py`) | done on Mac; VM re-run pending | uncommitted |
-| Effort step 5: request batching in both servers, batched-vs-unbatched equivalence (per-call seeds already supported) | **next** (not started) | |
+| Decisions 13-16 recorded (network failures, upload size, no overhead without budget, `reset(time_limit)`), Google Cloud readiness noted | done | `272f64b` |
+| Effort step 4: network model, event log, live clocks for every profile and offline replay, live time cut, π0.5-alone retries with the 20-attempt cap, `run_branch`, labels, time-limit calibration, handoff diagnostics, upload-size tooling (`network.py`, `clock.py`, `episode.py`, `labels.py`, `calibration.py`, `eventlog.py`) | done on Mac; VM re-run pending | `272f64b` |
+| Decisions 17-18 recorded; STATUS.md added | done | `96ef752`, `11e999a` |
+| Step-4 follow-ups, amendments 19-23: live limit only in routed runs with a decider profile; the explicit `time_limit` flag in start events, results, snapshots and branch events; cut runs scored only under their own profile (scoped so DAgger points get labels for every profile); per-profile exclusion of points already past the limit; the remaining-time input recomputed per profile (`api.py`, `clock.py`, `eventlog.py`, `episode.py`, `labels.py`, `calibration.py`); each rule shown to be caught by its tests when broken | done on Mac; VM re-run pending | the commit after `11e999a` |
+| Effort step 5: batch-invariant request batching in both servers (amendment 24), the alone / companions / position checks (per-call seeds already supported) | **next** | |
 | Render only the observations that are used (SPEC §12) | approved, may start now that restore exists; must pass the same exact-equality tests | |
 | Decider inputs (`observe()`: features, proposal, free signals, spread, drift), dataset storage format (Parquet), queue worker wiring (`run_branch` exists) | not started | |
 | Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
-Test suites after step 4 (Mac, uncommitted): main venv 84 passed, 6 skipped (the simulator modules and the
-NumPy cross-check need NumPy); simulator env 46 passed, 6 skipped (the same 6 as before: 3 need model weights,
-3 need both servers on the VM); X-VLA env (random weights, CPU) 2 passed. At `25794f7`:
-main 48 passed, simulator 36 passed and 6 skipped, X-VLA 2 passed.
+Test suites after the step-4 follow-ups (Mac): main venv 106 passed, 6 skipped (the simulator modules and the
+NumPy cross-check need NumPy); simulator env 48 passed, 6 skipped (the same 6 as before: 3 need model weights,
+3 need both servers on the VM); X-VLA env (random weights, CPU) 2 passed. Mutation check of rules 19-23: 15 of 15
+caught (HARNESS.md, "Live-limit rules"). At `272f64b`: main 84 passed and 6 skipped, simulator 46 passed and 6
+skipped, X-VLA 2 passed.
 
 **VM re-run list:** `docs/HARNESS.md`, section "Platform rule (SPEC §11 step 3 as amended)".
 
@@ -138,6 +141,23 @@ Spec amendments, all approved by the user and logged in SPEC §17:
     so planner-shared branches stay identical (already implemented in `Episode.run_branch`).
 18. Upload size definition (2026-11-21, after step 4; §5): median over requests of the combined JPEG size of the
     request's two images (already implemented in `network.median_upload_image_bytes`).
+19. Live limit only where a live decider runs (2026-11-21, step-4 follow-up; §15): `time_limit=True` only in routed
+    mode with a profile other than `none`; `api.check_reset`, called by `Episode.start` before anything else.
+20. The flag is explicit (§5, §15): `time_limit` true/false in the start event, `EpisodeState` (snapshots) and
+    `EpisodeResult`; `branch` events record false.
+21. Cut runs (§5, §7), scoped by the user: a cut run's outcome is scored only under its own profile (`clock.score`,
+    `first_crossing`, calibration, a cut parent's full log as a label seed); a cut parent's log up to a decision
+    point plus an uncut branch is re-scored under every profile, so DAgger points get labels for every decider type
+    (§9). Implemented with `clock.run_header`: the governing header is the start event or the last `branch` event.
+22. Exclusion (§7): a point whose clock under P from the parent's log already exceeds the limit (strictly) is left
+    out of P's training and validation data; `PointLabels.excluded`, `labels.exclusion_report`.
+23. Remaining time (§6, §7), added by the user: at every training point, recomputed from the event log under the
+    decider's own profile (`labels.remaining_time_s`, `PointLabels.remaining_s`), never copied from the collector.
+24. Batch invariance (2026-11-21, before step 5; §3, §11, §12): a request's output is bit-identical whatever its
+    batch-mates, their number or its position; one fixed padded batch size per endpoint, deterministic GPU settings,
+    each request's noise from its own generator seeded by its per-call seed. CPU tests now; on the L4 the same three
+    checks bit for bit for both servers plus the throughput cost of fixed padding; if padding is too slow, stop and
+    bring the numbers to the user before relaxing anything.
 
 Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the tests that show them):
 - The reference stack: LeRobot 0.6.1, hf-libero 0.1.4, robosuite 1.4.0, MuJoCo 3.8.1, file hashes pinned in
@@ -162,7 +182,8 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 
 ## Open questions for the user
 
-None open. Decisions 13-16 above settled the questions raised before and during step 4.
+None open. Decisions 13-16 above settled the questions raised before and during step 4; decisions 19-24 the step-4
+follow-ups and the batch-invariance requirement for step 5.
 
 **Google Cloud readiness (user's action, reported 2026-11-21).** The user is upgrading from the free trial if
 needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, preemptible L4
@@ -171,24 +192,19 @@ needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, pr
 confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates only the VM bring-up, which in
 any case waits for the §18 milestone and the user's go-ahead.
 
-## Next step 1: four approved follow-ups to step 4 (do these first)
-
-Approved by the user on 2026-11-21, not yet implemented (the session ran out of usage). Implement each with tests,
-log them in SPEC §17 (as items 19-22), then update this file and `docs/STATUS.md`, commit and push.
-1. `time_limit=True` is allowed only in routed mode with a profile other than `none`; `Episode.start` (and the
-   client API's `reset`) reject every other combination with a clear error.
-2. Record the flag in every episode's metadata and event log (an explicit `time_limit` true/false in the `start`
-   event, which today has only `time_limit_s`, and in the episode result/record).
-3. A cut run can be scored only under its own profile: `clock.score`, `labels` and `calibration` (and any re-scoring
-   tool) must refuse any other profile for a log whose `start` event has the flag set.
-4. Label rule (SPEC §7): when a decision point's clock under profile P, computed from the parent's event log (the
-   snapshot's prefix), already exceeds the task's time limit, exclude that point from P's training and validation
-   data. Count the exclusions per profile and report them (e.g. from `labels.point_labels` or a summary helper).
-
-## Next step 2: effort step 5 (max effort)
+## Next step: effort step 5 (max effort)
 
 Scope (SPEC §16 item 5): request batching and per-call seeding in both model servers (§3, §12), including the
-batched-versus-unbatched equivalence check. Raise the effort checkpoint before starting.
+batched-versus-unbatched equivalence check, under the batch-invariance requirement (amendment 24). Raise the effort
+checkpoint before starting.
+
+Requirement (amendment 24, approved 2026-11-21): inference is batch-invariant. A request's output must be
+bit-identical regardless of which other requests share its batch, how many there are, or its position in the batch.
+Approach: every batch runs at one fixed padded batch size per endpoint; deterministic GPU settings; each request's
+noise from its own generator seeded by its per-call seed, never a batch-level random state. Tests on the CPU now
+(alone, with different companions, at different positions); on the VM (add to the re-run list, X-VLA and π0.5) the
+same three checks bit for bit on the L4 plus a measurement of the throughput cost of fixed padding. If fixed padding
+turns out too slow, stop and bring the numbers to the user before relaxing anything.
 
 Design notes (none of this is implemented yet):
 - **What exists.** Both servers take per-call seeds and draw each sample's initial noise on the CPU from its own
@@ -208,11 +224,10 @@ Design notes (none of this is implemented yet):
   the tokenised state but is padded on the right to `tokenizer_max_length` 200 (`processor_pi05.py:142-144`), so
   rows have equal length; confirm the attention masks keep rows independent and that `predict_action_chunk` takes
   a [B, 50, 32] noise tensor (`modeling_pi05.py:620-638`). Post-processing is per action row, as now.
-- **Equivalence (§11 step 3).** Batched and unbatched calls must give the same executed actions within numerical
-  tolerance: on the Mac with random weights on the CPU (X-VLA env; the π0.5 side needs weights, so on the VM),
-  compare each row of a batch of mixed requests with the same request alone, and show that a row's result does not
-  depend on its batch-mates or position. Decide the tolerance from the measured differences (CPU may well be exact;
-  cuBLAS kernel choice can change with batch size on the GPU) and record it.
+- **Equivalence (§11 step 3, amendment 24).** Bit-identical, no tolerance: on the Mac with random weights on the
+  CPU, each row of a batch of mixed requests equals the same request alone (padded to the same fixed size), with
+  other companions, and at every position. Fixed padding is what makes this hold on the GPU, where cuBLAS kernel
+  choice can change with batch size.
 - **Engine side.** No change: each simulator worker sends single requests; the servers batch across workers.
   `run_branch` and the episode engine are ready for the queue workers.
 - **Tests to write.** The batcher (ordering, wait window, max batch, error isolation: one bad request must not fail

@@ -1,5 +1,7 @@
-"""Network model and clock (SPEC §5, amendments 13-14), on synthetic requests and logs. Pure Python; the live
-engine's clock is checked against offline replay with the simulator in tests/reference/test_clock_live.py."""
+"""Network model and clock (SPEC §5, amendments 13-14), on synthetic requests and logs, and the live-limit rules
+(amendments 19-21): where a live time limit is allowed, its flag in every log, and cut runs scored only under their
+own profile. Pure Python; the live engine's clock is checked against offline replay with the simulator in
+tests/reference/test_clock_live.py."""
 
 import dataclasses
 import json
@@ -8,6 +10,7 @@ import statistics
 
 import pytest
 
+from vlar_harness import api
 from vlar_harness import clock as clk
 from vlar_harness import eventlog
 from vlar_harness import network as net
@@ -195,10 +198,12 @@ def test_segments_are_charged_per_step_and_unknown_events_refused():
 
 # ---------------------------------------------------------------- synthetic logs: score and crossing
 
-def synthetic_log(*, success_at=None, requests=((0,),), profile_points=True):
+def synthetic_log(*, success_at=None, requests=((0,),), profile_points=True, profile="none", time_limit_s=None):
     """start; chunk point; X-VLA 10 steps; mid point; escalate (a request with the given attempts);
-    π0.5 10 steps; chunk point; X-VLA steps until `success_at` or 30 steps; end."""
-    ev = [{"t": "start", "task_id": 0, "mode": "routed", "time_limit_s": None}]
+    π0.5 10 steps; chunk point; X-VLA steps until `success_at` or 30 steps; end. With `time_limit_s`, the run had
+    a live limit under `profile` (a cut run, amendment 20)."""
+    ev = [{"t": "start", "task_id": 0, "mode": "routed", "profile": profile, "time_limit": time_limit_s is not None,
+           "time_limit_s": time_limit_s}]
     ev += [{"t": "xvla_act", "step": 0, "call": "act", "context": "start", "first_target_dist_m": 0.01},
            {"t": "decision_point", "step": 0, "index": 0, "kind": "chunk", "budget_remaining": 260, "can_escalate": True},
            {"t": "decision", "step": 0, "choice": "local"},
@@ -283,3 +288,91 @@ def test_logs_round_trip_through_json_exactly(tmp_path):
     with pytest.raises(eventlog.LogError):
         eventlog.check(log, complete=False)                        # a finished log is not a prefix
     assert json.loads(eventlog.dumps(log)) == log
+
+
+# ---------------------------------------------------------------- the live-limit flag and cut runs (amendments 19-21)
+
+@pytest.mark.parametrize("mode", api.MODES)
+@pytest.mark.parametrize("profile", PROFILES)
+def test_reset_allows_a_live_limit_only_in_routed_runs_with_a_decider_profile(mode, profile):
+    api.check_reset(mode, profile, False)                          # uncut runs: every mode and profile
+    if mode == "routed" and profile != "none":
+        api.check_reset(mode, profile, True)
+    else:
+        with pytest.raises(ValueError, match="time_limit=True needs routed mode and a decider profile"):
+            api.check_reset(mode, profile, True)
+
+
+def test_reset_checks_its_arguments():
+    assert api.PROFILES == PROFILES and api.MODES == ("routed", "xvla_only", "pi05_only")
+    for bad in (1, 0, 1.0, "yes", None):
+        with pytest.raises(TypeError, match="True or False"):
+            api.check_reset("routed", "router", bad)
+    with pytest.raises(ValueError, match="mode must be one of"):
+        api.check_reset("routed_fast", "router", False)
+    with pytest.raises(ValueError, match="profile must be one of"):
+        api.check_reset("routed", "oracle", False)
+
+
+def test_every_log_records_the_live_limit_flag():
+    log = synthetic_log(success_at=37)
+    assert eventlog.check(log)["time_limit"] is False
+    no_flag = [{k: v for k, v in log[0].items() if k != "time_limit"}] + log[1:]
+    with pytest.raises(eventlog.LogError, match="time_limit true or false"):
+        eventlog.check(no_flag)
+    with pytest.raises(ValueError, match="no time_limit flag"):
+        clk.score(no_flag, "none", CH)
+    for flag, value in ((True, None), (False, 30.0)):
+        with pytest.raises(eventlog.LogError, match="disagrees"):
+            eventlog.check([dict(log[0], time_limit=flag, time_limit_s=value)] + log[1:])
+    for mode, profile in (("pi05_only", "router"), ("xvla_only", "cascader_full"), ("routed", "none")):
+        bad = [dict(log[0], mode=mode, profile=profile, time_limit=True, time_limit_s=30.0)] + log[1:]
+        with pytest.raises(eventlog.LogError, match="not allowed"):
+            eventlog.check(bad)
+    assert eventlog.check(synthetic_log(success_at=37, profile="router", time_limit_s=30.0))["time_limit"] is True
+
+
+def test_a_cut_run_is_scored_only_under_its_own_profile():
+    cut = synthetic_log(success_at=37, requests=[(False, True)], profile="router", time_limit_s=60.0)
+    eventlog.check(cut)
+    s = clk.score(cut, "router", CH)
+    assert s.success and s.time_s == clk.replay(cut, "router", CH)
+    assert clk.first_crossing(cut, "router", CH, 1e9) is None
+    for p in PROFILES:
+        if p == "router":
+            continue
+        with pytest.raises(clk.CutRunError, match="cut live under profile 'router'"):
+            clk.score(cut, p, CH)
+        with pytest.raises(clk.CutRunError, match="cut live under profile 'router'"):
+            clk.first_crossing(cut, p, CH, 1e9)
+    # The raw clock is not an outcome: replay (the engine's clock check, a point's time) runs under every profile.
+    assert set(clk.replay_all(cut, CH)) == set(PROFILES)
+    uncut = synthetic_log(success_at=37, requests=[(False, True)])
+    assert all(clk.score(uncut, p, CH).success for p in PROFILES)
+
+
+def test_a_branch_from_a_cut_run_is_scored_under_every_profile():
+    """A cut run's log up to a decision point it reached, followed by an uncut branch: not a cut run (amendment 21)."""
+    parent = synthetic_log(success_at=None, profile="router", time_limit_s=60.0)
+    k = max(i for i, e in enumerate(parent) if e["t"] == "decision_point")
+    prefix = parent[:k + 1]
+    own = [{"t": "restore", "step": 20, "index": 2, "snapshot_id": "x/dp02"},
+           {"t": "branch", "branch": "b1_continue", "seed_index": 1, "pi05_calls": 0, "index": 2, "rollout_seed": 7,
+            "parent_rollout_seed": 1, "time_limit": False},
+           {"t": "decision", "step": 20, "choice": "local"},
+           {"t": "segment", "driver": "xvla", "start": 20, "steps": 7},
+           {"t": "end", "step": 27, "reason": "success"}]
+    eventlog.check(prefix + own)
+    times = {}
+    for p in PROFILES:
+        s = clk.score(prefix + own, p, CH)
+        assert s.success and s.success_step == 27
+        times[p] = s.time_s
+    assert times == clk.replay_all(prefix + own, CH) and times["router"] < times["cascader_full"]
+    with pytest.raises(clk.CutRunError):                            # the bare prefix is still the cut run's
+        clk.score(prefix, "cascader_full", CH)
+    claims_limit = prefix + [own[0], dict(own[1], time_limit=True)] + own[2:]
+    with pytest.raises(ValueError, match="branches run uncut"):
+        clk.score(claims_limit, "router", CH)
+    with pytest.raises(eventlog.LogError, match="branches run uncut"):
+        eventlog.check(claims_limit)

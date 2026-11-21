@@ -195,7 +195,8 @@ its prefix.
 `decision_point` event), the planner's entry (calls, shares, parent seeds), the branch jobs' own logs and, for a
 base rollout, the parent's full log (seed 1 of `b1_continue`). Everything is checked to fit (same point, branch,
 seed, call count; the parent's log starts with the prefix), then each (branch, profile) label is the share of
-seeds with `score(prefix + own, profile).within(limit)`.
+seeds with `score(prefix + own, profile).within(limit)`, for every profile whose clock at the point is within the
+limit (the others are excluded; see "Live-limit rules" below).
 
 **Time-limit calibration** (`calibration.calibrate`, SPEC §5, rule approved 2026-11-21). Per task, p90 of X-VLA's
 successful base-rollout completion times under `none` (NumPy's linear percentile, re-implemented in pure Python
@@ -233,6 +234,60 @@ logs (with a hash-based stand-in success check) match direct scoring and never r
 measured position. Sensitivity (a scratch script, recorded here): keying network draws by step without the
 attempt number fails the retry and abandonment tests; replay charging a segment as one multiplication, and a
 restore that does not rebuild the clocks, both raise `ClockMismatch`.
+
+## Live-limit rules (amendments 19-23, follow-ups to step 4)
+
+**Where a live limit is allowed (19).** `api.check_reset(mode, profile, time_limit)` accepts `time_limit=True` only
+in routed mode with a profile other than `none`, and only a real bool; `Episode.start` calls it before it touches
+the simulator, and `eventlog.check` refuses a log whose start event breaks it.
+
+**The flag (20).** The start event records `time_limit` true or false next to `time_limit_s` (they must agree), as
+do `EpisodeState` (so snapshots carry it) and `EpisodeResult`. `run_branch` clears it and the `branch` event records
+`time_limit: false`. `eventlog.check` and the clock refuse logs without the flag; there are no older logs to accept.
+
+**Cut runs (21).** `clock.run_header` finds the event that set up the run a log's outcome belongs to: the start
+event, or the last `branch` event for a snapshot's log followed by a branch's own log. If that header is a start
+event with `time_limit: true`, `clock.score` and `clock.first_crossing` refuse every profile but the run's own
+(`CutRunError`); `replay` (the raw clock: the engine's live-equals-offline check, a point's time) is not an outcome
+and runs under any profile. So a DAgger parent's own log is scored only under its decider's profile, while its log
+up to a decision point plus an uncut branch is scored under every profile. Calibration refuses runs with the flag
+set; labels refuse a cut parent's full log used as a seed under any other profile (`LabelError`).
+
+**Exclusions (22) and remaining time (23).** `labels.point_labels` returns a `PointLabels`: the labels for every
+profile whose clock at the point, replayed from the snapshot's log, is within the limit; the profiles `excluded`
+because that clock already exceeds it (strict, as the live cut); and per profile the clock at the point (`time_s`)
+and the remaining time (`remaining_s`, the limit minus `time_s`). `labels.remaining_time_s` gives the same input for
+one profile; it is the decider's training input, never the value the collecting decider saw (`observe()` in a
+scripted run reports infinity; a DAgger rollout's decider saw its own profile's time). `labels.exclusion_report`
+counts points, exclusions and kept points per profile.
+
+**Verified on the Mac.** Unit tests (`tests/test_network_clock.py`, `tests/test_labels_calibration.py`): every
+mode and profile combination for `check_reset`; logs without the flag, with a flag that disagrees with the value,
+or with a live limit where none is allowed are refused; a cut run scores only under its own profile, a branch from
+it under every profile, and a branch event claiming a limit is refused; exclusions at a limit between two profiles'
+clocks, exactly at a clock (kept) and one ulp below (excluded), with the report's counts; labels from a parent cut
+under `router` equal those from an uncut parent with the same events, and its full log as a seed is refused under
+other profiles; the remaining time for every profile equals the limit minus that profile's replayed clock, and the
+full cascader's is below what the router saw. Simulator tests (`tests/reference/test_clock_live.py`): `start` refuses
+all 11 disallowed combinations before touching the simulator; real cut runs carry the flag in the log and result and
+are refused under other profiles; a DAgger-style parent cut live under `router` (limit halfway between the router's
+and the full cascader's clocks at point 12) gives at every point a `cascader_full` remaining time equal, bit for bit,
+to the limit minus the engine's own live `cascader_full` clock and below what the router saw; branches from three of
+its snapshots run uncut and give labels under every kept profile equal to direct scoring, with `cascader_full` kept
+at point 4 and excluded at points 10 and 16.
+
+Sensitivity (a scratch mutation script: each rule broken in the source, its tests run, the file restored byte for
+byte). All 15 mutations are caught:
+
+| Rule broken | Caught by |
+| --- | --- |
+| 19: `check_reset` accepts any combination | `test_reset_allows_a_live_limit_only_in_routed_runs_with_a_decider_profile` (11 cases), `test_every_log_records_the_live_limit_flag`, `test_start_refuses_a_live_limit_outside_routed_decider_runs` |
+| 19: `Episode.start` skips the check | `test_start_refuses_a_live_limit_outside_routed_decider_runs` |
+| 20: start event without the flag; result flag always false; branch keeps the parent's flag; `eventlog.check` accepts logs without it | `test_live_time_limit_cuts_where_offline_scoring_says`, `test_dagger_parent_under_router_rescored_for_cascader_full`, `test_every_log_records_the_live_limit_flag` |
+| 21: `score` or `first_crossing` without the guard; calibration accepting cut runs; labels accepting a cut parent's full log as a seed | `test_a_cut_run_is_scored_only_under_its_own_profile`, `test_live_time_limit_cuts_where_offline_scoring_says`, `test_calibration_refuses_the_wrong_runs`, `test_labels_from_a_parent_cut_under_another_profile` |
+| 21 applied literally (the header is always the start event, so a cut parent's prefix is refused under other profiles) | `test_a_branch_from_a_cut_run_is_scored_under_every_profile`, `test_labels_from_a_parent_cut_under_another_profile`, the DAgger-style test |
+| 22: no exclusion; `>=` instead of `>` | `test_points_past_the_limit_are_excluded_per_profile`, `test_labels_follow_each_profiles_clock`, the DAgger-style test |
+| 23: remaining time under the collector's profile (in `remaining_time_s`, in `PointLabels.remaining_s`) | `test_remaining_time_is_recomputed_under_each_deciders_profile`, the DAgger-style test |
 
 ## Time limit (SPEC §5, rule approved 2026-11-21)
 
@@ -314,7 +369,7 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; handoff diagnostics; sensitivity checks |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |

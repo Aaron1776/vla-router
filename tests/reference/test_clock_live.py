@@ -7,7 +7,10 @@ of episode_driver.py:
   end reason `network` (amendment 13);
 - a live time limit cuts exactly where offline scoring of the uncut run says it would;
 - branch runs reproduce for the same seed index and differ for another; labels computed from real branch logs;
-- every X-VLA call records its first target's distance from the arm and its context (amendment 10).
+- every X-VLA call records its first target's distance from the arm and its context (amendment 10);
+- the live-limit rules (amendments 19-23): `start` refuses a live limit outside routed decider runs, the flag is in
+  every log, result and snapshot, a cut run is scored only under its own profile, and a DAgger-style parent cut
+  under `router` is re-scored for `cascader_full` (labels, exclusions and the remaining-time input).
 """
 
 import dataclasses
@@ -260,6 +263,39 @@ def test_live_time_limit_cuts_where_offline_scoring_says(sim, cfg_with_limit, wh
         assert cut.sim.steps == step
     assert not clk.score(uncut.events, profile, CH).within(limit)
     assert cut.times() == clk.replay_all(cut.events, CH)
+    # The flag is explicit in the log and the result (amendment 20); the cut run is scored only under its own
+    # profile (amendment 21), the uncut one under any.
+    assert (cut.events[0]["time_limit"], uncut.events[0]["time_limit"]) == (True, False)
+    assert (cut.result().time_limit, uncut.result().time_limit) == (True, False)
+    assert clk.score(cut.events, profile, CH).end_reason == "time_limit"
+    for p in PROFILES:
+        clk.score(uncut.events, p, CH)
+        if p != profile:
+            with pytest.raises(clk.CutRunError):
+                clk.score(cut.events, p, CH)
+
+
+class Untouchable:
+    def __getattr__(self, name):
+        raise AssertionError(f"touched .{name} before the arguments were checked")
+
+
+def test_start_refuses_a_live_limit_outside_routed_decider_runs():
+    """Amendment 19, on the engine: every combination but routed mode with a decider profile is refused before the
+    simulator is touched."""
+    from vlar_harness.episode import MODES, Episode
+    ep = Episode(Untouchable(), Untouchable(), Untouchable(), None, CFG)
+    refused = 0
+    for mode in MODES:
+        for profile in PROFILES:
+            if mode == "routed" and profile != "none":
+                continue
+            with pytest.raises(ValueError, match="time_limit=True needs routed mode and a decider profile"):
+                ep.start(INIT, ROLLOUT, mode, profile=profile, time_limit=True)
+            refused += 1
+    with pytest.raises(TypeError, match="True or False"):
+        ep.start(INIT, ROLLOUT, "routed", profile="router", time_limit=1)
+    assert refused == 11 and ep.state is None and ep.events == []
 
 
 # ---------------------------------------------------------------- branches and labels
@@ -352,23 +388,120 @@ def test_labels_from_real_branch_runs(sim):
     assert any(outcomes) and not all(outcomes), outcomes
 
     free = L.point_labels(prefix, entry, own, seeds=seeds, charges=CH, limit_s=1e9, parent_log=parent)
+    assert free.excluded == ()
     for b, canon in entry["shares"].items():
         wins = [base.state.end_reason == "success" if s in entry["parent_seeds"].get(canon, [])
                 else results[(canon, s)].success for s in range(1, seeds + 1)]
-        assert all(free[b][p].value == sum(wins) / seeds for p in PROFILES)
+        assert all(free.labels[b][p].value == sum(wins) / seeds for p in PROFILES)
 
     times = sorted(clk.score(x, "router", CH).time_s for x in [parent] + [prefix + log for log in own.values()]
                    if x[-1]["reason"] == "success")
     limit = times[len(times) // 2]
-    lab = L.point_labels(prefix, entry, own, seeds=seeds, charges=CH, limit_s=limit, parent_log=parent)
+    pl = L.point_labels(prefix, entry, own, seeds=seeds, charges=CH, limit_s=limit, parent_log=parent)
+    kept = [p for p in PROFILES if clk.replay(prefix, p, CH) <= limit]
+    assert pl.excluded == tuple(p for p in PROFILES if p not in kept) and "router" in kept    # amendment 22
     for b, canon in entry["shares"].items():
-        for p in PROFILES:
+        assert set(pl.labels[b]) == set(kept)
+        for p in kept:
             logs = [parent if s in entry["parent_seeds"].get(canon, []) else prefix + own[(canon, s)]
                     for s in range(1, seeds + 1)]
-            assert lab[b][p].value == sum(clk.score(x, p, CH).within(limit) for x in logs) / seeds
-            assert lab[b][p].value <= free[b][p].value
-        values = [lab[b][p].value for p in ("none", "router", "cascader_chunkspread", "cascader_full")]
+            assert pl.labels[b][p].value == sum(clk.score(x, p, CH).within(limit) for x in logs) / seeds
+            assert pl.labels[b][p].value <= free.labels[b][p].value
+        values = [pl.labels[b][p].value for p in ("none", "router", "cascader_chunkspread", "cascader_full")
+                  if p in kept]
         assert values == sorted(values, reverse=True)
+
+
+@requires_lerobot
+def test_dagger_parent_under_router_rescored_for_cascader_full(sim, other_sim, cfg_with_limit):
+    """Amendments 20-23 on the engine. A DAgger-style parent: routed, a live time limit under `router`, decisions from
+    a fixed schedule standing in for the learned router. At each of its decision points the remaining time of a
+    `cascader_full` decider, recomputed from the event log, equals the engine's own live `cascader_full` clock and
+    not what the router saw; labels from its snapshots are computed under every profile, with the points already
+    past the limit under `cascader_full` excluded; its own outcome is refused under any profile but `router`."""
+    from vlar_ops import plan
+
+    steps, schedule = 300, (lambda d: d in SCHEDULE)
+    # The limit: halfway between the router's and the full cascader's clocks at decision point 12 of the same run
+    # uncut, so the full cascader is past it well before the router's live clock cuts the run.
+    uncut = make(sim, link=lossy(CFG, 0.3))
+    uncut.step_limit = steps
+    run_routed(uncut, schedule, profile="router")
+    k = next(i for i, e in enumerate(uncut.events) if e["t"] == "decision_point" and e["index"] == 12)
+    t12 = clk.replay_all(uncut.events[:k + 1], CH)
+    limit = (t12["router"] + t12["cascader_full"]) / 2
+    cfg = cfg_with_limit(limit)
+
+    seen, clocks, snaps = {}, {}, {}
+
+    def collect(e, dp):
+        seen[dp.index] = e.time_remaining_s()               # the live router decider's own input
+        clocks[dp.index] = e.times()                         # the engine's live clocks under every profile
+        if dp.index in (4, 10, 16):
+            snaps[dp.index] = snap.to_bytes(e.snapshot())
+
+    parent = make(sim, cfg=cfg, link=lossy(cfg, 0.3))
+    parent.step_limit = steps
+    run_routed(parent, schedule, profile="router", time_limit=True, on_point=collect)
+    log = parent.events
+    eventlog.check(log)
+    assert (log[0]["profile"], log[0]["time_limit"], log[0]["time_limit_s"]) == ("router", True, limit)
+    assert parent.result().time_limit and parent.result().end_reason == "time_limit" == log[-1]["reason"]
+    assert max(seen) > 16
+
+    # Its own outcome: only under `router` (amendment 21).
+    assert clk.score(log, "router", CH).end_reason == "time_limit"
+    for p in PROFILES:
+        if p != "router":
+            with pytest.raises(clk.CutRunError):
+                clk.score(log, p, CH)
+            with pytest.raises(clk.CutRunError):
+                clk.first_crossing(log, p, CH, limit)
+
+    # The remaining-time input at every point the router decided at (amendment 23).
+    at = {e["index"]: i for i, e in enumerate(log) if e["t"] == "decision_point"}
+    past = 0
+    for d, saw in seen.items():
+        prefix = log[:at[d] + 1]
+        full = L.remaining_time_s(prefix, "cascader_full", CH, limit)
+        assert full == limit - clocks[d]["cascader_full"]                 # bit for bit
+        assert L.remaining_time_s(prefix, "router", CH, limit) == saw == limit - clocks[d]["router"]
+        assert full < saw and saw >= 0.0                                   # never the collector's value
+        past += full < 0.0
+    assert past >= 3 and len(seen) - past >= 3
+
+    # Labels from three snapshots: kept for cascader_full at point 4, excluded at 10 and 16 (amendment 22).
+    pls = {}
+    with RandomSuccess(other_sim):
+        for d, blob in snaps.items():
+            s = snap.from_bytes(blob)
+            assert s.episode["time_limit"] is True and s.event_log == log[:at[d] + 1]
+            ref = plan.DecisionPointRef(f"t/dp{d:02d}", "dagger/t0/i4", "dagger", TASK, INIT, d,
+                                        s.event_log[-1]["budget_remaining"])
+            _, entries = plan.branch_plan("test", [ref], branches=CFG["branches"], step_limit=steps, interval=10,
+                                          seeds=1, enabled=["b1_continue", "b2_one_call"], tier_one_seeds=1,
+                                          order_seed=1)
+            entry = entries[ref.snapshot_id]
+            assert entry["parent_seeds"] == {}                             # a DAgger parent gives no seeds
+            own = {}
+            for canon in set(entry["shares"].values()):
+                ep = make(other_sim, cfg=cfg)
+                ep.step_limit = steps
+                run = ep.run_branch(s, branch=canon, pi05_calls=entry["calls"][canon], seed_index=1,
+                                    snapshot_id=ref.snapshot_id)
+                assert run.events[1]["time_limit"] is False and run.result.time_limit is False
+                own[(canon, 1)] = eventlog.loads(eventlog.dumps(run.events))
+            pl = L.point_labels(s.event_log, entry, own, seeds=1, charges=CH, limit_s=limit)
+            assert pl.time_s == clocks[d] and pl.remaining_s["cascader_full"] == limit - clocks[d]["cascader_full"]
+            assert ("cascader_full" in pl.excluded) == (d != 4) and "router" not in pl.excluded
+            for b, canon in entry["shares"].items():
+                assert ("cascader_full" in pl.labels[b]) == (d == 4)
+                for p, lab in pl.labels[b].items():
+                    assert lab.value == float(clk.score(s.event_log + own[(canon, 1)], p, CH).within(limit))
+            pls[d] = pl
+    report = L.exclusion_report(pls.values())
+    assert report["cascader_full"] == {"points": 3, "excluded": 2, "kept": 1}
+    assert report["router"] == {"points": 3, "excluded": 0, "kept": 3}
 
 
 # ---------------------------------------------------------------- handoff diagnostics (amendment 10)

@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
 
+from .api import check_reset
 from .clock import STEP_RUN, ZERO_COST, CHARGED
 
 KNOWN_TYPES = frozenset(ZERO_COST) | set(CHARGED) | {STEP_RUN}
@@ -60,13 +61,33 @@ def read_logs(paths: Iterable[Path | str]) -> list[list[dict]]:
     return [rec["events"] for p in paths for rec in read_jsonl(p)]
 
 
+def check_start(start: Mapping) -> None:
+    """The start event records the live time limit explicitly (amendment 20), consistently with its value, and
+    only where one is allowed (routed mode with a decider profile, amendment 19)."""
+    flag = start.get("time_limit")
+    if not isinstance(flag, bool):
+        raise LogError("the start event records time_limit true or false (amendment 20)")
+    if flag != (start.get("time_limit_s") is not None):
+        raise LogError(f"the start event's time_limit={flag} disagrees with time_limit_s={start.get('time_limit_s')!r}")
+    if flag:
+        try:
+            check_reset(start.get("mode"), start.get("profile"), True)
+        except (TypeError, ValueError) as e:
+            raise LogError(f"a run with a live time limit that is not allowed: {e}") from None
+
+
 def check(events: Sequence[Mapping], *, complete: bool = True) -> dict:
     """Structural checks; returns the start event. A complete log ends with exactly one `end` event."""
     if not events or events[0].get("t") != "start":
         raise LogError("a log starts with its start event")
+    check_start(events[0])
     unknown = sorted({e.get("t") for e in events} - KNOWN_TYPES, key=str)
     if unknown:
         raise LogError(f"unknown event types {unknown}")
+    if any(e["t"] == "start" for e in events[1:]):
+        raise LogError("a log has one start event")
+    if any(e["t"] == "branch" and e.get("time_limit") is not False for e in events):
+        raise LogError("branches run uncut: every branch event records time_limit false (amendment 20)")
     ends = [i for i, e in enumerate(events) if e["t"] == "end"]
     if complete and ends != [len(events) - 1]:
         raise LogError(f"a complete log has exactly one end event, last (found at {ends} of {len(events)})")

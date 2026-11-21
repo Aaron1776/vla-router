@@ -23,6 +23,13 @@ run of steps); replay expands it and charges the steps one at a time, in log ord
 therefore perform the same floating-point additions in the same order and agree bit for bit; the engine
 checks this at the end of every episode, for every profile.
 
+Cut runs (§5, amendments 20-21). A run started with a live time limit records `time_limit: true` in its start
+event. Its outcome can be scored only under its own profile: under another profile it might have been cut
+elsewhere or not at all. `score` and `first_crossing` refuse anything else. A branch from such a run's snapshot
+runs uncut (its `branch` event records `time_limit: false`), so a snapshot's log followed by a branch's log is
+not a cut run: the snapshot's log ends at a decision point the run reached before any cut, and `replay` gives
+its clock under any profile (labels.py excludes the points already past the limit, amendment 22).
+
 Pure Python, so logs can be re-scored anywhere.
 """
 
@@ -138,6 +145,42 @@ def replay_all(events: Sequence[Mapping], charges: Charges, profiles: Sequence[s
     return {p: replay(events, p, charges) for p in profiles}
 
 
+class CutRunError(ValueError):
+    """A run cut by a live time limit scored under a profile other than its own (§5, amendment 21)."""
+
+
+def run_header(events: Sequence[Mapping]) -> Mapping:
+    """The event that set up the run this log's outcome belongs to: the start event, or, for a branch
+    continuation (a snapshot's log followed by the branch's own log), the last `branch` event. Its `time_limit`
+    flag records whether that run had a live time limit (amendment 20)."""
+    header = None
+    for e in events:
+        if e["t"] in ("start", "branch"):
+            header = e
+    if header is None:
+        raise ValueError("a log starts with its start event")
+    flag = header.get("time_limit")
+    if not isinstance(flag, bool):
+        raise ValueError(f"the {header['t']} event records no time_limit flag (true or false, amendment 20)")
+    if header["t"] == "branch" and flag:
+        raise ValueError("branches run uncut: a branch event records time_limit false")
+    return header
+
+
+def cut_run_profile(events: Sequence[Mapping]) -> Optional[str]:
+    """The profile whose live time limit governed the run this log's outcome belongs to; None if it ran uncut."""
+    h = run_header(events)
+    return h["profile"] if h["t"] == "start" and h["time_limit"] else None
+
+
+def check_scoring_profile(events: Sequence[Mapping], profile: str) -> None:
+    """A cut run's outcome is scored only under its own profile (amendment 21)."""
+    own = cut_run_profile(events)
+    if own is not None and profile != own:
+        raise CutRunError(f"this run was cut live under profile {own!r}; its outcome can be scored only under "
+                          f"{own!r}, not {profile!r} (SPEC §5, amendment 21)")
+
+
 @dataclass(frozen=True)
 class Score:
     """An event log scored under one profile."""
@@ -157,6 +200,8 @@ class Score:
 
 
 def score(events: Sequence[Mapping], profile: str, charges: Charges) -> Score:
+    """The log's outcome and clock under `profile`. Refuses a cut run under any profile but its own."""
+    check_scoring_profile(events, profile)
     c = Clock(charges, profile)
     end: Optional[Mapping] = None
     for i, e in enumerate(events):
@@ -179,7 +224,8 @@ class Crossing:
 
 def first_crossing(events: Sequence[Mapping], profile: str, charges: Charges, limit_s: float) -> Optional[Crossing]:
     """Where a live time limit of `limit_s` would have cut this (uncut) run: the first check, after any step or
-    event, at which the clock exceeds the limit."""
+    event, at which the clock exceeds the limit. Refuses a cut run under any profile but its own."""
+    check_scoring_profile(events, profile)
     c = Clock(charges, profile)
     for i, e in enumerate(events):
         if e["t"] == STEP_RUN:
