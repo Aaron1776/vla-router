@@ -1,6 +1,7 @@
 # Project status
 
-Last updated: 2026-11-21, describing commit `272f64b` on branch `harness-v1` (effort step 4).
+Last updated: 2026-11-21, describing the code at commit `272f64b` on branch `harness-v1` (effort step 4); later
+commits change only documents.
 
 This page is for someone who has seen nothing of the project so far: what it is, where things are, how far the
 work has got, what comes next and how to run it. It is a summary; where it and [SPEC.md](SPEC.md) disagree, the spec
@@ -116,8 +117,11 @@ evaluation have not started.
 
 ## What's next, in order
 
-1. The four small follow-ups from step 4 listed under "Open questions and blockers" below, if they are not done
-   when you read this (check HANDOFF.md).
+1. Four approved follow-ups to step 4, not yet implemented (details in HANDOFF.md, "Next step 1"): accept a live
+   time limit only in routed runs with a decider profile; record that flag in every episode's metadata and event
+   log; refuse to re-score a time-cut run under any profile but its own; and leave a decision point out of profile
+   P's training and validation data when its clock under P, from the parent's log, already exceeds the time limit,
+   counting the exclusions per profile. Each with tests and a §17 entry.
 2. Effort step 5: dynamic batching in both model servers, and a check that batched and single requests give the same
    actions.
 3. Render camera images only when they are used, provided it passes the same exact-equality tests.
@@ -139,7 +143,7 @@ guard stops all work at $45.
 
 ## Key decisions so far
 
-The full list, with dates, is SPEC §17 (16 entries). The most important:
+The full list, with dates, is SPEC §17 (18 entries). The most important:
 - **Two seeds per episode.** The scene seed fixes the scene (some LIBERO fixtures move by up to 19 mm with it) and
   is 142 + k for initial state k in every run except π0.5's parity check (1000 + k, its own reference's value). A
   separate rollout seed drives all other randomness (model noise, the network, random exploration), different for
@@ -169,10 +173,7 @@ The full list, with dates, is SPEC §17 (16 entries). The most important:
   Face account; the VM needs that account's access.
 - **Placeholders until Phase 0.** Model latencies, batching settings, gripper thresholds, the upload size (a Mac
   estimate of 20,290 bytes) and the time limits are placeholders marked as such in `src/vlar_harness/configs/harness-v1.yaml`.
-- **Four approved follow-ups from step 4** (next in line): accept a live time limit only in routed runs with a
-  decider profile; record that flag in every episode's metadata and log; refuse to re-score a time-cut run under any
-  other profile; and leave a decision point out of a profile's training and validation data when its clock under that
-  profile already exceeds the time limit, counting the exclusions.
+- **Four approved follow-ups from step 4** are next in line, not yet implemented (see "What's next").
 
 ## Running the tests
 

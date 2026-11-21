@@ -134,6 +134,10 @@ Spec amendments, all approved by the user and logged in SPEC §17:
 16. `reset()` gains `time_limit` (2026-11-21, during step 4; §15): off by default; applies the task's limit live
     under the run's profile; set only for runs with a live learned decider (DAgger, evaluation). In the engine it
     is `Episode.start(..., time_limit=True)`.
+17. Branch call counting (2026-11-21, after step 4; §7): an abandoned escalation counts as one of a branch's calls,
+    so planner-shared branches stay identical (already implemented in `Episode.run_branch`).
+18. Upload size definition (2026-11-21, after step 4; §5): median over requests of the combined JPEG size of the
+    request's two images (already implemented in `network.median_upload_image_bytes`).
 
 Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the tests that show them):
 - The reference stack: LeRobot 0.6.1, hf-libero 0.1.4, robosuite 1.4.0, MuJoCo 3.8.1, file hashes pinned in
@@ -167,7 +171,21 @@ needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, pr
 confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates only the VM bring-up, which in
 any case waits for the §18 milestone and the user's go-ahead.
 
-## Next step: effort step 5 (max effort)
+## Next step 1: four approved follow-ups to step 4 (do these first)
+
+Approved by the user on 2026-11-21, not yet implemented (the session ran out of usage). Implement each with tests,
+log them in SPEC §17 (as items 19-22), then update this file and `docs/STATUS.md`, commit and push.
+1. `time_limit=True` is allowed only in routed mode with a profile other than `none`; `Episode.start` (and the
+   client API's `reset`) reject every other combination with a clear error.
+2. Record the flag in every episode's metadata and event log (an explicit `time_limit` true/false in the `start`
+   event, which today has only `time_limit_s`, and in the episode result/record).
+3. A cut run can be scored only under its own profile: `clock.score`, `labels` and `calibration` (and any re-scoring
+   tool) must refuse any other profile for a log whose `start` event has the flag set.
+4. Label rule (SPEC §7): when a decision point's clock under profile P, computed from the parent's event log (the
+   snapshot's prefix), already exceeds the task's time limit, exclude that point from P's training and validation
+   data. Count the exclusions per profile and report them (e.g. from `labels.point_labels` or a summary helper).
+
+## Next step 2: effort step 5 (max effort)
 
 Scope (SPEC §16 item 5): request batching and per-call seeding in both model servers (§3, §12), including the
 batched-versus-unbatched equivalence check. Raise the effort checkpoint before starting.

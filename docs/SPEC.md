@@ -261,6 +261,11 @@ Approved by the user on 2026-11-21, during effort step 4:
 15. §5: decision overhead is charged only at decision points where escalation is offered. Once the π0.5 budget is exhausted the decider is not consulted, so those points cost nothing under any profile (X-VLA's `/act` at a chunk point is still charged, since X-VLA needs the chunk). Every `decision_point` event logs `can_escalate`, so logs are re-scored under this rule exactly.
 16. §15: `reset()` gains `time_limit` (default off), which applies the task's time limit live under the run's profile. It is set only for runs with a live learned decider (DAgger rollouts, evaluation); scripted runs leave it off, run uncut and are scored offline.
 
+Approved by the user on 2026-11-21, after effort step 4:
+
+17. §7: every branch escalates at its first n decision points, where n is the planner's call count (0, 1, min(3, budget), or the budget's maximum for branch 4), and an abandoned escalation counts as one of them. Branches the planner shares (equal counts) are therefore identical; in the rare case of an abandonment, branch 4 ends with 10 budget steps unused.
+18. §5: the upload size is the median, over requests, of the combined JPEG size of each request's two images (not twice the median of one image).
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
