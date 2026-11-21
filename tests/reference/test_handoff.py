@@ -110,8 +110,9 @@ def run_routed(ep, schedule, *, until=520, init=INIT, rollout=ROLLOUT, on_point=
 ESCALATE_AT = {2, 3, 6, 11, 12, 13, 14, 17}       # mid-chunk, consecutive, chunk point, a run of four
 
 
-def check_continuity(rec, ep):
-    """Every handoff in `rec`, both directions; returns a list of problems."""
+def check_continuity(rec, ep, first_target_limit=0.03):
+    """Every handoff in `rec`, both directions; returns a list of problems. `first_target_limit` bounds
+    X-VLA's first target after π0.5 (3 cm for the fake models; relative for the real ones, SPEC §11 step 3)."""
     problems = []
     by_step = {s["step"]: s for s in rec.steps}
     for s in rec.steps:                                       # every step in its model's controller mode
@@ -134,7 +135,7 @@ def check_continuity(rec, ep):
                     if not (np.array_equal(r["proprio"][:3], r["pos"]) and np.array_equal(r["proprio"][3:9], r["rot6d"])):
                         problems.append(f"step {start}: X-VLA was not sent the measured pose")
                     gap = np.linalg.norm(s["goal_pos"] - r["pos"])
-                    if gap > 0.03:
+                    if gap > first_target_limit:
                         problems.append(f"step {start}: pi0.5->X-VLA first target {gap:.3f} m from the arm")
         prev = s
     return problems
@@ -332,14 +333,24 @@ def test_engine_snapshot_restore_continues_exactly(sim, other_sim):
 
 XVLA_URL = os.environ.get("VLAR_XVLA_SERVER")       # host:port of a running xvla_server
 PI05_URL = os.environ.get("VLAR_PI05_SERVER")
+# First-step target distances (m) X-VLA produced at ordinary chunk boundaries (no handoff) in the base
+# rollouts: a JSON list of floats, extracted from their event logs after Phase 0 step 5 (see docs/HANDOFF.md).
+BASE_FIRST_TARGETS = os.environ.get("VLAR_BASE_FIRST_TARGETS")
 
 
-@pytest.mark.skipif(not (XVLA_URL and PI05_URL), reason="needs both model servers (VLAR_XVLA_SERVER, VLAR_PI05_SERVER)")
+@pytest.mark.skipif(not (XVLA_URL and PI05_URL and BASE_FIRST_TARGETS),
+                    reason="needs both model servers (VLAR_XVLA_SERVER, VLAR_PI05_SERVER) and the base rollouts' "
+                           "chunk-boundary distances (VLAR_BASE_FIRST_TARGETS)")
 @requires_lerobot
 @pytest.mark.parametrize("task", [0, 2, 8])
 def test_model_handoff_continuity_on_the_vm(task):
-    """The same continuity checks with the real models, on the VM. X-VLA's first target after a handoff is
-    the model's own output, so its distance to the arm is reported and checked against 3 cm."""
+    """The same continuity checks with the real models, on the VM (SPEC §11 step 3, amendment 10). X-VLA's
+    first target after a handoff must be at or below the 99th percentile of the first-step target distances
+    it produces at ordinary chunk boundaries in the base rollouts; the fixed 3 cm is for the fakes only."""
+    import json
+    ordinary = np.asarray(json.loads(open(BASE_FIRST_TARGETS).read()), dtype=float)
+    assert ordinary.size >= 100, "too few ordinary chunk boundaries to take a 99th percentile"
+    limit = float(np.percentile(ordinary, 99))
     from vlar_harness.adapters.pi05 import PI05Adapter
     from vlar_harness.adapters.xvla import XVLAAdapter
     from vlar_harness.episode import Episode
@@ -355,7 +366,7 @@ def test_model_handoff_continuity_on_the_vm(task):
         ep = Episode(s, XVLAAdapter(rec.transport), PI05Adapter(s),
                      lambda raw, task_, seed: pi05_http.act(raw, task_, seed)["actions"], CFG, on_step=rec.on_step)
         run_routed(ep, lambda d: d in ESCALATE_AT, until=200, rollout=ROLLOUT + task)
-        problems = check_continuity(rec, ep)
-        assert problems == [], problems
+        problems = check_continuity(rec, ep, first_target_limit=limit)
+        assert problems == [], f"limit {limit:.4f} m (99th percentile of ordinary boundaries): {problems}"
     finally:
         s.close()

@@ -121,7 +121,8 @@ Seeds (SPEC §3): `seeding.scene_seed` (142 + k, or 1000 + k under the `pi05_par
 **Verified on the Mac** (`tests/reference/test_handoff.py`, fake policies): forced handoffs in both
 directions (mid-chunk, chunk point, consecutive escalations, runs of four) show no arm jump, in both
 `xvla_state_mode`s: each π0.5 first step's goal is within one delta step of the arm, X-VLA is always sent
-exactly the measured pose after π0.5 and its first target is within 3 cm, and every step ran in its model's
+exactly the measured pose after π0.5 and its first target is within 3 cm (the fake-model threshold; the
+real-model check on the VM is relative, see the re-run list), and every step ran in its model's
 mode. Abandoned escalations hand back from the measured pose and charge no budget. Exactly 26 escalations fit
 the budget. Routed always-local is identical to `xvla_only`, which is identical to the authors' own rollout
 loop; `pi05_only` calls π0.5 every 10 steps in delta mode. Restoring an engine snapshot into another env
@@ -129,10 +130,20 @@ continues exactly. Sensitivity: removing the "forget the remembered pose" rule i
 first target far from the arm), and a skipped mode switch is refused. The same continuity checks run against
 the real models on the VM (`test_model_handoff_continuity_on_the_vm`).
 
+## Time limit (SPEC §5, rule approved 2026-11-21)
+
+Per task: the 90th percentile of X-VLA's successful-episode completion times under profile `none` (from the
+base rollouts, uncut), times one margin m for all tasks. m is the smallest of {1.25, 1.5, 1.75, 2.0} such
+that at least 80% of π0.5's successful parity episodes (pooled over tasks), timed under profile `none` with
+the network model, finish within their task's limit. Computed in Phase 0 step 6 (effort step 4 builds it)
+and written to the calibration file; reported per task with the share of π0.5 successes that fit.
+
 ## Reference-run files (`vlar_ops/reference_runs.py`)
 
 `References/` (read-only): `task_<t>/eval_info.json` (π0.5, 50 successes per task in episode order) and
-`progress.jsonl` (X-VLA). `vlar-ops reference check` validates the layout and the totals the user confirmed:
+`progress.jsonl` (X-VLA), committed byte for byte (`.gitattributes`: `References/** -text`) with their SHA-256
+pinned in `src/vlar_ops/configs/reference-run.sha256`. `vlar-ops reference check` first verifies those checksums
+(a single changed byte fails), then the layout and the totals the user confirmed:
 π0.5 478/500; X-VLA 412/500 at 900 steps, 405/500 within 520; 500 episodes each, no duplicates or gaps.
 Episode e used initial state e, with scene seed 1000 + e (π0.5) or 142 + e (X-VLA). `compare()` pairs a
 project run with the reference on the same initial states (Wilson intervals, paired difference with its
@@ -200,7 +211,8 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 | Environment | Command | Covers |
 | --- | --- | --- |
 | simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; sensitivity checks |
-| simulator, both servers up | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models |
+| simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list of those distances is extracted from the base rollouts' event logs. The fixed 3 cm check is for the fake-model tests on the Mac only. |
+| main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
 | LeRobot | `VLAR_PI05_CHECKPOINT=… pytest tests/reference/test_model_servers.py -k pi05` | server vs lerobot-eval's per-step processing (needs the gated tokenizer) |
 | main | `pytest tests` | config, queue, spend guard, packaging |
