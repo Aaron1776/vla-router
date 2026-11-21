@@ -9,7 +9,7 @@ Every claim the project depends on lives here with one of four labels:
 
 An item moves to "Verified" only with evidence: the command run, its output, or a file and line.
 
-Last updated: 2026-10-10.
+Last updated: 2026-11-20.
 
 ## Verified
 
@@ -63,6 +63,32 @@ Caveat: an unrelated CPU workload was running on the server node during these ru
 Both return finite `[50, 7]` action chunks with values inside about plus or minus 1. Whether those actions solve tasks is untested (U1).
 
 On this machine SmolVLA (`lerobot/smolvla_libero`) is 3.0x faster than π0.5 uncompiled and 4.2x faster compiled, which supports A10 here. The checkpoint's own `max-autotune` compile mode was not run. The first compiled call took 112 s for π0.5 and 125 s for SmolVLA (208 s more for a new batch size). Limits of these numbers: one machine; placeholder tokens; the server node is not the edge node, so the SmolVLA figures are not onboard latency.
+
+### Reference run on an NVIDIA L4 (2026-11)
+
+From the cell outputs of `Updates/libero_long_pi05_xvla_eval (1).ipynb`, each model in its authors' harness, 50 episodes per task. These are the parity targets and placeholder clock charges in `docs/SPEC.md` §2.
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V15 | π0.5 (`lerobot/pi05_libero_finetuned`, LeRobot 0.6.1, `n_action_steps=10`, seed 1000, 520 steps) succeeds on 478/500 LIBERO-Long episodes (95.6%, 95% CI 93–97). | Notebook section 8 full run. |
+| V16 | X-VLA-Pt + `2toINF/X-VLA-libero-long-peft` in the authors' client succeeds on 412/500 at 900 steps and 405/500 at 520 steps; successes used a median of 247 steps (90th percentile 387, longest 837). | Notebook sections 9 and 11. |
+| V17 | Median latency: π0.5 435 ms per model call (9.5 GB peak allocated); X-VLA 420 ms per HTTP `/act` request, server process 4,038 MiB. | Notebook latency cell, 20 calls after 3 warm-ups; `nvidia-smi`. |
+| V18 | Weight snapshots used: `pi05_libero_finetuned` 7152f13e…, `X-VLA-libero-long-peft` b6af8e31… (LoRA r=8, alpha 16), `X-VLA-Pt` c1c4a64a…; X-VLA code at 6c4ecfb8…. Full hashes are pinned in `src/vlar_harness/configs/harness-v1.yaml`. | Notebook download cells. |
+
+### Harness adapters against the reference code (2026-11-20, local, CPU MuJoCo)
+
+Details and consequences in `docs/HARNESS.md`. All comparisons are exact equality on one machine.
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V19 | Both reference harnesses build and settle an episode identically except for camera size (X-VLA 256 px, LeRobot 360 px); our setup reproduces the X-VLA client's MuJoCo state and images, and 20 absolute-mode steps after it. | `tests/reference/test_sim_reference.py::test_episode_setup_and_absolute_control_match_xvla_client` |
+| V20 | robosuite samples observations at physics substep 24 of 25 of each step, so a render after the step is not what the models see. | `test_observations_are_sampled_at_substep_24_of_25` |
+| V21 | Our X-VLA adapter (the authors' `ClientModel` with `step()` split into query and pop) sends the same requests and executes the same actions as the authors' client, quirk included. | `test_xvla_query_pop_split_matches_client_step` |
+| V22 | Our π0.5 observation equals LeRobot's own vectorised env built at 360 px, from reset through 25 delta-mode steps. | `test_pi05_observation_and_delta_control_match_lerobot_env` |
+| V23 | The X-VLA server's split encode/denoise path equals the authors' `/act` handler bit for bit given the same noise (random-weight model, CPU). | `test_model_servers.py::test_xvla_act_matches_authors_handler` |
+| S17 | The reference run used hf-libero 0.1.4 (LeRobot's extra allows `>=0.1.4,<0.2.0`; 0.1.5 appeared 2026-11-16, after the run) and `lerobot/libero-assets` at 0b3ea86b (its only commits are from 2025-11-03). | PyPI and Hub metadata |
+| U13 | The π0.5 server equals `lerobot-eval`'s per-step processing with real weights. | `test_pi05_server_matches_lerobot_eval_step` on the VM (needs the gated tokenizer). |
+| U14 | The X-VLA server with the real weights and LoRA on the L4 equals the authors' handler. | `test_model_servers.py -k xvla` on the VM with `VLAR_XVLA_MODEL_PATH`. |
 
 ## Third-party pins
 

@@ -1,0 +1,192 @@
+# Harness config, versioned with the harness (docs/SPEC.md §15).
+#
+# Experiments never edit this file. They pick among the named choices under `options`
+# and nothing else. Phase 0 writes the measured latencies, gripper thresholds and time
+# limits here before the freeze; after `frozen: true` the calibration writers refuse.
+#
+# `status: placeholder` marks values taken from the reference notebook (docs/SPEC.md §2)
+# that Phase 0 must replace with measurements from this harness.
+
+schema: 1
+harness_version: "1.0.0.dev0"
+frozen: false
+
+env:
+  suite: libero_10
+  n_tasks: 10
+  n_init_states: 50
+  settle_steps: 10            # no-op steps after loading the initial state; the clock starts after them
+  settle_action: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]   # delta mode, gripper open (both references)
+  control_period_s: 0.05      # LIBERO's 20 Hz control rate, charged per environment step
+  step_limit: 520
+
+# Simulator stack of the reference run (LeRobot 0.6.1's `libero` extra; uv.lock of lerobot v0.6.1).
+sim:
+  hf_libero: "0.1.4"          # 0.1.5 was published 2026-11-16, after the reference run
+  robosuite: "1.4.0"
+  mujoco: "3.8.1"
+  numpy: "2.2.6"
+  assets_repo: lerobot/libero-assets
+  assets_revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6   # unchanged since 2025-11-03
+
+# Files the adapters and servers take code from, pinned by SHA-256 (vlar_harness.reference).
+reference:
+  xvla_repo_files:
+    evaluation/libero/libero_client.py: ebfdd89a4afc79b8b01921ded6c95091786b34937e5dbe7601d3a384607d6f24
+    deploy.py: e2f40c54dc09d01a5942e43b0680d160861cf40f7d9dfc08e0e2bdad1350cef6
+    models/modeling_xvla.py: b235f67bf70c4c7e0ad3a1c633e48028348d4e3e26a341f5fedd9b3bdb9acf5c
+    models/processing_xvla.py: f75d213f3897d87a896ffdc014d4075d9bc374d67a38a098e4c007b3b884d1b6
+    models/action_hub.py: c5974c20b8071c95ebdeb41d132f69ca8a05b5324f651a97a24cb0dbcad99f54
+    models/transformer.py: 337f4c61a88d033da7e8cef6e6ae9efcd978d3540983c5de70a23f445141c308
+    models/modeling_florence2.py: ebed9223ee776c142de962ea71eaa30a0bf1f55e728de136dc7fe13ef830f4af
+    models/configuration_xvla.py: 69f73b054d6a454e2178dc53772223069d19e26da5f46c141f9716cb4b0f7cc1
+    models/configuration_florence2.py: de2e45a975b3582de05d2f4d963a3e9f9a3d20dccf78d28e0052932a0be93bdf
+  lerobot_files:              # relative to the installed lerobot package
+    envs/libero.py: 97c984f12331527626812ec19967ef399e545535b3571becf044db2417ae9d71
+    envs/utils.py: 4a37ce5d9ac70a22f88e63c02b84ef3e30be72725e52fe6a03ec7e3407c143e7
+    processor/env_processor.py: 41cf74048b233652b2b03d38c79b30d6f1d341592d553a5625f971de555f3a3a
+    policies/pi05/processor_pi05.py: 5588d98a4351e6f0d2441338b62929d55daa4148411bde63cfe00b01f6f8fcdf
+    policies/pi05/modeling_pi05.py: 8faec89af9d31f5c2f0e12b4ea369d2af6bf0c25050a13adcaefbd9b8aa03b69
+    scripts/lerobot_eval.py: fddec10c709401dd863814091d525fcd54d41cc6ccf51f7ef8300459cf69b873
+
+decision:
+  interval_steps: 10          # decision points at steps 0, 10, ..., 510 (52 per episode)
+  segment_steps: 10           # actions executed per decision, from either model
+
+budget:
+  pi05_max_steps: 260         # executed pi0.5 steps per episode (26 escalations)
+
+models:
+  pi05:
+    checkpoint: lerobot/pi05_libero_finetuned
+    revision: 7152f13e34c6c115d808aea0e5d08aca74eac14b   # snapshot the reference run downloaded
+    tokenizer: google/paligemma-3b-pt-224                 # gated; cached offline on the VM
+    lerobot_version: "0.6.1"
+    dtype: from_checkpoint    # bfloat16 (ASSUMPTIONS R12); 9.5 GB peak matches the reference
+    compile_model: false
+    flow_steps: 10
+    chunk_len: 50
+    n_action_steps: 10        # first 10 of the 50 returned actions are executed
+    action_dim: 7
+    render_px: 360
+    input_px: 224
+    rotate_180: true
+    control: delta
+    reference_eval_seed: 1000
+  xvla:
+    repo: https://github.com/2toinf/X-VLA
+    repo_commit: 6c4ecfb8be458ae7c0c96094e4b0add4174f4fe2
+    base: 2toINF/X-VLA-Pt
+    base_revision: c1c4a64a7e03ac5b95c468bf1578f3d03651b53b
+    lora: 2toINF/X-VLA-libero-long-peft
+    lora_revision: b6af8e31b153c0c67998ee0bd81bffd45321220d
+    lora_r: 8
+    lora_alpha: 16
+    dtype: float32
+    domain_id: 3
+    flow_steps: 10
+    chunk_len: 30
+    action_dim: 20            # absolute target pose plus gripper, padded
+    state_dim: 20
+    image_px: 256
+    control: absolute
+    native_step_limit: 900
+    reference_client_init_seed: 42   # reference: episode seed 42 + ep + 100, init state ep % 50
+    server_pins:
+      transformers: "4.51.3"
+      peft: "0.17.1"
+      timm: "1.0.12"
+      accelerate: "1.2.1"
+      einops: "0.8.1"
+      uvicorn: "0.34.3"
+      json_numpy: "2.1.0"
+
+servers:
+  xvla: {host: 127.0.0.1, port: 8777}
+  pi05: {host: 127.0.0.1, port: 8778}
+  batching:
+    status: placeholder       # set from the Phase 0 step 2 batched measurements
+    max_batch: 8
+    wait_window_ms: 5
+
+latency:
+  # Batch-size-1 medians charged by the simulated clock (§5).
+  status: placeholder
+  source: reference notebook, NVIDIA L4, 20 calls after 3 warm-ups (X-VLA timed over HTTP)
+  xvla_act_s: 0.420
+  xvla_features_s: 0.420      # not measured yet; upper bound is a full /act
+  xvla_sample_k_s: 2.100      # not measured yet; upper bound is K unbatched /act calls
+  pi05_infer_s: 0.435
+
+measurement:
+  K: 5                        # samples behind each spread summary (§6) [ASSUMPTION]
+  gripper_thresholds:
+    status: uncalibrated      # Phase 0 step 2
+    shut_width_m: null        # at or below: fingers fully shut (grasp missed or object dropped)
+    open_width_m: null        # at or above: fingers open
+
+time_limit:
+  # Per task: p90 of X-VLA's successful-episode completion time under profile `none`,
+  # times a margin m shared by all tasks (§5). Computed in Phase 0 step 6.
+  status: placeholder
+  margin_candidates: [1.25, 1.5, 1.75, 2.0]
+  margin_rule_min_pi05_share: 0.80
+  margin: null
+  # Placeholder for every task until step 6: 1.5 x (387 steps x 0.05 s + 13 /act calls x 0.420 s),
+  # from the reference run's pooled p90 of 387 steps.
+  per_task_s: {0: 37.2, 1: 37.2, 2: 37.2, 3: 37.2, 4: 37.2, 5: 37.2, 6: 37.2, 7: 37.2, 8: 37.2, 9: 37.2}
+
+# Decision overhead charged per decision point, by profile (§5). Terms:
+#   features          -> latency.xvla_features_s
+#   sample_k          -> latency.xvla_sample_k_s
+#   sample_k_less_act -> latency.xvla_sample_k_s - latency.xvla_act_s
+profiles:
+  none:                 {chunk_point: [], mid_point: []}
+  router:               {chunk_point: [], mid_point: [features]}
+  cascader_nospread:    {chunk_point: [], mid_point: [features]}
+  cascader_chunkspread: {chunk_point: [sample_k_less_act], mid_point: [features]}
+  cascader_full:        {chunk_point: [sample_k_less_act], mid_point: [sample_k]}
+
+# What observe() returns for each profile's decider type (§6).
+observe_inputs:
+  none:                 []
+  router:               [common]
+  cascader_nospread:    [common, proposal, free_signals]
+  cascader_chunkspread: [common, proposal, free_signals, chunk_spread]
+  cascader_full:        [common, proposal, free_signals, fresh_spread, drift]
+
+# Scripted continuations run from each sampled decision point (§7). `calls` is the number of
+# consecutive pi0.5 calls before X-VLA drives to the end; `max` means until the budget is spent
+# or the episode ends. Branches that end up with the same number of calls are run once and shared.
+branches:
+  b1_continue:    {calls: 0}
+  b2_one_call:    {calls: 1}
+  b3_three_calls: {calls: 3}
+  b4_max:         {calls: max}
+
+options:
+  network:
+    default: default
+    choices:
+      default:
+        uplink_mbps: 20
+        downlink_mbps: 20       # [ASSUMPTION] the spec gives no downlink figure
+        rtt_median_s: 0.060     # log-normal round trip
+        rtt_tail_s: 0.300       # about 1 request in 50 exceeds this
+        rtt_tail_prob: 0.02
+        p_fail: 0.05
+        timeout_s: 1.0
+        backoff_s: 0.2
+        max_retries: 2
+        upload_image_px: 224    # [ASSUMPTION] the robot uploads what pi0.5 consumes
+        jpeg_quality: 90        # [ASSUMPTION]
+  xvla_state_mode:
+    default: quirk
+    choices:
+      quirk: quirk              # within an X-VLA stretch, resend the last predicted pose (reference behaviour)
+      measured: measured        # always send the measured pose
+  probes:
+    default: all
+    choices:
+      all: every_decision_point
+      sampled: sampled_points_and_their_chunk_points   # §12 reduction step 3

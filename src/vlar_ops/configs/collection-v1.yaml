@@ -1,0 +1,29 @@
+# Data-collection and evaluation choices (docs/SPEC.md §7, §9, §10, §12).
+# Not part of the frozen harness: changing these changes which jobs run, not how a job runs.
+
+schema: 1
+
+# Episode seeds are namespace + 100 * task_id + init_idx. The namespaces are disjoint, so
+# evaluation seeds are never used during data collection (§7). All evaluated methods and
+# scripted baselines share the `eval` seeds, which makes their per-episode results paired.
+seed_namespaces:
+  base: 1000000
+  explore: 2000000
+  dagger: 3000000
+  eval: 7000000
+
+exploration:
+  episodes_per_state: 1       # [ASSUMPTION] 500 episodes
+  p_escalate: 0.1             # [ASSUMPTION] per decision, while budget remains
+
+branches:
+  seeds: 3                    # §12 reduction step 5 lowers this to 2
+  enabled: [b1_continue, b2_one_call, b3_three_calls, b4_max]   # §12 reduction step 2 drops b3
+  # Graceful-stop tiers (§12): 1 = first two seeds of b1, b2, b4; 2 = their later seeds; 3 = b3.
+  tier_one_seeds: 2
+
+dp_sampling:
+  fraction: null              # set from the pilot's measured throughput (§12)
+  seed: 20261120              # recorded with every plan
+
+order_seed: 7                 # shuffles episode and decision-point order inside each plan

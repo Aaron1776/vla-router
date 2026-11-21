@@ -6,12 +6,14 @@ Semester project for CSCI 5942 (AI engineering).
 
 **Team:** Oscar Rodriguez and Miguel Ramirez-Aleman.
 
-**Status:** Phase 0 (smoke tests). Both models run and are timed on the server node; the simulator is not installed yet.
+**Status:** building the Phase 0 harness for the X-VLA (local) / π0.5 (remote) design in [docs/SPEC.md](docs/SPEC.md), which replaces the SmolVLA plan. Done so far: versioned harness config, client API draft, job planner and resumable queue, spend guard, archive packaging and the GCP scripts. Not yet built: the simulator layer, adapters, model servers, clock and snapshots.
 
 ## Documents
 
 - [docs/CONCEPT.md](docs/CONCEPT.md): working draft of the two-page concept document, due Oct 13.
-- [docs/PLAN.md](docs/PLAN.md): the implementation plan and design reference.
+- [docs/SPEC.md](docs/SPEC.md): the current design: budgeted escalation from X-VLA to π0.5 on LIBERO-Long, router vs. cascader.
+- [docs/PLAN.md](docs/PLAN.md): the original plan (SmolVLA local model); superseded by SPEC.md where they differ.
+- [ops/README.md](ops/README.md): Google Cloud setup, spend guard and pause/resume runbook.
 - [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md): every assumption and unknown, and the evidence for each item we have verified.
 - [envs/README.md](envs/README.md): how each machine's environment was set up.
 

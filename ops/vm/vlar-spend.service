@@ -1,0 +1,15 @@
+# Spend guard daemon (docs/SPEC.md §12). Starts first on every boot, before any job can run.
+[Unit]
+Description=vla-router spend guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=VLAR_OPS_CONFIG=/opt/vla-router/ops/ops.yaml
+ExecStart=/opt/vla-router/.venv/bin/vlar-ops spend daemon
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
