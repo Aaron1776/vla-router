@@ -6,7 +6,7 @@ Semester project for CSCI 5942 (AI engineering).
 
 **Team:** Oscar Rodriguez and Miguel Ramirez-Aleman.
 
-**Status:** building the Phase 0 harness for the X-VLA (local) / π0.5 (remote) design in [docs/SPEC.md](docs/SPEC.md), which replaces the SmolVLA plan. Done so far: versioned harness config, client API draft, job planner and resumable queue, spend guard, archive packaging and the GCP scripts. Not yet built: the simulator layer, adapters, model servers, clock and snapshots.
+**Status:** building the Phase 0 harness for the X-VLA (local) / π0.5 (remote) design in [docs/SPEC.md](docs/SPEC.md), which replaces the SmolVLA plan. Done: config, job queue, spend guard, packaging, GCP scripts; effort step 1 (simulator layer, both adapters and model servers, exact-equality tests against the reference code); effort step 2 (exact snapshot restore and the determinism tests). All verified on a Mac only; the VM re-runs count. Next: handoff rules, clock and labels, server batching, containers. Design notes: [docs/HARNESS.md](docs/HARNESS.md).
 
 ## Documents
 

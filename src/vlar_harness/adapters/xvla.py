@@ -100,6 +100,22 @@ class XVLAAdapter:
     def discard_queue(self) -> None:
         self.client.action_plan.clear()
 
+    def get_state(self) -> dict:
+        """The client's episode state for a snapshot: the quirk proprio (None once forgotten) and the
+        queued actions exactly as stored (Python floats from the chunk conversion)."""
+        proprio = self.client.proprio
+        return {"proprio": None if proprio is None else np.array(proprio, copy=True),
+                "queue": [list(row) for row in self.client.action_plan],
+                "state_mode": self.state_mode}
+
+    def set_state(self, state: dict) -> None:
+        if state["state_mode"] != self.state_mode:
+            raise ValueError(f"snapshot taken in state mode {state['state_mode']}, adapter is {self.state_mode}")
+        p = state["proprio"]
+        self.client.proprio = None if p is None else np.array(p, copy=True)
+        self.client.action_plan.clear()
+        self.client.action_plan.extend([list(row) for row in state["queue"]])
+
     def forget_predicted_pose(self) -> None:
         """Make the next query send the measured pose (handoff back from π0.5, §3)."""
         self.client.proprio = None

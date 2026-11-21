@@ -1,6 +1,6 @@
 # Spec: Budgeted escalation to a remote policy on LIBERO-Long — router vs. cascader (X-VLA local, pi0.5 remote)
 
-> Design reference for the harness build. Supersedes the model choice and phase plan in `PLAN.md` (which predates the switch from SmolVLA to X-VLA). Items marked [ASSUMPTION] are the spec author's working choices and are tracked in `ASSUMPTIONS.md` once they are tested.
+> Design reference for the harness build. Supersedes the model choice and phase plan in `PLAN.md` (which predates the switch from SmolVLA to X-VLA). Items marked [ASSUMPTION] are the spec author's working choices and are tracked in `ASSUMPTIONS.md` once they are tested. Approved amendments are listed in §17.
 
 ## 1. Goal
 
@@ -18,19 +18,25 @@ X-VLA is X-VLA-Pt (0.9B, Florence-2 encoder only) with the LoRA adapter `2toINF/
 
 Both standalone harnesses already exist and work; they are the reference for preprocessing and must be reused, not rewritten from memory.
 
-Reference run. The user's standalone notebook (`libero_long_pi05_xvla_eval.ipynb`) is the reference for both harnesses, their pinned versions and their scores. Pins: LeRobot 0.6.1 (`lerobot[pi,xvla,libero]`); π0.5 run with `--policy.n_action_steps=10 --policy.compile_model=false`, batch size 1, seed 1000, 520-step limit; X-VLA from `2toinf/X-VLA` at commit `6c4ecfb8be458ae7c0c96094e4b0add4174f4fe2`, server environment transformers 4.51.3, peft 0.17.1, timm 1.0.12, accelerate 1.2.1, base model `2toINF/X-VLA-Pt` with the LoRA adapter (r=8, alpha 16), 10 flow-matching steps per request, client init seed 42 (episode seed 42 + ep + 100, initial state ep mod 50). Reference scores on all 500 episodes: π0.5 478/500 (95.6%, 95% CI 93–97); X-VLA 405/500 (81.0%, 95% CI 77–84) at 520 steps and 412/500 at 900; X-VLA successes used a median of 247 steps (90th percentile 387). Reference measurements: π0.5 median 435 ms per call and 9.5 GB peak allocated GPU memory; X-VLA median 420 ms per HTTP request and about 4.0 GB for the server process; one X-VLA client process sustained about 21 environment steps per second. These were measured on an NVIDIA L4 (the notebook's saved Colab metadata says T4, but all runs used an L4). They serve as reliable placeholders until Phase 0 re-measures them in the project's own harness, whose batching and request format differ from the notebook's.
+Reference run. The user's standalone notebook (`libero_long_pi05_xvla_eval.ipynb`) is the reference for both harnesses, their pinned versions and their scores. Pins: LeRobot 0.6.1 (`lerobot[pi,xvla,libero]`), whose `libero` extra installed hf-libero 0.1.4 (0.1.5 was published after the run) on robosuite 1.4.0 and MuJoCo 3.8.1, with the LIBERO scene assets `lerobot/libero-assets` at revision 0b3ea86b; π0.5 run with `--policy.n_action_steps=10 --policy.compile_model=false`, batch size 1, seed 1000, 520-step limit; X-VLA from `2toinf/X-VLA` at commit `6c4ecfb8be458ae7c0c96094e4b0add4174f4fe2`, server environment transformers 4.51.3, peft 0.17.1, timm 1.0.12, accelerate 1.2.1, base model `2toINF/X-VLA-Pt` with the LoRA adapter (r=8, alpha 16), 10 flow-matching steps per request, client init seed 42 (episode seed 42 + ep + 100, initial state ep mod 50). Reference scores on all 500 episodes: π0.5 478/500 (95.6%, 95% CI 93–97); X-VLA 405/500 (81.0%, 95% CI 77–84) at 520 steps and 412/500 at 900; X-VLA successes used a median of 247 steps (90th percentile 387). Reference measurements: π0.5 median 435 ms per call and 9.5 GB peak allocated GPU memory; X-VLA median 420 ms per HTTP request and about 4.0 GB for the server process; one X-VLA client process sustained about 21 environment steps per second. These were measured on an NVIDIA L4 (the notebook's saved Colab metadata says T4, but all runs used an L4). They serve as reliable placeholders until Phase 0 re-measures them in the project's own harness, whose batching and request format differ from the notebook's.
 
 ## 3. Harness architecture
 
-Simulator. One simulation layer using raw LIBERO (not LeRobot's wrapper) with a single episode-setup routine: build the task scene, load initial state k, take 10 no-op settle steps, then start the clock. Per-model adapters handle rendering at each model's native resolution and orientation, building each model's state vector, converting each model's actions into LIBERO controller commands, and switching the controller between absolute mode (X-VLA) and delta mode (pi0.5) at every handoff. Whether to render natively per model or render once and resize is settled by the Phase 0 parity test.
+Simulator. One simulation layer using raw LIBERO (not LeRobot's wrapper) with a single episode-setup routine: build the task scene, load initial state k, take 10 no-op settle steps, then start the clock. Per-model adapters handle rendering at each model's native resolution and orientation, building each model's state vector, converting each model's actions into LIBERO controller commands, and switching the controller between absolute mode (X-VLA) and delta mode (pi0.5) at every handoff.
+
+Images. Each model's images are rendered at its native resolution and taken from robosuite's observation pipeline, which samples every observation at physics substep 24 of the 25 in a step (a render taken after the step shows a different arm pose from what either model was evaluated on). The env's own cameras run at X-VLA's 256 px. π0.5's 360 px images come from two extra cameras registered on the env as observations and kept in step with the native ones. Snapshots and restore (§7) cover the extra cameras too.
 
 pi0.5 server. Runs in the LeRobot environment and wraps the policy with LeRobot's exact processor chain, so it accepts raw observations and returns un-normalized 7-D delta actions.
 
 X-VLA server. The authors' `deploy.py` in its own environment, with three endpoints:
-- `POST /act`: one chunk generated with the call's own seed; returns the 30 actions and a pooled feature vector from the encoder pass (mean-pooled encoder output tokens [ASSUMPTION]). Only chunks from `/act` are ever executed.
+- `POST /act`: one chunk generated with the call's own seed; returns the 30 actions and the pooled features of the same pass. Only chunks from `/act` are ever executed.
 - `POST /sample`: n chunks for a given observation, batched, each with its own seed; returns the chunks and the pooled features. Measurement only: these chunks are never executed.
 - `POST /features`: encoder-only pass over the current images and task text; returns the pooled features.
 Because executed chunks always come from single-sample `/act`, X-VLA's executed behaviour is identical in every mode and run type and matches the parity check; measurement calls cannot change what the robot does.
+
+Pooled features are two vectors of 1,024 values each: the mean of the encoder's output tokens (the main camera's image tokens and the 50 text tokens, padding included, since the encoder attends to all of them), and the mean of the wrist camera's image tokens, which reach the action transformer directly rather than through the encoder. Both are stored, and every decider takes both.
+
+Request poses. The extra samples at a chunk point reuse the exact `/act` request, including the quirk pose, so they are samples of the same request as the executed chunk. Mid-chunk `/sample` probes and `/features` calls send the measured end-effector pose, so fresh samples describe what X-VLA would do from the current state.
 
 Both servers run on the same machine on localhost and batch concurrent requests from all simulator workers (dynamic batching with a short wait window); see §12. The "remote" behaviour of pi0.5 is simulated in the clock (§5), not by real networking.
 
@@ -70,7 +76,7 @@ Time limit: per task, the 90th percentile of X-VLA's successful-episode completi
 
 ## 6. Decider inputs
 
-Common inputs (router and every cascader variant): the pooled X-VLA encoder features of the current observation, the robot state, the remaining pi0.5 budget, the remaining time under the decider's own profile, and the steps elapsed. There is no task-ID or separate task-text input: the encoder features already reflect the instruction, and an explicit task input would let a decider memorize its 8 training tasks, which cannot transfer to an unseen test task.
+Common inputs (router and every cascader variant): both pooled X-VLA feature vectors of the current observation (main encoder output and wrist camera tokens, §3), the robot state, the remaining pi0.5 budget, the remaining time under the decider's own profile, and the steps elapsed. There is no task-ID or separate task-text input: the encoder features already reflect the instruction, and an explicit task input would let a decider memorize its 8 training tasks, which cannot transfer to an unseen test task.
 
 Router: the common inputs only. It never sees X-VLA's proposed actions or anything derived from them.
 
@@ -81,7 +87,7 @@ All cascader variants add:
 Variant-specific inputs (K = 5 [ASSUMPTION]):
 - `cascader_nospread` (ablation 1): no spread inputs.
 - `cascader_chunkspread` (ablation 2): chunk-time spread: at each chunk point, the executed chunk plus 4 `/sample` chunks give K samples; the spread summary is computed separately for each 10-step segment of the chunk and reused at that segment's decision point.
-- `cascader_full` (headline): fresh spread and drift at every decision point. At a chunk point these come from the K chunk-time samples. At a mid point a `/sample` probe draws K fresh chunks for the current observation; fresh spread is computed over their first 10 actions, and drift is the distance between the 10 queued actions about to execute and the mean of the K fresh first-10 actions. The robot still executes the queued actions.
+- `cascader_full` (headline): fresh spread and drift at every decision point. At a chunk point these come from the K chunk-time samples. At a mid point a `/sample` probe draws K fresh chunks for the current observation and the measured end-effector pose (§3); fresh spread is computed over their first 10 actions, and drift is the distance between the 10 queued actions about to execute and the mean of the K fresh first-10 actions. The robot still executes the queued actions.
 
 Spread summary for a 10-step segment: the mean over steps of the standard deviation of target end-effector positions across samples, the maximum over steps of that standard deviation, the mean angular deviation of target rotations from their mean, and the fraction of samples disagreeing with the majority gripper command. Drift: mean position distance, mean angular distance, and fraction of steps with gripper disagreement.
 
@@ -89,7 +95,14 @@ Spread summary for a 10-step segment: the mean over steps of the standard deviat
 
 Full measurement. In base, exploration and DAgger rollouts, the harness records at every decision point everything any decider could need: features, the proposal, free signals, the 4 extra `/sample` chunks at chunk points, and a K-sample `/sample` probe at mid points. Measuring at every point (not only at points later branched) keeps the dataset complete for future deciders (§13). If the budget requires it (§12), probes are recorded only at sampled decision points and the chunk points their spread depends on. Branch rollouts record outcomes only, not measurements.
 
-Snapshots. In base, exploration and DAgger rollouts, a snapshot is taken at every decision point, after that point's calls. It stores the flattened MuJoCo state (`env.sim.get_state().flatten()`), task id, initial-state index, step count, pi0.5 budget used, which model was driving, X-VLA's remaining queued actions (for a chunk point, the fresh chunk), X-VLA's last predicted pose (for the quirk), the episode seed, the event log up to that point, and the measurements above. Restoring a snapshot means `env.set_init_state(state)`, a forward pass of the simulator, resetting the controller to the correct mode, restoring the X-VLA queue, re-rendering observations, and restoring the event log, budget and step counter; no settle steps are taken after a restore.
+Snapshots. In base, exploration and DAgger rollouts, a snapshot is taken at every decision point, after that point's calls. It stores the full simulator state and the episode state:
+- MuJoCo's integration state including the constraint solver's warm start (`mj_getState` with `mjSTATE_INTEGRATION`; the flattened `env.sim.get_state()` is kept alongside for inspection), and a fingerprint of the compiled model;
+- the observation timers and buffered observation values of every observation, including the extra π0.5 cameras, so the observation at the decision point is restored exactly rather than re-rendered;
+- the controller's internal state (goals, cached pose and Jacobians, control mode) and the gripper's internal state (its integrated command);
+- LIBERO's Python-side object states (for example, whether the stove is on) and robosuite's step counters;
+- task id, initial-state index, episode seed, step count, pi0.5 budget used, which model was driving, X-VLA's remaining queued actions (for a chunk point, the fresh chunk), X-VLA's last predicted pose (for the quirk), the event log up to that point, and the measurements above.
+
+Restoring a snapshot puts all of this back into an env of the same task whose compiled model matches the fingerprint. It never calls `set_init_state` (whose forced observation update would shift the sampling timers) and never re-renders; no settle steps are taken after a restore. The replay test compares observations exactly (every camera image at both resolutions and every proprio value), not only the physics state.
 
 Base rollouts (run in Phase 0, §11): X-VLA always-local in routed mode on every task and initial state (10 × 50 = 500 episodes), run to 520 steps without a time cutoff. Exploration rollouts: one additional routed episode per task and initial state with a fresh seed (500 episodes [ASSUMPTION]), in which each decision is a random escalation with probability 0.1 [ASSUMPTION], respecting the budget, so the data contains decision points with partly used budgets and mixed control history.
 
@@ -135,7 +148,7 @@ Report, per task and as the mean and spread across folds: success rate, pi0.5 st
 In order:
 1. Build the harness (§3–§7) with placeholder latencies and time limits taken from the reference run (§2).
 2. Measure on the L4, for batch sizes 1, 2, 4 and 8: median latency and GPU time for X-VLA `/act`, `/features` and `/sample` with K = 5, and for π0.5 inference. Write the batch-size-1 medians to the config as the clock charges, and use the batched figures to set the number of simulator workers (§12). Calibrate the finger-width thresholds for the gripper-mismatch signal.
-3. Determinism and handoff tests: snapshot restore-and-replay must reproduce trajectories, including resuming X-VLA mid-chunk from a restored queue; identical seeds must reproduce identical runs; adding or removing measurement calls must not change executed trajectories; batched and unbatched inference must give the same executed actions within numerical tolerance; the clock recomputed offline from an event log must equal the live clock for every profile; forced handoffs in both directions must produce no arm jump (end-effector pose continuity).
+3. Determinism and handoff tests: snapshot restore-and-replay must reproduce trajectories, including resuming X-VLA mid-chunk from a restored queue; identical seeds must reproduce identical runs; adding or removing measurement calls must not change executed trajectories; batched and unbatched inference must give the same executed actions within numerical tolerance; the clock recomputed offline from an event log must equal the live clock for every profile; forced handoffs in both directions must produce no arm jump (end-effector pose continuity). Every equality and determinism test that passed on the Mac (including the adapter and server equivalence tests against the reference code) must be re-run on the L4 VM (Linux, EGL rendering, CUDA) before the freeze, because rendering and floating-point results can differ across platforms. Mac results show the code paths are right; only VM results count for parity and determinism.
 4. π0.5 parity: `pi05_only` on initial states 0–9 of every task (100 episodes), 520-step limit, no time cutoff, event-logged, compared episode by episode with the reference run's results on the same initial states. The success rate must lie within sampling error of the reference on those episodes; otherwise find and fix the preprocessing difference first.
 5. Base rollouts: X-VLA always-local in routed mode on all 500 episodes, 520-step limit, no time cutoff, full measurement and snapshots at every decision point. Their success at 520 steps is the X-VLA parity check against the reference 405/500, within sampling error.
 6. Compute the per-task time limits and the margin m (§5) from the base rollouts and the π0.5 parity episodes, and write them to the config. Report, per task, the limit and the share of π0.5 successes that fit within it.
@@ -149,6 +162,8 @@ Throughput. The reference run shows simulation takes about 1 s of CPU time per 3
 
 Indicative budget split (estimates, to be replaced by the pilot's measurements): Phase 0 including base rollouts about $8; a pilot at the start of Phase 1 about $2 (a small set of exploration rollouts and branches that measures rollouts per hour); the rest of Phase 1 about $16; training all deciders about $2, or $0 if run on the user's own computer from downloaded features and labels (§13); Phase 3 DAgger about $8; evaluation about $11; storage during the project about $1; about $2 in reserve. After the pilot, recompute the full plan from measured throughput and choose reductions before committing. If the plan will not fit, reduce in this order: lower the decision-point sampling fraction, drop branch 3, record `/sample` probes only at sampled decision points (and the chunk points their spread depends on) instead of at every decision point, halve the exploration rollouts, use 2 seeds instead of 3, skip the ablation 2 evaluation, skip the pre-DAgger router evaluation, then reduce initial states per task.
 
+Rendering. Cameras may be rendered only on the steps whose observations a model or a snapshot actually uses, with their sampling timers kept in step with the always-on observations. This is approved only after restore (§7) is in place, and only if it passes the same exact-equality tests as always-on rendering. On the VM, EGL rendering shares the L4 with model inference, so this also frees GPU time, which matters more than the CPU saving.
+
 Job ordering for graceful stopping. Within each phase, jobs are ordered so that stopping at any point leaves a usable, balanced dataset. Episode-level jobs (exploration, DAgger, evaluation) run in a random order across all tasks and initial states. Branch jobs run in three tiers: first, seeds 1 and 2 of branches 1, 2 and 4 for every sampled decision point; second, seed 3 of branches 1, 2 and 4; third, branch 3. Within each tier, decision points run in a random order across all tasks, so a partial tier is equivalent to a lower sampling fraction. Training and evaluation use only decision points whose required branches and seeds are complete.
 
 Spend guard. Google Cloud budgets only send alerts and do not stop a running VM, so the harness enforces its own limit. A spend ledger stored in the bucket records cumulative VM hours, the hourly rate (set in the config from the current Spot price) and estimated storage cost, and survives VM restarts. At a soft limit of $40 the guard emails the user; at a hard limit of $45 it stops taking new jobs, lets in-progress jobs finish or abandons them cleanly, syncs all results to the bucket, and shuts the VM down. A Google Cloud budget alert at 50%, 80% and 100% of $50 is configured as a backup, and the ledger is reconciled against the actual billing report at least weekly, since alerts can lag by hours.
@@ -161,7 +176,7 @@ During the project, all data lives in a Cloud Storage bucket. At the end, everyt
 
 Dataset contents (dataset v1, tied to harness v1.0):
 - Per episode (base, exploration, DAgger, evaluation): metadata, full event log, per-step end-effector pose and gripper trajectory, and outcome.
-- Per decision point: the snapshot, the camera images at each model's native resolution (lossless PNG), the encoder features, every raw `/act` and `/sample` chunk, the free signals, and the spread and drift summaries.
+- Per decision point: the snapshot, the camera images at each model's native resolution (lossless PNG), both pooled feature vectors, every raw `/act` and `/sample` chunk, the free signals, and the spread and drift summaries.
 - Per branch: event log, per-step trajectory and outcome.
 - Per trained decider: checkpoint, config, fold, chosen stopping epoch and λ, and a manifest of the training data used.
 - Sample videos from evaluation, and the results report.
@@ -206,3 +221,14 @@ Steps that require max effort:
 7. Re-planning the budget after the pilot (§12), and interpreting the final results (§10).
 
 Also raise an effort checkpoint whenever an unexplained discrepancy appears that could silently corrupt labels or results, even if it falls outside the steps above.
+
+## 17. Amendment log
+
+Approved by the user on 2026-11-20, after effort step 1 (findings in `docs/HARNESS.md`):
+1. §2: pins add hf-libero 0.1.4 and the LIBERO scene assets at revision 0b3ea86b.
+2. §3, §6, §13: pooled features are two 1,024-value vectors (main encoder output, wrist camera tokens); both are stored and every decider takes both. Replaces the mean-pooling assumption.
+3. §3, §6: mid-chunk `/sample` probes send the measured end-effector pose; the extra samples at a chunk point reuse the exact `/act` request, including the quirk pose.
+4. §3: π0.5's 360 px images come from extra cameras kept in step with the native ones; snapshots and restore cover them.
+5. §7: restore restores the full simulator state (MuJoCo state with solver warm start, observation timers and buffered values, controller and gripper state, LIBERO object states) instead of re-rendering; the replay test compares observations exactly.
+6. §11 step 3: every equality and determinism test that passed on the Mac is re-run on the L4 VM before the freeze; only VM results count for parity and determinism.
+7. §12: rendering only the observations that are used is approved after restore is done, if it passes the same exact-equality tests.

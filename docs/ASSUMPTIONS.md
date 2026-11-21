@@ -90,6 +90,18 @@ Details and consequences in `docs/HARNESS.md`. All comparisons are exact equalit
 | U13 | The π0.5 server equals `lerobot-eval`'s per-step processing with real weights. | `test_pi05_server_matches_lerobot_eval_step` on the VM (needs the gated tokenizer). |
 | U14 | The X-VLA server with the real weights and LoRA on the L4 equals the authors' handler. | `test_model_servers.py -k xvla` on the VM with `VLAR_XVLA_MODEL_PATH`. |
 
+### Snapshot restore and determinism (2026-11-20, local, CPU MuJoCo)
+
+Details in `docs/HARNESS.md`, "Snapshots". Exact equality on one machine; the VM re-run (U15) is what counts.
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V24 | Restoring a decision-point snapshot (through the file format) into the same env, an env that ran another episode with another env seed, or a never-reset env reproduces the rest of the episode exactly: every observation value at both camera sizes, MuJoCo's integration state, actions and success flags. | `tests/reference/test_snapshot_replay.py::test_restore_and_replay_reproduce_the_trajectory_exactly` (9 decision points x 3 targets) |
+| V25 | Identical seeds reproduce identical runs in a reused env; measurement calls and snapshot capture do not change the executed trajectory. | `test_identical_seeds_reproduce_identical_runs_without_measurements_or_snapshots` |
+| V26 | Each of these, if not restored, changes the replay: the solver warm start, fixture placement, the gripper's integrated command, the observation timers; a missing controller state changes both models' requests. The pre-amendment restore (set_init_state + re-render) is caught. | sensitivity tests in the same file |
+| V27 | Fixture positions depend on `env.seed` (NumPy's global RNG at reset), not on the initial state: up to ~19 mm in tasks 2, 3, 5, 8, 9. The reference runs used different seeds (X-VLA 142+k, LeRobot 1000+k). | probe on all 10 tasks, 12 seeds each; `test_each_piece_of_state_matters[fixture_placement]` |
+| U15 | V19-V26 hold on the L4 VM (Linux, EGL, CUDA). | VM re-run list in `docs/HARNESS.md` |
+
 ## Third-party pins
 
 Shallow clones in `third_party/` (git-ignored), read on 2026-10-10. Nothing installed.

@@ -33,7 +33,8 @@ class DecisionPoint:
 @dataclass(frozen=True)
 class CommonInputs:
     """Inputs every decider gets (§6). No task id or task text, by design."""
-    features: Array                # pooled X-VLA encoder features of the current observation
+    features_main: Array           # mean of X-VLA's encoder output tokens (main image + text), 1024
+    features_wrist: Array          # mean of X-VLA's wrist-camera image tokens, 1024
     robot_state: Array             # measured robot state; layout fixed by the adapters and the datacard
     budget_remaining_steps: int
     time_remaining_s: float        # under the decider's own profile; inf in scripted runs
