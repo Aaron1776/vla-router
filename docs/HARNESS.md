@@ -97,8 +97,46 @@ In 5 of the 10 tasks a fixture's position depends on `env.seed(...)`: the stove 
 and wine rack (3), desk caddy (5), microwave (9), by up to about 19 mm across seeds. The initial-state
 file only holds joint positions. The two reference runs seeded differently (X-VLA `142 + k`, LeRobot
 `1000 + k` for initial state k), so their scenes for the same initial state differed in those tasks. The
-harness takes the env seed as an explicit input to `setup_episode`; which convention the runs use is a
-collection decision (open question to the user, 2026-11-20).
+harness takes the env seed as an explicit input to `setup_episode`. Decision (2026-11-21, SPEC §3): the
+**scene seed** is 142 + k in every project run (the X-VLA reference's convention), 1000 + k only in the π0.5
+parity run; everything else random comes from a separate **rollout seed** (`vlar_harness/seeding.py`).
+
+## Episode engine and handoffs (`episode.py`; effort step 3)
+
+`Episode` runs one episode on one simulator in any of the three modes and enforces what a decider must not
+be able to change: decision points every 10 steps, the 260-step π0.5 budget (counted in executed steps;
+`BudgetExhausted` once fewer than 10 remain), the step limit, and the §3 handoff rules:
+- escalate: X-VLA's queue is discarded and its remembered pose forgotten, delta mode, a fresh π0.5 call,
+  its first 10 actions;
+- back to X-VLA: absolute mode; the chunk-point `/act` at that decision point sends the measured pose;
+- abandoned escalation (every attempt failed): absolute mode, a fresh X-VLA call (`act_fresh`) from the
+  measured pose runs 10 actions and leaves 20 queued; no budget charged.
+Before every segment the engine checks the controller is in that model's mode and refuses to run otherwise.
+The π0.5 request goes through a `RemoteLink` (`DirectLink` until the network model of effort step 4); the
+engine emits provisional events that step 4 turns into the event log and clock.
+
+Seeds (SPEC §3): `seeding.scene_seed` (142 + k, or 1000 + k under the `pi05_parity` option) feeds only
+`env.seed`; every model call's noise seed comes from `seeding.call_seed(rollout_seed, step, model, call)`.
+
+**Verified on the Mac** (`tests/reference/test_handoff.py`, fake policies): forced handoffs in both
+directions (mid-chunk, chunk point, consecutive escalations, runs of four) show no arm jump, in both
+`xvla_state_mode`s: each π0.5 first step's goal is within one delta step of the arm, X-VLA is always sent
+exactly the measured pose after π0.5 and its first target is within 3 cm, and every step ran in its model's
+mode. Abandoned escalations hand back from the measured pose and charge no budget. Exactly 26 escalations fit
+the budget. Routed always-local is identical to `xvla_only`, which is identical to the authors' own rollout
+loop; `pi05_only` calls π0.5 every 10 steps in delta mode. Restoring an engine snapshot into another env
+continues exactly. Sensitivity: removing the "forget the remembered pose" rule is caught (stale pose sent,
+first target far from the arm), and a skipped mode switch is refused. The same continuity checks run against
+the real models on the VM (`test_model_handoff_continuity_on_the_vm`).
+
+## Reference-run files (`vlar_ops/reference_runs.py`)
+
+`References/` (read-only): `task_<t>/eval_info.json` (π0.5, 50 successes per task in episode order) and
+`progress.jsonl` (X-VLA). `vlar-ops reference check` validates the layout and the totals the user confirmed:
+π0.5 478/500; X-VLA 412/500 at 900 steps, 405/500 within 520; 500 episodes each, no duplicates or gaps.
+Episode e used initial state e, with scene seed 1000 + e (π0.5) or 142 + e (X-VLA). `compare()` pairs a
+project run with the reference on the same initial states (Wilson intervals, paired difference with its
+interval, exact McNemar test); on the π0.5 parity subset the reference scored 97/100.
 
 ## X-VLA adapter (`adapters/xvla.py`)
 
@@ -161,7 +199,8 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py` | adapters vs both references; snapshot restore and replay; determinism; sensitivity checks |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; sensitivity checks |
+| simulator, both servers up | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
 | LeRobot | `VLAR_PI05_CHECKPOINT=… pytest tests/reference/test_model_servers.py -k pi05` | server vs lerobot-eval's per-step processing (needs the gated tokenizer) |
 | main | `pytest tests` | config, queue, spend guard, packaging |

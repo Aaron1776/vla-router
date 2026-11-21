@@ -37,7 +37,8 @@ def unit_uniform(*parts: Any) -> float:
     return int.from_bytes(h[:8], "big") / 2**64
 
 
-def episode_seed(namespace: int, task_id: int, init_idx: int) -> int:
+def rollout_seed(namespace: int, task_id: int, init_idx: int) -> int:
+    """Rollout seed of an episode (SPEC §3). The scene seed comes from the initial state, in the harness."""
     return namespace + 100 * task_id + init_idx
 
 
@@ -96,10 +97,11 @@ class Plan:
 # ---------------------------------------------------------------- episode plans
 
 def episode_plan(phase: str, *, tasks: Sequence[int], inits: Sequence[int], namespace: int,
-                 mode: str, profile: str, record: str, order_seed: int,
+                 mode: str, profile: str, record: str, order_seed: int, scene: str = "project",
                  extra: Optional[Callable[[int, int], Mapping[str, Any]]] = None) -> Plan:
     """One job per (task, initial state), shuffled across all of them (§12).
 
+    `scene` names the harness's `scene_seed` option: `project` everywhere except the π0.5 parity run.
     `extra(task, init)` adds per-episode fields, e.g. which decider drives it in DAgger.
     """
     pairs = [(t, i) for t in tasks for i in inits]
@@ -107,11 +109,11 @@ def episode_plan(phase: str, *, tasks: Sequence[int], inits: Sequence[int], name
     jobs = []
     for order, (t, i) in enumerate(pairs):
         subject = f"{phase}/t{t}/i{i}"
-        spec = {"task_id": t, "init_idx": i, "seed": episode_seed(namespace, t, i),
+        spec = {"task_id": t, "init_idx": i, "rollout_seed": rollout_seed(namespace, t, i), "scene": scene,
                 "mode": mode, "profile": profile, "record": record, **(extra(t, i) if extra else {})}
         jobs.append(Job(job_id(subject, "episode", 1), phase, "episode", subject, 1, 0, order, spec))
     params = {"tasks": list(tasks), "inits": list(inits), "namespace": namespace, "mode": mode,
-              "profile": profile, "record": record, "order_seed": order_seed}
+              "profile": profile, "record": record, "order_seed": order_seed, "scene": scene}
     return Plan(phase, params, jobs)
 
 

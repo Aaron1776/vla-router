@@ -190,3 +190,8 @@ options:
     choices:
       all: every_decision_point
       sampled: sampled_points_and_their_chunk_points   # §12 reduction step 3
+  scene_seed:                 # §3: scene seed = offset + initial-state index
+    default: project
+    choices:
+      project: 142              # every project run; the X-VLA reference's convention (42 + k + 100)
+      pi05_parity: 1000         # the π0.5 parity run only; lerobot-eval's seed 1000 + episode

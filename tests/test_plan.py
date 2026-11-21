@@ -111,9 +111,11 @@ def test_dp_sampling_is_deterministic_and_near_the_fraction():
 
 def test_episode_plan_seeds_and_roundtrip(tmp_path):
     coll = P.load_collection_config()
-    plan = P.episode_plan("explore", tasks=range(10), inits=range(50), namespace=coll["seed_namespaces"]["explore"],
+    plan = P.episode_plan("explore", tasks=range(10), inits=range(50),
+                          namespace=coll["rollout_seed_namespaces"]["explore"],
                           mode="routed", profile="none", record="full", order_seed=coll["order_seed"])
-    seeds = [j.spec["seed"] for j in plan.jobs]
+    seeds = [j.spec["rollout_seed"] for j in plan.jobs]
+    assert {j.spec["scene"] for j in plan.jobs} == {"project"}
     assert len(set(seeds)) == 500
     assert {j.spec["task_id"] for j in plan.jobs[:30]} != {plan.jobs[0].spec["task_id"]}   # shuffled across tasks
     plan.write(tmp_path / "p.jsonl")
@@ -121,7 +123,7 @@ def test_episode_plan_seeds_and_roundtrip(tmp_path):
     assert again.plan_id == plan.plan_id and again.jobs == plan.jobs
 
 
-def test_seed_namespaces_are_disjoint():
-    ns = P.load_collection_config()["seed_namespaces"]
+def test_rollout_seed_namespaces_are_disjoint():
+    ns = P.load_collection_config()["rollout_seed_namespaces"]
     ranges = sorted((v, v + 100 * 9 + 49) for v in ns.values())
     assert all(a_end < b_start for (_, a_end), (b_start, _) in zip(ranges, ranges[1:]))

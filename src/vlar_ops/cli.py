@@ -88,6 +88,17 @@ def cmd_spend(a: argparse.Namespace) -> None:
         print(f"spend daemon exited in state {state}")
 
 
+def cmd_reference(a: argparse.Namespace) -> None:
+    from . import reference_runs
+    report = reference_runs.check(a.dir)
+    t = report["totals"]
+    print(f"reference run OK: {t['episodes']} episodes per model | pi0.5 {t['pi05_successes']}/500 | "
+          f"X-VLA {t['xvla_successes_900']}/500 at 900 steps, {t['xvla_successes_520']}/500 within 520 | "
+          f"pi0.5 parity subset (initial states 0-9): {report['pi05_parity_subset']}/100")
+    for task, row in report["per_task"].items():
+        print(f"  task {task}: pi0.5 {row['pi05']}/50, X-VLA {row['xvla_520']}/50 within 520")
+
+
 def cmd_package(a: argparse.Namespace) -> None:
     if a.action == "build":
         s = packaging.build(a.src, a.out, a.name, int(a.part_gb * 1024**3))
@@ -118,6 +129,11 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--usd-per-gb-month", type=float)
     s.add_argument("--ops-config")
     s.set_defaults(fn=cmd_spend)
+
+    r = sub.add_parser("reference")
+    r.add_argument("action", choices=["check"])
+    r.add_argument("--dir", default="References")
+    r.set_defaults(fn=cmd_reference)
 
     p = sub.add_parser("package")
     p.add_argument("action", choices=["build", "verify"])

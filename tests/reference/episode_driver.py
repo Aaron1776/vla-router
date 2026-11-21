@@ -21,10 +21,10 @@ import numpy as np
 SEGMENT = 10
 
 
-def call_seed(episode_seed: int, step: int, model: str, call: str, sample: int = 0) -> int:
-    """Stand-in for the harness's per-call seed derivation (effort step 5)."""
-    h = hashlib.sha256(f"{episode_seed}|{step}|{model}|{call}|{sample}".encode()).digest()
-    return int.from_bytes(h[:4], "little")
+def call_seed(rollout_seed: int, step: int, model: str, call: str, sample: int = 0) -> int:
+    """The harness's per-call seed derivation (SPEC §3)."""
+    from vlar_harness import seeding
+    return seeding.call_seed(rollout_seed, step, model, call, sample)
 
 
 def digest(a) -> str:

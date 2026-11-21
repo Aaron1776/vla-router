@@ -3,13 +3,17 @@
 
 schema: 1
 
-# Episode seeds are namespace + 100 * task_id + init_idx. The namespaces are disjoint, so
-# evaluation seeds are never used during data collection (§7). All evaluated methods and
-# scripted baselines share the `eval` seeds, which makes their per-episode results paired.
-seed_namespaces:
+# Two seeds per episode (SPEC §3). The scene seed is not chosen here: the harness sets it from the
+# initial state (142 + k; 1000 + k only for the π0.5 parity run, harness option `scene_seed`).
+# Rollout seeds are namespace + 100 * task_id + init_idx. The namespaces are disjoint, so the base,
+# exploration, DAgger and evaluation runs of one task and initial state never share a rollout seed and
+# evaluation's are never used in data collection. Every evaluated method and baseline uses the same
+# `eval` rollout seed for a given task and initial state, so per-episode results pair up (SPEC §10).
+rollout_seed_namespaces:
   base: 1000000
   explore: 2000000
   dagger: 3000000
+  pi05_parity: 5000000
   eval: 7000000
 
 exploration:

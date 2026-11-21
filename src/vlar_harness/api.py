@@ -132,9 +132,10 @@ class BranchResult:
 
 
 class HarnessClient(Protocol):
-    def reset(self, task_id: int, init_idx: int, seed: int, mode: Mode = "routed",
+    def reset(self, task_id: int, init_idx: int, rollout_seed: int, mode: Mode = "routed",
               profile: Profile = "none", record: Record = "off") -> Optional[DecisionPoint]:
-        """Set up an episode (scene, initial state, settle steps). Routed mode returns the first point."""
+        """Set up an episode (scene, initial state, settle steps). The scene seed is not a parameter: the
+        harness sets it from the initial state (SPEC §3). Routed mode returns the first point."""
 
     def restore(self, snapshot_id: str) -> DecisionPoint:
         """Resume from a snapshot taken at a decision point (no settle steps)."""

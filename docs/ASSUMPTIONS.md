@@ -102,6 +102,15 @@ Details in `docs/HARNESS.md`, "Snapshots". Exact equality on one machine; the VM
 | V27 | Fixture positions depend on `env.seed` (NumPy's global RNG at reset), not on the initial state: up to ~19 mm in tasks 2, 3, 5, 8, 9. The reference runs used different seeds (X-VLA 142+k, LeRobot 1000+k). | probe on all 10 tasks, 12 seeds each; `test_each_piece_of_state_matters[fixture_placement]` |
 | U15 | V19-V26 hold on the L4 VM (Linux, EGL, CUDA). | VM re-run list in `docs/HARNESS.md` |
 
+### Handoffs, run modes and the reference files (2026-11-21, local)
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V28 | With the engine's handoff rules, forced handoffs in both directions show no arm jump (π0.5's first goal within one delta step; X-VLA sent the exact measured pose and its first target within 3 cm; every step in its model's controller mode); abandoned escalations charge no budget; 26 escalations fit the budget. Fake policies on the Mac. | `tests/reference/test_handoff.py` |
+| V29 | Routed always-local is identical to `xvla_only`, which is identical to the authors' own rollout loop at the same scene seed. | `test_routed_always_local_is_exactly_xvla_only`, `test_xvla_only_matches_the_authors_client_loop` |
+| V30 | The reference files in `References/` hold 500 episodes per model with π0.5 478/500, X-VLA 412/500 at 900 steps and 405/500 within 520; π0.5 scored 97/100 on initial states 0-9 (the parity subset). | `vlar-ops reference check`; `tests/test_reference_runs.py` |
+| U16 | Handoff continuity holds with the real models (X-VLA's first target after π0.5 near the arm). | `test_model_handoff_continuity_on_the_vm` on the VM |
+
 ## Third-party pins
 
 Shallow clones in `third_party/` (git-ignored), read on 2026-10-10. Nothing installed.

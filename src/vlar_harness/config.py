@@ -251,6 +251,9 @@ def validate(values: Mapping[str, Any], raw: Mapping[str, Any]) -> None:
     need(0 < net.get("rtt_tail_prob", 0) < 0.5, "network rtt_tail_prob must be in (0, 0.5)")
     need(0 <= net.get("p_fail", -1) < 1, "network p_fail must be in [0, 1)")
     need(isinstance(net.get("max_retries"), int) and net["max_retries"] >= 0, "network max_retries must be >= 0")
+    scene = values["option_values"].get("scene_seed")
+    need(isinstance(scene, int) and not isinstance(scene, bool) and scene >= 0,
+         "option scene_seed must be a non-negative integer offset")
 
     if errs:
         raise ConfigError("invalid harness config:\n  - " + "\n  - ".join(errs))
