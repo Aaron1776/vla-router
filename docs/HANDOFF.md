@@ -10,9 +10,12 @@ re-run list).
   "Effort checkpoint: please switch to max effort before I start [step]." and wait for confirmation. When the
   step is finished, say: "Effort checkpoint complete: you can switch back to xhigh." Also raise a checkpoint for
   any unexplained discrepancy that could silently corrupt labels or results.
-- **Commits.** Only when the user asks. So far the user has asked, before each step, for the previous step to be
-  committed on branch `harness-v1` with the test results in the commit message. End commit messages with
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never commit to `main`; never push.
+- **Commits and pushes.** Only when the user asks. So far the user has asked, before each step, for the previous
+  step to be committed on branch `harness-v1` with the test results in the commit message. End commit messages with
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. The user had `harness-v1` pushed to `origin` on
+  2026-11-21 so the project partner can see it; push again only when asked. Never commit to or push `main`.
+- **docs/STATUS.md** is the overview for readers with no context (the project partner and their AI model); update it
+  whenever the state changes, together with this file.
 - **Spec changes** need the user's approval; log each approved one in SPEC §17 with its date.
 - **Platform rule (SPEC §11 step 3).** Everything so far was verified on a Mac (CPU MuJoCo, CGL rendering). Mac
   results only show the code paths are right; every equality and determinism test must be re-run on the L4 VM

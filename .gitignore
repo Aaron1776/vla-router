@@ -29,6 +29,10 @@ outputs/
 checkpoints/
 wandb/
 *.mp4
+*.webm
+*.mov
+*.avi
+*.mkv
 *.safetensors
 *.ckpt
 *.pt
