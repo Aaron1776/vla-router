@@ -11,8 +11,13 @@ a call never shifts another call's randomness:
 - `call_seed`: model noise for one call (X-VLA /act and /sample, π0.5), keyed by step, model, call type
   and sample index;
 - `stream_seed`: a named stream (the network model, exploration's random escalations);
+- `network_attempt_seed`: one attempt of one remote request, under the network stream, keyed by step,
+  the request's identity (model and call type) and the attempt number (SPEC §5, amendment 13), so a
+  retry gets fresh draws and nothing depends on the clock, the overhead profile or other requests;
 - `branch_rollout_seed`: the rollout seed of one branch continuation from a decision point, never equal
   to the parent rollout's.
+
+`uniform(seed, label)` turns a seed into a draw in (0, 1) without a stateful generator.
 """
 
 from __future__ import annotations
@@ -50,6 +55,23 @@ def stream_seed(rollout_seed: int, name: str) -> int:
     if name not in STREAMS:
         raise ValueError(f"stream must be one of {STREAMS}")
     return _derive("stream", int(rollout_seed), name)
+
+
+def network_attempt_seed(rollout_seed: int, step: int, model: str, call: str, attempt: int) -> int:
+    if model not in MODELS:
+        raise ValueError(f"model must be one of {MODELS}")
+    if call not in CALL_TYPES:
+        raise ValueError(f"call must be one of {CALL_TYPES}")
+    if int(attempt) < 0:
+        raise ValueError("attempt numbers start at 0")
+    return _derive("network-attempt", stream_seed(rollout_seed, "network"), int(step), model, call, int(attempt))
+
+
+def uniform(seed: int, label: str) -> float:
+    """A draw in (0, 1) from (seed, label): 52 bits of SHA-256, centred in its bin, so never 0 or 1.
+    Pure integer and power-of-two arithmetic, so the same on every platform."""
+    x = _derive("uniform", int(seed), label) >> 11              # 52 bits
+    return (x + 0.5) / 4503599627370496.0                        # 2**52
 
 
 def branch_rollout_seed(parent_rollout_seed: int, decision_index: int, branch: str, seed_index: int) -> int:

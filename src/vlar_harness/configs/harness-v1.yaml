@@ -177,9 +177,16 @@ options:
         p_fail: 0.05
         timeout_s: 1.0
         backoff_s: 0.2
-        max_retries: 2
-        upload_image_px: 224    # [ASSUMPTION] the robot uploads what pi0.5 consumes
-        jpeg_quality: 90        # [ASSUMPTION]
+        max_retries: 2          # routed escalation: 1 + 2 attempts, then abandoned (X-VLA drives the segment)
+        max_attempts_pi05_only: 20   # pi0.5 alone retries until success; safety cap, then end reason `network` (§5, amendment 13)
+        # Upload (§5, amendment 14): the two 224 px images pi0.5 consumes, as JPEG at quality 90 (Pillow),
+        # plus state, task text and framing. Only the clock uses these; the model's input is unchanged.
+        upload_image_px: 224
+        jpeg_quality: 90
+        upload_image_bytes: 20290        # median over requests of the two JPEGs' summed size
+        upload_image_bytes_status: placeholder   # Mac estimate (LeRobot flip + resize-with-pad, 160 requests); Phase 0 step 2 measures it on the server
+        upload_other_bytes: 1024         # [ASSUMPTION] 8-value state, task text and request framing
+        download_bytes: 2048             # [ASSUMPTION] 50 x 7 float32 actions (1,400 bytes) plus framing
   xvla_state_mode:
     default: quirk
     choices:

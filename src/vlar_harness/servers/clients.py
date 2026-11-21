@@ -59,3 +59,14 @@ class PI05Client:
         out = json_numpy.loads(resp.content)
         out["actions"] = np.asarray(out["actions"], dtype=np.float32)
         return out
+
+    def upload_bytes(self, raw_obs: dict, task: str, quality: int = 90) -> dict[str, Any]:
+        """Phase 0 step 2: JPEG sizes of the images π0.5 consumes for this observation (SPEC §5, amendment 14)."""
+        import json_numpy
+
+        body = json_numpy.dumps({"obs": raw_obs, "task": task, "quality": int(quality)})
+        resp = self._session.post(self.base + "/upload_bytes", data=body,
+                                  headers={"Content-Type": "application/json"}, timeout=self.timeout_s)
+        if resp.status_code != 200:
+            raise ServerError(f"π0.5 /upload_bytes failed ({resp.status_code}): {resp.text[:500]}")
+        return resp.json()

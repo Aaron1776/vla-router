@@ -103,6 +103,31 @@ class PI05Service:
         actions = np.concatenate(rows, axis=0).astype(np.float32, copy=False)
         return {"actions": actions, "timing_s": timer.spans}
 
+    def upload_jpeg_bytes(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Phase 0 step 2 (SPEC §5, amendment 14): JPEG sizes of the images π0.5 actually consumes for this
+        observation. Same preprocessing as `act`, then the policy's own `_preprocess_images` (resize with pad to
+        224 px, scaled to [-1, 1]); the cameras present in the batch are mapped back to uint8 and encoded by
+        `network.jpeg_size` at `quality` (default 90). The padding images of absent cameras are never uploaded."""
+        import torch
+        from lerobot.envs.utils import preprocess_observation
+
+        from ..network import jpeg_size
+
+        quality = int(request.get("quality", 90))
+        with self.lock, torch.no_grad():
+            observation = preprocess_observation(request["obs"])
+            observation["task"] = [request["task"]]
+            observation = self.env_preprocessor(observation)
+            observation = self.preprocessor(observation)
+            present = [k for k in self.policy.config.image_features if k in observation]
+            images, _ = self.policy._preprocess_images(observation)
+        sizes, shapes = [], []
+        for key, img in zip(present, images):                     # present cameras come first, in this order
+            u8 = ((img[0].float() + 1.0) * 127.5).round().clamp(0, 255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
+            sizes.append(jpeg_size(u8, quality))
+            shapes.append(list(u8.shape))
+        return {"cameras": present, "jpeg_bytes": sizes, "shapes": shapes, "quality": quality}
+
     def info(self) -> dict:
         return {"model": "pi05", "chunk_size": self.cfg.chunk_size, "n_action_steps": self.cfg.n_action_steps,
                 "dtype": getattr(self.cfg, "dtype", None), "device": str(self.device),
@@ -122,6 +147,15 @@ def create_app(service: PI05Service):
             body = json_numpy.loads(await request.body())
             out = await _run_sync(service.act, body)
             return Response(content=json_numpy.dumps(out), media_type="application/json")
+        except Exception as e:
+            log.exception("request failed")
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=400)
+
+    @app.post("/upload_bytes")
+    async def upload_bytes(request: Request):
+        try:
+            body = json_numpy.loads(await request.body())
+            return JSONResponse(await _run_sync(service.upload_jpeg_bytes, body))
         except Exception as e:
             log.exception("request failed")
             return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=400)

@@ -9,7 +9,7 @@ Every claim the project depends on lives here with one of four labels:
 
 An item moves to "Verified" only with evidence: the command run, its output, or a file and line.
 
-Last updated: 2026-11-20.
+Last updated: 2026-11-21.
 
 ## Verified
 
@@ -110,6 +110,18 @@ Details in `docs/HARNESS.md`, "Snapshots". Exact equality on one machine; the VM
 | V29 | Routed always-local is identical to `xvla_only`, which is identical to the authors' own rollout loop at the same scene seed. | `test_routed_always_local_is_exactly_xvla_only`, `test_xvla_only_matches_the_authors_client_loop` |
 | V30 | The reference files in `References/` hold 500 episodes per model with π0.5 478/500, X-VLA 412/500 at 900 steps and 405/500 within 520; π0.5 scored 97/100 on initial states 0-9 (the parity subset). | `vlar-ops reference check`; `tests/test_reference_runs.py` |
 | U16 | Handoff continuity holds with the real models (X-VLA's first target after π0.5 near the arm). | `test_model_handoff_continuity_on_the_vm` on the VM |
+
+### Event log, clock, network, labels and time limits (2026-11-21, local; effort step 4)
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V31 | The live clock under every profile equals the offline replay of the event log bit for bit, through network retries, abandoned escalations, both point kinds, a JSON round trip and restores from snapshots; the engine also checks this at the end of every episode. Once the budget is spent no profile pays decision overhead (SPEC amendment 15). | `tests/reference/test_clock_live.py::test_live_clocks_equal_offline_replay_for_every_profile`, `test_no_decision_overhead_once_the_budget_is_spent`; `Episode.verify_clocks` |
+| V32 | The network model's draws match the spec: round-trip median 0.06 s, 2% above 0.3 s, attempt failures at `p_fail` plus timeouts (0.0521 with the placeholder latencies), abandonment at the attempt failure rate cubed. A retry gets fresh draws and can succeed; the same rollout seed reproduces the same failure pattern; draws do not depend on other requests. | `tests/test_network_clock.py` |
+| V33 | Retries never change executed actions: π0.5 alone through a lossy network executes exactly the actions of a perfect network; with every attempt failing it stops after 20 attempts with end reason `network`. | `test_pi05_only_retries_change_only_the_clock`, `test_pi05_only_gives_up_after_20_attempts_with_end_reason_network` |
+| V34 | A live time limit cuts at the same time and step that offline scoring of the uncut run gives, whether the crossing falls inside a run of steps, at a decision point's overhead or at a π0.5 request. | `test_live_time_limit_cuts_where_offline_scoring_says` |
+| V35 | Branch runs reproduce across envs for the same seed index and differ for another; labels from real branch logs equal direct scoring under every profile. | `test_branches_reproduce_and_differ_by_seed_index`, `test_labels_from_real_branch_runs` |
+| A12 | The π0.5 upload is about 20.3 KB of JPEG per request (two 224 px images at quality 90): a Mac estimate from LeRobot's flip and resize on 160 observations, with fake-policy arm motion. Phase 0 step 2 measures it on the server with the policy's own preprocessing. | `config: options.network.choices.default.upload_image_bytes` (status `placeholder`) |
+| U17 | V31-V35 hold on the L4 VM. | VM re-run list in `docs/HARNESS.md` |
 
 ## Third-party pins
 

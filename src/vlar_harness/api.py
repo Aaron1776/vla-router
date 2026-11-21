@@ -17,7 +17,7 @@ Profile = Literal["none", "router", "cascader_nospread", "cascader_chunkspread",
 Record = Literal["off", "full"]
 Choice = Literal["local", "escalate"]
 PointKind = Literal["chunk", "mid"]
-EndReason = Literal["success", "step_limit", "time_limit"]
+EndReason = Literal["success", "step_limit", "time_limit", "network"]   # network: π0.5 alone hit the retry cap (§5)
 Array = Any
 
 
@@ -133,9 +133,11 @@ class BranchResult:
 
 class HarnessClient(Protocol):
     def reset(self, task_id: int, init_idx: int, rollout_seed: int, mode: Mode = "routed",
-              profile: Profile = "none", record: Record = "off") -> Optional[DecisionPoint]:
+              profile: Profile = "none", record: Record = "off", time_limit: bool = False) -> Optional[DecisionPoint]:
         """Set up an episode (scene, initial state, settle steps). The scene seed is not a parameter: the
-        harness sets it from the initial state (SPEC §3). Routed mode returns the first point."""
+        harness sets it from the initial state (SPEC §3). Routed mode returns the first point. `time_limit`
+        applies the task's time limit live under `profile` (runs with a live learned decider, §5); scripted
+        runs leave it off, run uncut and are scored offline from their event logs."""
 
     def restore(self, snapshot_id: str) -> DecisionPoint:
         """Resume from a snapshot taken at a decision point (no settle steps)."""

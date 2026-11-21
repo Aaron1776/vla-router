@@ -58,11 +58,11 @@ class FailAt:
     def __init__(self, steps):
         self.fail_steps = set(steps)
 
-    def request(self, call, *, step, rollout_seed):
-        from vlar_harness.episode import RemoteOutcome
+    def request(self, call, *, step, rollout_seed, max_attempts):
+        from vlar_harness.network import RemoteOutcome, attempt_record
         if step in self.fail_steps:
-            return RemoteOutcome(False, None, [{"attempt": i, "ok": False} for i in range(3)])
-        return RemoteOutcome(True, np.asarray(call(), dtype=np.float32), [{"attempt": 0, "ok": True}])
+            return RemoteOutcome(False, None, [attempt_record(i, False, cause="dropped") for i in range(max_attempts)])
+        return RemoteOutcome(True, call(), [attempt_record(0, True, rtt_s=0.06)])
 
 
 def _spec():

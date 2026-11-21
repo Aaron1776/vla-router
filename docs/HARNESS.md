@@ -112,8 +112,8 @@ be able to change: decision points every 10 steps, the 260-step π0.5 budget (co
 - abandoned escalation (every attempt failed): absolute mode, a fresh X-VLA call (`act_fresh`) from the
   measured pose runs 10 actions and leaves 20 queued; no budget charged.
 Before every segment the engine checks the controller is in that model's mode and refuses to run otherwise.
-The π0.5 request goes through a `RemoteLink` (`DirectLink` until the network model of effort step 4); the
-engine emits provisional events that step 4 turns into the event log and clock.
+The π0.5 request goes through a `RemoteLink`: since effort step 4 the simulated network (next section) by
+default; `DirectLink` (every request through on the first attempt) remains for tests.
 
 Seeds (SPEC §3): `seeding.scene_seed` (142 + k, or 1000 + k under the `pi05_parity` option) feeds only
 `env.seed`; every model call's noise seed comes from `seeding.call_seed(rollout_seed, step, model, call)`.
@@ -130,12 +130,116 @@ continues exactly. Sensitivity: removing the "forget the remembered pose" rule i
 first target far from the arm), and a skipped mode switch is refused. The same continuity checks run against
 the real models on the VM (`test_model_handoff_continuity_on_the_vm`).
 
+## Event log, clock, network, labels and time limits (effort step 4)
+
+Modules: `network.py` (network model), `clock.py` (charges, live and offline clock, scoring), `episode.py`
+(event log, live clocks, time cut, π0.5-alone retries, branch runs), `labels.py`, `calibration.py`,
+`eventlog.py` (files, checks, handoff distances).
+
+**Event log.** Plain JSON events, one list per run (table in `episode.py`'s docstring): `start`, `xvla_act`,
+`decision_point`, `decision`, `pi05_request` (every attempt's draws and outcome), `handoff`,
+`escalation_abandoned`, `segment` (a run of executed steps: driver, start step, steps), `end` (`success`,
+`step_limit`, `time_limit` or `network`), and `restore` / `branch` for branch runs. A segment's steps are one
+event (run-length encoded); everything else is one event per occurrence. The interim file format is JSON lines
+(`eventlog.write_jsonl`), exact for every float; the dataset's Parquet tables come later.
+
+**Clock** (`clock.Charges`, `Clock`). Step 0.05 s; X-VLA `/act` and `act_fresh` `latency.xvla_act_s`; a π0.5
+request the sum over its attempts (failed: timeout, plus the backoff if another attempt follows; through:
+upload + round trip + download + `latency.pi05_infer_s`); a decision point where escalation is offered its
+profile's terms for its kind, and one where it is not (budget spent, `can_escalate` false in the log) nothing,
+since the decider is not consulted there (SPEC §5, amendment 15); everything else 0. Unknown event types are
+refused, so a new event type must be given a charge first. The clock charges the network outcome recorded in the
+log and never re-decides it.
+
+**Live equals offline, bit for bit.** The engine keeps one clock per profile. Live, every environment step is
+charged as it runs and every other event as it is emitted; offline, `clock.replay` expands each segment into
+its steps and charges them one at a time in log order, so both make the same floating-point additions in the
+same order. At the end of every episode `Episode.verify_clocks` replays the log under all five profiles and
+raises `ClockMismatch` on any difference; a restore rebuilds the clocks by replaying the snapshot's log.
+
+**Network** (`network.SimulatedNetwork`, SPEC §5, amendments 13-14). Per attempt: a drop draw against `p_fail`
+and a log-normal round trip (median 0.06 s, sigma = ln(0.30/0.06)/z(0.98) = 0.7837); an attempt fails if dropped
+or if upload + round trip + download + π0.5 inference exceeds the 1.0 s timeout (with the placeholder latencies
+an attempt fails with probability 0.0521). Draws come from `seeding.network_attempt_seed(rollout seed, step,
+model, call, attempt)` through `seeding.uniform` (SHA-256, no generator state): a retry gets fresh draws, the same
+rollout seed reproduces the same failure pattern, and nothing depends on the clock, the profile, or other
+requests. The server is called once, for the attempt that gets through, with the request's own noise seed, so
+retries never change actions. Routed: 3 attempts, then abandoned. `pi05_only`: up to `max_attempts_pi05_only`
+(20), then end reason `network`.
+
+Upload size: `upload_image_bytes` (median over requests of the two 224 px JPEGs' summed size, quality 90) +
+`upload_other_bytes` (1,024, state, text, framing). The placeholder 20,290 is a Mac estimate (LeRobot's 180° flip
+and `resize_with_pad_torch` to 224 px on 160 observations from all tasks; per camera about 11.0 KB main and
+9.6 KB wrist). Phase 0 step 2 replaces it: the π0.5 server's `/upload_bytes` returns the JPEG sizes of the images
+the policy itself produces (`PI05Policy._preprocess_images` after the same preprocessing as `/act`);
+`network.median_upload_image_bytes` takes the median and `config.write_upload_size` stores it in every network
+choice (calibration path `options.network.choices.*.upload_image_bytes`). Upload is about 8.5 ms at 20 Mbps.
+
+**Time limit, live and offline.** Scripted runs (base, exploration, branches, scripted baselines) run uncut and
+are scored offline (`clock.score(...).within(limit)`: success with the clock at the success step at most the
+limit). Runs with a live learned decider start with `time_limit=True` (`reset()`'s flag, SPEC §15, amendment 16):
+the run's profile clock is checked after
+every step and every model call (`/act`, a decision point's overhead, a π0.5 request), and the episode ends with
+`time_limit`; a success on the step that crosses the limit is not a success. Because the clock never decreases,
+`clock.first_crossing` on an uncut log finds exactly where a live limit would have cut.
+
+**Branches** (`Episode.run_branch`). Restore, rollout seed `seeding.branch_rollout_seed(parent, point, branch,
+seed index)`, no time cut, escalate at the first `pi05_calls` decision points (0, 1, min(3, budget), or the
+budget's maximum, as the planner counts them), then local to the step limit. An abandoned escalation counts as
+one of the calls. This keeps branches the planner shares (equal call counts) identical; the cost is that in the
+rare case of an abandonment (about 1.4e-4 per request) `b4_max` ends with 10 budget steps unused instead of
+making one more call. A branch's own log starts with its `restore` and `branch` events; the snapshot's log is
+its prefix.
+
+**Labels** (`labels.point_labels`). For one decision point: the snapshot's log (ending with that point's
+`decision_point` event), the planner's entry (calls, shares, parent seeds), the branch jobs' own logs and, for a
+base rollout, the parent's full log (seed 1 of `b1_continue`). Everything is checked to fit (same point, branch,
+seed, call count; the parent's log starts with the prefix), then each (branch, profile) label is the share of
+seeds with `score(prefix + own, profile).within(limit)`.
+
+**Time-limit calibration** (`calibration.calibrate`, SPEC §5, rule approved 2026-11-21). Per task, p90 of X-VLA's
+successful base-rollout completion times under `none` (NumPy's linear percentile, re-implemented in pure Python
+and checked equal to NumPy bit for bit), times one margin m: the smallest of {1.25, 1.5, 1.75, 2.0} with at least
+80% of π0.5's successful parity episodes (pooled, timed under `none` with the network model) within their task's
+limit. Refuses cut runs, base rollouts that called π0.5, branches, and missing tasks; errors if no candidate
+reaches 80%. `python -m vlar_harness.calibration --base ... --parity ... [--write]` prints the per-task report
+and writes `time_limit.per_task_s`, `margin` and `status: calibrated`.
+
+**Handoff diagnostics** (amendment 10). Each `xvla_act` records `first_target_dist_m`, the distance between the
+chunk's first target (as it executes, float32) and the controller's measured position at query time, and its
+context: `start`, `stretch` (an ordinary chunk boundary in an uninterrupted X-VLA stretch), `after_pi05` or
+`after_abandon`. `python -m vlar_harness.eventlog first-targets base.jsonl ... --out first_targets.json` writes the
+`stretch` distances of the base rollouts: the file the VM handoff check reads from `VLAR_BASE_FIRST_TARGETS`.
+
+**Verified on the Mac.** Unit tests (`tests/test_network_clock.py`, `tests/test_labels_calibration.py`, pure
+Python): the round-trip median and tail, the attempt failure rate and its split into drops and timeouts, the
+abandonment rate p³ (with `p_fail` 0.3), retries that succeed (fresh draws; the server runs once), the same seed
+giving the same failure pattern over 5,000 requests and another seed a different one, draws independent of
+request order; request and overhead charges; scoring and crossing on synthetic logs; exact JSON round trips;
+labels under every profile with planner entries, sharing and parent seeds, and refusals of logs that do not fit;
+calibration choosing m = 1.5 on data built to discriminate, the no-candidate error, refusals, and an exact
+calibration-file round trip; the upload-size calibration path. Simulator tests
+(`tests/reference/test_clock_live.py`, fake policies): all five live clocks equal offline replay bit for bit over a
+full routed episode with retries, abandonments and both point kinds, after a JSON round trip, and after restores
+from four snapshots in another env (clocks restored exactly; continuing reproduces the rest of the log); once the
+budget is spent every profile's clock grows by exactly the same charges (no decision overhead, amendment 15); π0.5
+alone with a lossy network executes exactly the actions of a perfect network, only slower; a network that always
+fails ends π0.5 alone after 20 attempts (23.8 s, end reason `network`, server never called); a live limit cuts at
+the same float time and step as `first_crossing` on the uncut run, for a crossing inside a run of steps, at a
+decision point's overhead and at a retried π0.5 request; branches reproduce across envs for the same seed index
+and differ for another, `b1_continue` repeats the stored queue identically in every seed; labels from real branch
+logs (with a hash-based stand-in success check) match direct scoring and never rise with more overhead; every
+`xvla_act` records the context and a distance equal to the controller's goal after the next step minus the
+measured position. Sensitivity (a scratch script, recorded here): keying network draws by step without the
+attempt number fails the retry and abandonment tests; replay charging a segment as one multiplication, and a
+restore that does not rebuild the clocks, both raise `ClockMismatch`.
+
 ## Time limit (SPEC §5, rule approved 2026-11-21)
 
 Per task: the 90th percentile of X-VLA's successful-episode completion times under profile `none` (from the
 base rollouts, uncut), times one margin m for all tasks. m is the smallest of {1.25, 1.5, 1.75, 2.0} such
 that at least 80% of π0.5's successful parity episodes (pooled over tasks), timed under profile `none` with
-the network model, finish within their task's limit. Computed in Phase 0 step 6 (effort step 4 builds it)
+the network model, finish within their task's limit. Computed in Phase 0 step 6 by `calibration.py` (above)
 and written to the calibration file; reported per task with the share of π0.5 successes that fit.
 
 ## Reference-run files (`vlar_ops/reference_runs.py`)
@@ -210,12 +314,14 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; sensitivity checks |
-| simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list of those distances is extracted from the base rollouts' event logs. The fixed 3 cm check is for the fake-model tests on the Mac only. |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; handoff diagnostics; sensitivity checks |
+| simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
+| simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
 | LeRobot | `VLAR_PI05_CHECKPOINT=… pytest tests/reference/test_model_servers.py -k pi05` | server vs lerobot-eval's per-step processing (needs the gated tokenizer) |
-| main | `pytest tests` | config, queue, spend guard, packaging |
+| main | `pytest tests` | config, queue, spend guard, packaging; network model, clock charges, labels and calibration on synthetic logs |
+| simulator | `pytest tests/test_labels_calibration.py -k numpy` | the pure-Python percentile equals NumPy's bit for bit (the main environment has no NumPy) |
 
 ## Running the reference tests
 

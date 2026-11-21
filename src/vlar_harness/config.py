@@ -31,7 +31,7 @@ OVERHEAD_TERMS = ("features", "sample_k", "sample_k_less_act")
 INPUT_GROUPS = ("common", "proposal", "free_signals", "chunk_spread", "fresh_spread", "drift")
 BRANCHES = ("b1_continue", "b2_one_call", "b3_three_calls", "b4_max")
 
-# Paths Phase 0 may write through the calibration file (§11 steps 2 and 6).
+# Paths Phase 0 may write through the calibration file (§11 steps 2 and 6). `*` matches one path segment.
 CALIBRATION_PATHS = (
     "latency",
     "servers.batching",
@@ -39,6 +39,8 @@ CALIBRATION_PATHS = (
     "time_limit.margin",
     "time_limit.per_task_s",
     "time_limit.status",
+    "options.network.choices.*.upload_image_bytes",          # §5, amendment 14 (Phase 0 step 2)
+    "options.network.choices.*.upload_image_bytes_status",
 )
 
 
@@ -81,7 +83,12 @@ def _flatten_paths(obj: Mapping, prefix: str = "") -> list[str]:
 
 
 def _calibration_path_allowed(path: str) -> bool:
-    return any(path == a or path.startswith(a + ".") for a in CALIBRATION_PATHS)
+    parts = path.split(".")
+    for allowed in CALIBRATION_PATHS:
+        pattern = allowed.split(".")
+        if len(parts) >= len(pattern) and all(p == "*" or p == s for p, s in zip(pattern, parts)):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -251,6 +258,16 @@ def validate(values: Mapping[str, Any], raw: Mapping[str, Any]) -> None:
     need(0 < net.get("rtt_tail_prob", 0) < 0.5, "network rtt_tail_prob must be in (0, 0.5)")
     need(0 <= net.get("p_fail", -1) < 1, "network p_fail must be in [0, 1)")
     need(isinstance(net.get("max_retries"), int) and net["max_retries"] >= 0, "network max_retries must be >= 0")
+    need(isinstance(net.get("max_attempts_pi05_only"), int) and net["max_attempts_pi05_only"] >= 1,
+         "network max_attempts_pi05_only must be an integer >= 1")
+    need(isinstance(net.get("upload_image_bytes"), int) and net["upload_image_bytes"] > 0,
+         "network upload_image_bytes must be a positive byte count")
+    for k in ("upload_other_bytes", "download_bytes"):
+        need(isinstance(net.get(k), int) and net[k] >= 0, f"network {k} must be a byte count >= 0")
+    if values.get("frozen"):
+        for choice, spec in raw.get("options", {}).get("network", {}).get("choices", {}).items():
+            need(spec.get("upload_image_bytes_status") != "placeholder",
+                 f"frozen config has a placeholder upload size in network choice {choice!r}")
     scene = values["option_values"].get("scene_seed")
     need(isinstance(scene, int) and not isinstance(scene, bool) and scene >= 0,
          "option scene_seed must be a non-negative integer offset")
@@ -288,3 +305,15 @@ def write_calibration(updates: Mapping[str, Any], name: str = DEFAULT_CONFIG,
             path.write_bytes(previous)
         raise
     return path
+
+
+def write_upload_size(upload_image_bytes: int, name: str = DEFAULT_CONFIG, config_dir: Path = CONFIG_DIR,
+                      note: str = "") -> Path:
+    """Phase 0 step 2 (§5, amendment 14): store the measured median upload image size in every network choice
+    (the images do not depend on the network's quality)."""
+    choices = load_raw(name, config_dir).get("options", {}).get("network", {}).get("choices", {})
+    if not choices:
+        raise ConfigError("the config has no network choices")
+    value = {"upload_image_bytes": int(upload_image_bytes), "upload_image_bytes_status": "measured"}
+    return write_calibration({"options": {"network": {"choices": {c: dict(value) for c in choices}}}},
+                             name, config_dir, note=note)

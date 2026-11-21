@@ -1,63 +1,79 @@
-"""The episode engine: decision points, the π0.5 budget, run modes and the handoff rules
-(docs/SPEC.md §3-§4; effort step 3).
+"""The episode engine: decision points, the π0.5 budget, run modes and the handoff rules (docs/SPEC.md §3-§4;
+effort step 3), with the event log, simulated clock, network model, time limit and branch runs (§5, §7;
+effort step 4).
 
 Run modes
-- routed: a decision point every 10 steps (0, 10, ..., 510). At a chunk point (X-VLA's queue is
-  empty) X-VLA's `/act` is called *before* the decision. `decide("local")` runs the next 10 queued
-  X-VLA actions; `decide("escalate")` hands one 10-step segment to π0.5.
+- routed: a decision point every 10 steps (0, 10, ..., 510). At a chunk point (X-VLA's queue is empty)
+  X-VLA's `/act` is called *before* the decision. `decide("local")` runs the next 10 queued X-VLA actions;
+  `decide("escalate")` hands one 10-step segment to π0.5.
 - xvla_only: X-VLA alone, exactly the authors' client loop (a chunk whenever the queue is empty).
-- pi05_only: π0.5 alone, called every 10 steps, no budget, as `lerobot-eval` with n_action_steps=10.
+- pi05_only: π0.5 alone, called every 10 steps, no budget, as `lerobot-eval` with n_action_steps=10. A failed
+  request is retried until it gets through, up to `max_attempts_pi05_only` attempts; then the episode ends with
+  end reason `network` (§5, amendment 13).
 
 Handoff rules (§3)
-- Escalate: X-VLA's queued actions are discarded and its remembered pose forgotten, the controller
-  switches to delta mode, π0.5 is called fresh, the first 10 of its 50 actions run.
-- Back to X-VLA: the controller switches to absolute mode; X-VLA's next call is a chunk-point
-  `/act`, which sends the measured end-effector pose because the remembered pose was forgotten.
-  Within an uninterrupted X-VLA stretch the quirk applies (config option `xvla_state_mode`).
-- Abandoned escalation (every attempt of the π0.5 request failed, §5): the controller returns to
-  absolute mode, X-VLA is called fresh (`act_fresh`) with the measured pose and runs 10 actions;
-  its other 20 stay queued; no budget is charged. Failed requests cost time, never budget.
-The controller mode is set before every segment, so each executed step runs in its model's mode.
+- Escalate: X-VLA's queued actions are discarded and its remembered pose forgotten, the controller switches to
+  delta mode, π0.5 is called fresh, the first 10 of its 50 actions run.
+- Back to X-VLA: the controller switches to absolute mode; X-VLA's next call is a chunk-point `/act`, which
+  sends the measured end-effector pose because the remembered pose was forgotten. Within an uninterrupted
+  X-VLA stretch the quirk applies (config option `xvla_state_mode`).
+- Abandoned escalation (every attempt of the π0.5 request failed, §5): the controller returns to absolute
+  mode, X-VLA is called fresh (`act_fresh`) with the measured pose and runs 10 actions; its other 20 stay
+  queued; no budget is charged. Failed requests cost time, never budget.
+The controller mode is checked before every segment, so each executed step runs in its model's mode.
 
-The π0.5 request goes through a `RemoteLink`. `DirectLink` always succeeds on the first attempt;
-the simulated network (latency, failures, retries) plugs in here in effort step 4, as do the clock
-and the full event log. Model noise seeds come from `seeding.call_seed(rollout_seed, ...)`.
+The π0.5 request goes through a `RemoteLink`: `network.SimulatedNetwork` by default. A retry is the same
+request: the server is called once, for the attempt that gets through, with the request's own noise seed.
+
+Event log (§5). Every run records plain JSON events; the last column is the clock charge (clock.py):
+  start                 the episode's identity and settings                                   0
+  xvla_act              an X-VLA /act (`act` or `act_fresh`), its noise seed, the distance     /act time
+                        of its first target from the arm and the context (start, stretch,
+                        after_pi05, after_abandon) for the VM handoff check (§11 step 3)
+  decision_point        step, index, kind (chunk or mid), queue, budget left, can_escalate    profile overhead,
+                                                                                              if can_escalate
+  decision              the choice made at the point                                            0
+  pi05_request          noise seed, outcome and every attempt's network draws                  sum of attempts
+  handoff               control passes to the other model                                       0
+  escalation_abandoned                                                                          0
+  segment               a run of executed steps of one model: driver, start step, steps        0.05 s per step
+  end                   reason: success, step_limit, time_limit or network                      0
+  restore, branch       a snapshot resumed; a branch's seed and schedule                        0
+The engine keeps one clock per profile, charging each step as it runs and every other event as it is emitted,
+and checks at the end of every episode that each equals the offline replay of the log. Scripted runs (base,
+exploration, branches, scripted baselines) run uncut and are scored offline for any profile and time limit;
+runs with a live learned decider pass `time_limit=True`, and the run's own profile is then checked against the
+task's limit after every step and every model call (end reason `time_limit`).
+
+Model noise seeds come from `seeding.call_seed(rollout_seed, ...)`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Protocol
+from typing import Callable, Optional
 
 import numpy as np
 
+from . import clock as clk
 from . import seeding
 from .api import DecisionPoint, EpisodeResult, SegmentOutcome
+from .config import BRANCHES, PROFILES
+from .network import DirectLink, RemoteLink, RemoteOutcome, SimulatedNetwork, check_outcome  # noqa: F401
 
 MODES = ("routed", "xvla_only", "pi05_only")
+END_REASONS = ("success", "step_limit", "time_limit", "network")
+XVLA_CONTEXTS = ("start", "stretch", "after_pi05", "after_abandon")
 TRAJECTORY_KEYS = ("robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos")
+LOG_VERSION = 1
 
 
 class BudgetExhausted(RuntimeError):
     pass
 
 
-@dataclass
-class RemoteOutcome:
-    ok: bool
-    actions: Optional[np.ndarray]        # 50 x 7 un-normalised π0.5 actions when ok
-    attempts: list[dict] = field(default_factory=list)
-
-
-class RemoteLink(Protocol):
-    def request(self, call: Callable[[], np.ndarray], *, step: int, rollout_seed: int) -> RemoteOutcome: ...
-
-
-class DirectLink:
-    """No network: every request succeeds on its first attempt."""
-
-    def request(self, call, *, step, rollout_seed) -> RemoteOutcome:
-        return RemoteOutcome(True, np.asarray(call(), dtype=np.float32), [{"attempt": 0, "ok": True}])
+class ClockMismatch(RuntimeError):
+    """A live clock differs from the offline replay of its own log: a bug that would corrupt labels."""
 
 
 @dataclass
@@ -69,12 +85,14 @@ class EpisodeState:
     rollout_seed: int
     mode: str
     episode_id: str = ""
+    profile: str = "none"                 # the decider's profile: its clock is the one a live limit checks
+    time_limit_s: Optional[float] = None  # set only when the limit is applied live
     decision_index: int = -1
     point_kind: Optional[str] = None
     pi05_steps: int = 0
     pi05_requests: int = 0
-    pi05_failed_requests: int = 0
-    prev_driver: Optional[str] = None
+    pi05_failed_requests: int = 0         # failed attempts
+    prev_driver: Optional[str] = None     # driver of the last executed segment
     success_step: Optional[int] = None
     end_reason: Optional[str] = None
 
@@ -82,12 +100,24 @@ class EpisodeState:
         return dict(vars(self))
 
 
+@dataclass
+class BranchRun:
+    """One scripted continuation from a snapshot (§7). `events` is the branch's own log, starting with its
+    `restore` and `branch` events; the snapshot's log is the prefix it continues."""
+    branch: str
+    seed_index: int
+    pi05_calls: int
+    rollout_seed: int
+    result: EpisodeResult
+    events: list = field(default_factory=list)
+    trajectory: list = field(default_factory=list)
+
+
 class Episode:
     """One episode on one LiberoSim with its two adapters.
 
-    `pi05_call(raw_observation, task, seed) -> 50 x 7 actions` is the π0.5 server call (the
-    PI05Client in production). `on_event(event)` and `on_step(episode, action, driver)` are hooks
-    for the event log and for tests.
+    `pi05_call(raw_observation, task, seed) -> 50 x 7 actions` is the π0.5 server call (the PI05Client in
+    production). `on_event(event)` and `on_step(episode, action, driver)` are hooks for tests.
     """
 
     def __init__(self, sim, xvla, pi05, pi05_call: Callable, cfg, *, remote: Optional[RemoteLink] = None,
@@ -95,7 +125,9 @@ class Episode:
                  on_step: Optional[Callable[["Episode", np.ndarray, str], None]] = None):
         self.sim, self.xvla, self.pi05 = sim, xvla, pi05
         self.pi05_call = pi05_call
-        self.remote = remote or DirectLink()
+        self.cfg = cfg
+        self.charges = clk.Charges.from_config(cfg)
+        self.remote = remote if remote is not None else SimulatedNetwork(self.charges.network)
         self.on_event, self.on_step = on_event, on_step
         self.step_limit = int(cfg["env"]["step_limit"])
         self.segment = int(cfg["decision"]["segment_steps"])
@@ -103,22 +135,33 @@ class Episode:
         self.scene_offset = int(cfg.option("scene_seed"))
         self.state: Optional[EpisodeState] = None
         self.events: list[dict] = []
+        self.log_offset = 0                   # events before this index came from a restored snapshot
         self.trajectory: list[dict] = []
         self.last_act_response: Optional[dict] = None
+        self.clocks: dict[str, clk.Clock] = {}
 
     # ------------------------------------------------------------------ setup
 
-    def start(self, init_idx: int, rollout_seed: int, mode: str = "routed",
-              episode_id: str = "") -> Optional[DecisionPoint]:
+    def start(self, init_idx: int, rollout_seed: int, mode: str = "routed", episode_id: str = "", *,
+              profile: str = "none", time_limit: bool = False) -> Optional[DecisionPoint]:
+        """Set up an episode. `profile` is the decider's (§5); `time_limit=True` applies the task's limit live,
+        for runs with a live learned decider. Scripted runs leave it off and are scored offline."""
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
+        if profile not in PROFILES:
+            raise ValueError(f"profile must be one of {PROFILES}")
         scene = seeding.scene_seed(init_idx, self.scene_offset)
         self.sim.setup_episode(init_idx, env_seed=scene)
         self.xvla.reset()
-        self.state = EpisodeState(self.sim.task_id, init_idx, scene, int(rollout_seed), mode, episode_id)
-        self.events, self.trajectory, self.last_act_response = [], [], None
-        self._emit({"t": "start", "task_id": self.sim.task_id, "init_idx": init_idx, "scene_seed": scene,
-                    "rollout_seed": int(rollout_seed), "mode": mode})
+        limit = float(self.cfg.time_limit_s(self.sim.task_id)) if time_limit else None
+        self.state = EpisodeState(self.sim.task_id, init_idx, scene, int(rollout_seed), mode, episode_id,
+                                  profile, limit)
+        self.events, self.log_offset, self.trajectory, self.last_act_response = [], 0, [], None
+        self.clocks = {p: clk.Clock(self.charges, p) for p in PROFILES}
+        self._emit({"t": "start", "log_version": LOG_VERSION, "task_id": self.sim.task_id, "init_idx": init_idx,
+                    "scene_seed": scene, "rollout_seed": int(rollout_seed), "mode": mode, "profile": profile,
+                    "time_limit_s": limit, "episode_id": episode_id,
+                    "config_hash": getattr(self.cfg, "hash", None)})
         if mode == "routed":
             return self._decision_point()
         return None
@@ -135,6 +178,20 @@ class Episode:
     def done(self) -> bool:
         return self.state.end_reason is not None
 
+    @property
+    def own_events(self) -> list[dict]:
+        """The events of this run (after a restored snapshot's prefix, if any)."""
+        return self.events[self.log_offset:]
+
+    def times(self) -> dict[str, float]:
+        """Simulated time so far under every profile."""
+        return {p: c.t for p, c in self.clocks.items()}
+
+    def time_remaining_s(self) -> float:
+        """What the decider sees (§6): time left under its own profile; infinite when no limit applies live."""
+        lim = self.state.time_limit_s
+        return float("inf") if lim is None else lim - self.clocks[self.state.profile].t
+
     # ------------------------------------------------------------------ routed mode
 
     def _decision_point(self) -> Optional[DecisionPoint]:
@@ -146,10 +203,15 @@ class Episode:
         if self.xvla.queue_len() == 0:
             st.point_kind = "chunk"
             self._xvla_query("act", step)               # before the decision (§3)
+            if self.done:
+                return None
         else:
             st.point_kind = "mid"
         self._emit({"t": "decision_point", "step": step, "index": st.decision_index, "kind": st.point_kind,
-                    "queue": self.xvla.queue_len(), "budget_remaining": self.budget_remaining})
+                    "queue": self.xvla.queue_len(), "budget_remaining": self.budget_remaining,
+                    "can_escalate": self.budget_remaining >= self.segment})
+        if self._cut_if_over_time():
+            return None
         return self.current_point()
 
     def current_point(self) -> Optional[DecisionPoint]:
@@ -165,15 +227,14 @@ class Episode:
             raise RuntimeError("decide() needs a routed episode at a decision point")
         if choice not in ("local", "escalate"):
             raise ValueError("choice must be 'local' or 'escalate'")
+        if choice == "escalate" and self.budget_remaining < self.segment:
+            raise BudgetExhausted(f"{self.budget_remaining} pi0.5 steps left; escalation not allowed")
         requests_before, failed_before = st.pi05_requests, st.pi05_failed_requests
-        abandoned = False
+        self._emit({"t": "decision", "step": self.sim.steps, "index": st.decision_index, "choice": choice})
         if choice == "escalate":
-            if self.budget_remaining < self.segment:
-                raise BudgetExhausted(f"{self.budget_remaining} pi0.5 steps left; escalation not allowed")
             driver, abandoned = self._escalate()
         else:
-            driver = self._run_xvla_segment()
-        st.prev_driver = driver
+            driver, abandoned = self._run_xvla_segment(), False
         nxt = self._decision_point()
         return SegmentOutcome(executed_by=driver, escalation_abandoned=abandoned,
                               pi05_requests=st.pi05_requests - requests_before,
@@ -186,26 +247,22 @@ class Episode:
         self.xvla.discard_queue()
         self.xvla.forget_predicted_pose()
         self.sim.set_control_mode("delta")
-        raw = self.pi05.raw_observation()
-        seed = seeding.call_seed(st.rollout_seed, step, "pi05", "act")
-        outcome = self.remote.request(lambda: self.pi05_call(raw, self.goal, seed), step=step,
-                                      rollout_seed=st.rollout_seed)
-        st.pi05_requests += 1
-        st.pi05_failed_requests += sum(1 for a in outcome.attempts if not a.get("ok"))
-        self._emit({"t": "pi05_request", "step": step, "seed": seed, "ok": outcome.ok, "attempts": outcome.attempts})
+        outcome = self._pi05_request(step, self.charges.network.max_attempts_routed)
+        if self._cut_if_over_time():
+            return ("pi05" if outcome.ok else "xvla"), not outcome.ok
         if outcome.ok:
-            actions = np.asarray(outcome.actions, dtype=np.float32)
-            if actions.shape[0] < self.segment or actions.shape[1] != 7:
-                raise ValueError(f"pi0.5 returned {actions.shape}")
             if st.prev_driver != "pi05":
                 self._emit({"t": "handoff", "step": step, "to": "pi05"})
-            st.pi05_steps += self._execute([self.pi05.env_action(a) for a in actions[:self.segment]], "pi05")
+            st.pi05_steps += self._execute([self.pi05.env_action(a) for a in self._pi05_actions(outcome)], "pi05")
             return "pi05", False
         # Abandoned: X-VLA, called fresh from the measured pose, drives this segment; no budget charged.
+        self._emit({"t": "escalation_abandoned", "step": step})
+        if st.prev_driver == "pi05":
+            self._emit({"t": "handoff", "step": step, "to": "xvla"})
         self.sim.set_control_mode("absolute")
         self._xvla_query("act_fresh", step)
-        self._emit({"t": "escalation_abandoned", "step": step})
-        self._execute_from_queue()
+        if not self.done:
+            self._execute_from_queue()
         return "xvla", True
 
     def _run_xvla_segment(self) -> str:
@@ -223,27 +280,66 @@ class Episode:
             self.sim.set_control_mode("absolute")
             while not self._check_end():
                 self._xvla_query("act", self.sim.steps)            # the queue is empty here
+                if self.done:
+                    break
                 self._execute([None] * self.xvla.queue_len(), "xvla")
         elif st.mode == "pi05_only":
             self.sim.set_control_mode("delta")
             while not self._check_end():
-                step = self.sim.steps
-                seed = seeding.call_seed(st.rollout_seed, step, "pi05", "act")
-                actions = np.asarray(self.pi05_call(self.pi05.raw_observation(), self.goal, seed), dtype=np.float32)
-                st.pi05_requests += 1
-                self._emit({"t": "pi05_request", "step": step, "seed": seed, "ok": True, "attempts": [{"ok": True}]})
-                st.pi05_steps += self._execute([self.pi05.env_action(a) for a in actions[:self.segment]], "pi05")
+                outcome = self._pi05_request(self.sim.steps, self.charges.network.max_attempts_pi05_only)
+                if self._cut_if_over_time():
+                    break
+                if not outcome.ok:
+                    self._end("network")                           # safety cap reached (§5, amendment 13)
+                    break
+                st.pi05_steps += self._execute([self.pi05.env_action(a) for a in self._pi05_actions(outcome)],
+                                               "pi05")
         else:
             raise RuntimeError("run_episode() is for xvla_only and pi05_only; routed episodes use decide()")
         return self.result()
 
-    # ------------------------------------------------------------------ execution
+    # ------------------------------------------------------------------ model calls
 
     def _xvla_query(self, call: str, step: int) -> None:
-        seed = seeding.call_seed(self.state.rollout_seed, step, "xvla", call)
+        st = self.state
+        if call == "act_fresh":
+            context = "after_abandon"
+        elif st.prev_driver is None:
+            context = "start"
+        else:
+            context = "after_pi05" if st.prev_driver == "pi05" else "stretch"
+        seed = seeding.call_seed(st.rollout_seed, step, "xvla", call)
+        arm = np.array(self.sim.controller_pose()[0], dtype=np.float64)       # what a measured-pose request sends
         self.xvla.query(self.sim, self.goal, seed=seed)
         self.last_act_response = self.xvla.client.last_response
-        self._emit({"t": "xvla_act", "step": step, "call": call, "seed": seed})
+        # First target as it will execute (popped as float32), against the arm at query time: the quantity the
+        # VM handoff check compares with ordinary chunk boundaries (§11 step 3, amendment 10).
+        first = np.asarray(self.xvla.queued_actions()[0, :3], dtype=np.float32).astype(np.float64)
+        self._emit({"t": "xvla_act", "step": step, "call": call, "seed": seed, "context": context,
+                    "first_target_dist_m": float(np.linalg.norm(first - arm))})
+        self._cut_if_over_time()
+
+    def _pi05_request(self, step: int, max_attempts: int) -> RemoteOutcome:
+        """One π0.5 request through the link; the server runs once, with the request's own noise seed."""
+        st = self.state
+        raw = self.pi05.raw_observation()
+        seed = seeding.call_seed(st.rollout_seed, step, "pi05", "act")
+        outcome = self.remote.request(lambda: self.pi05_call(raw, self.goal, seed), step=step,
+                                      rollout_seed=st.rollout_seed, max_attempts=max_attempts)
+        check_outcome(outcome, max_attempts)
+        st.pi05_requests += 1
+        st.pi05_failed_requests += sum(1 for a in outcome.attempts if not a["ok"])
+        self._emit({"t": "pi05_request", "step": step, "seed": seed, "ok": outcome.ok,
+                    "attempts": [dict(a) for a in outcome.attempts]})
+        return outcome
+
+    def _pi05_actions(self, outcome: RemoteOutcome) -> np.ndarray:
+        actions = np.asarray(outcome.actions, dtype=np.float32)
+        if actions.ndim != 2 or actions.shape[0] < self.segment or actions.shape[1] != 7:
+            raise ValueError(f"pi0.5 returned {actions.shape}")
+        return actions[:self.segment]
+
+    # ------------------------------------------------------------------ execution
 
     def _execute_from_queue(self) -> int:
         if self.xvla.queue_len() < self.segment:
@@ -251,26 +347,36 @@ class Episode:
         return self._execute([None] * self.segment, "xvla")
 
     def _execute(self, actions: list, driver: str) -> int:
-        """Run up to len(actions) steps (None = pop from X-VLA's queue at that moment)."""
+        """Run up to len(actions) steps (None = pop from X-VLA's queue at that moment). Each step is charged to
+        every clock as it runs; the log gets one `segment` event for the run, then the end event if any."""
         expected = driver == "pi05"
         if self.sim.control_mode() != ("delta" if expected else "absolute"):
             raise RuntimeError(f"{driver} segment in the wrong controller mode")
-        n = 0
+        start, n, reason = self.sim.steps, 0, None
         for a in actions:
-            if self._check_end():
+            if self.sim.steps >= self.step_limit:
                 break
             act = self.xvla.pop() if a is None else a
             done = self.sim.step(act)
             n += 1
+            for c in self.clocks.values():
+                c.step()
             self._record(act, driver)
             if self.on_step is not None:
                 self.on_step(self, act, driver)
-            if done:
-                self.state.success_step = self.sim.steps
-                self.state.end_reason = "success"
-                self._emit({"t": "end", "step": self.sim.steps, "reason": "success"})
+            if self._over_time():                 # a success after the limit is not a success (§5)
+                reason = "time_limit"
                 break
-        self._emit({"t": "segment", "driver": driver, "steps": n, "end_step": self.sim.steps})
+            if done:
+                reason = "success"
+                break
+        if n:
+            self.state.prev_driver = driver
+            self._emit({"t": clk.STEP_RUN, "driver": driver, "start": start, "steps": n})
+        if reason is not None:
+            self._end(reason)
+        else:
+            self._check_end()
         return n
 
     def _record(self, action: np.ndarray, driver: str) -> None:
@@ -278,26 +384,59 @@ class Episode:
         self.trajectory.append({"step": self.sim.steps, "driver": driver, "action": np.array(action, dtype=np.float32),
                                 **{k: np.array(obs[k]) for k in TRAJECTORY_KEYS}})
 
+    # ------------------------------------------------------------------ ending, the clock and the log
+
+    def _over_time(self) -> bool:
+        lim = self.state.time_limit_s
+        return lim is not None and self.clocks[self.state.profile].t > lim
+
+    def _cut_if_over_time(self) -> bool:
+        """After a model call: end the episode if the live limit is exceeded. True if the episode has ended."""
+        if not self.done and self._over_time():
+            self._end("time_limit")
+        return self.done
+
     def _check_end(self) -> bool:
+        if self.state.end_reason is None and self.sim.steps >= self.step_limit:
+            self._end("step_limit")
+        return self.state.end_reason is not None
+
+    def _end(self, reason: str) -> None:
         st = self.state
-        if st.end_reason is None and self.sim.steps >= self.step_limit:
-            st.end_reason = "step_limit"
-            self._emit({"t": "end", "step": self.sim.steps, "reason": "step_limit"})
-        return st.end_reason is not None
+        if reason not in END_REASONS:
+            raise ValueError(f"end reason must be one of {END_REASONS}")
+        if st.end_reason is not None:
+            raise RuntimeError(f"episode already ended ({st.end_reason})")
+        st.end_reason = reason
+        if reason == "success":
+            st.success_step = self.sim.steps
+        self._emit({"t": "end", "step": self.sim.steps, "reason": reason})
+        self.verify_clocks()
+
+    def verify_clocks(self) -> None:
+        """Every live clock must equal the offline replay of the log, bit for bit (§11 step 3)."""
+        for p, c in self.clocks.items():
+            offline = clk.replay(self.events, p, self.charges)
+            if offline != c.t:
+                raise ClockMismatch(f"profile {p}: live clock {c.t!r} != offline replay {offline!r}")
 
     def _emit(self, event: dict) -> None:
         self.events.append(event)
+        if event["t"] != clk.STEP_RUN:            # steps were charged one at a time as they ran
+            for c in self.clocks.values():
+                c.event(event)
         if self.on_event is not None:
             self.on_event(event)
 
-    # ------------------------------------------------------------------ results and snapshots
+    # ------------------------------------------------------------------ results, snapshots, branches
 
     def result(self) -> EpisodeResult:
         st = self.state
         return EpisodeResult(episode_id=st.episode_id, success=st.end_reason == "success",
                              end_reason=st.end_reason or "step_limit", steps=self.sim.steps,
                              success_step=st.success_step, pi05_steps=st.pi05_steps, pi05_requests=st.pi05_requests,
-                             pi05_failed_requests=st.pi05_failed_requests, sim_time_s=float("nan"), record_id=None)
+                             pi05_failed_requests=st.pi05_failed_requests,
+                             sim_time_s=self.clocks[st.profile].t if self.clocks else float("nan"), record_id=None)
 
     def snapshot(self, header: Optional[dict] = None):
         """Snapshot of the current decision point (after its calls), §7."""
@@ -306,12 +445,55 @@ class Episode:
             raise RuntimeError("snapshots are taken at decision points of routed episodes")
         return snap.take(self.sim, self.xvla, self.state.as_dict(), event_log=list(self.events), header=header)
 
-    def restore(self, snapshot) -> Optional[DecisionPoint]:
-        """Continue from a snapshot (any env of the same task). Returns the restored decision point."""
+    def restore(self, snapshot, snapshot_id: Optional[str] = None) -> Optional[DecisionPoint]:
+        """Continue from a snapshot (any env of the same task). Returns the restored decision point. The clocks
+        are rebuilt by replaying the snapshot's log, which equals the live clocks at capture (verify_clocks)."""
         from . import snapshot as snap
         fields = snap.restore(snapshot, self.sim, self.xvla)
         self.state = EpisodeState(**fields)
         self.events = list(snapshot.event_log)
+        self.log_offset = len(self.events)
         self.trajectory, self.last_act_response = [], None
-        self._emit({"t": "restore", "step": self.sim.steps, "index": self.state.decision_index})
+        self.clocks = {p: clk.Clock(self.charges, p) for p in PROFILES}
+        for c in self.clocks.values():
+            for e in self.events:
+                c.apply(e)
+        self._emit({"t": "restore", "step": self.sim.steps, "index": self.state.decision_index,
+                    "snapshot_id": snapshot_id})
         return self.current_point()
+
+    def run_branch(self, snapshot, *, branch: str, pi05_calls: int, seed_index: int,
+                   snapshot_id: Optional[str] = None) -> BranchRun:
+        """One scripted continuation from a decision-point snapshot (§7), to the step limit with no time cut.
+
+        The rollout seed becomes `seeding.branch_rollout_seed(parent, point, branch, seed index)`. The branch
+        escalates at its first `pi05_calls` decision points (the planner's count: 0, 1, min(3, budget) or the
+        budget's maximum), an abandoned escalation counting as one of them, and continues locally after them.
+        Counting decisions rather than budget keeps branches the planner shares (equal counts) identical.
+        """
+        if branch not in BRANCHES:
+            raise ValueError(f"branch must be one of {BRANCHES}")
+        if seed_index < 1:
+            raise ValueError("branch seed indices start at 1")
+        dp = self.restore(snapshot, snapshot_id=snapshot_id)
+        if dp is None:
+            raise RuntimeError("the snapshot is not at a decision point of a running routed episode")
+        st = self.state
+        points_left = self.step_limit // self.segment - dp.index
+        if not 0 <= pi05_calls <= min(dp.budget_remaining_steps // self.segment, points_left):
+            raise ValueError(f"{pi05_calls} pi0.5 calls do not fit: {dp.budget_remaining_steps} budget steps and "
+                             f"{points_left} decision points left")
+        parent = st.rollout_seed
+        st.rollout_seed = seeding.branch_rollout_seed(parent, dp.index, branch, seed_index)
+        st.time_limit_s = None                    # branches run uncut; time limits are applied offline (§5, §7)
+        self._emit({"t": "branch", "branch": branch, "seed_index": int(seed_index), "pi05_calls": int(pi05_calls),
+                    "index": dp.index, "rollout_seed": st.rollout_seed, "parent_rollout_seed": parent})
+        made = 0
+        while dp is not None:
+            if made < pi05_calls:
+                made += 1
+                dp = self.decide("escalate").next_point
+            else:
+                dp = self.decide("local").next_point
+        return BranchRun(branch, int(seed_index), int(pi05_calls), st.rollout_seed, self.result(),
+                         list(self.own_events), list(self.trajectory))
