@@ -20,6 +20,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from conftest import requires_lerobot
+from episode_driver import decision_requests
 from vlar_harness.config import load_config
 
 CFG = load_config()
@@ -51,26 +52,6 @@ def _driver(sim, **kw):
     from episode_driver import Driver, FakePI05, FakeXVLA
     xa, pa = _adapters(sim)
     return Driver(sim, xa, pa, schedule, FakeXVLA(), FakePI05(), **kw), xa
-
-
-def decision_requests(sim, xa, pa) -> dict:
-    """Digests of what each model would be sent right now: the X-VLA measurement request (images +
-    measured pose from the controller's cache) and π0.5's batched raw observation."""
-    from episode_driver import digest
-    payload = xa.measurement_payload(sim, sim.task_description)
-    raw = pa.raw_observation()
-    flat = []
-
-    def feed(x):
-        if isinstance(x, dict):
-            for k in sorted(x):
-                feed(x[k])
-        else:
-            flat.append(np.ravel(np.asarray(x)).view(np.uint8))
-
-    feed(raw)
-    return {"xvla": digest(np.frombuffer(repr(sorted(payload.items())).encode(), dtype=np.uint8)),
-            "pi05": digest(np.concatenate(flat))}
 
 
 def _same(a, b):
@@ -321,7 +302,8 @@ def test_missing_controller_state_changes_the_model_requests(original, other_env
 
 @requires_lerobot
 def test_stove_burner_light_survives_restore(other_env, fresh_env):
-    """Task 2's burner glow is a compiled-model colour LIBERO toggles each step; it must come back."""
+    """Task 2's burner glow is a compiled-model colour LIBERO toggles each step; it must come back.
+    The snapshot is at decision point 1 (step 10), where the cameras render (§12)."""
     from episode_driver import FakePI05, obs_digest
     from vlar_harness import snapshot as snap
     from vlar_harness.adapters.pi05 import PI05Adapter
@@ -334,11 +316,13 @@ def test_stove_burner_light_survives_restore(other_env, fresh_env):
         inner = sim.env.env
         inner.object_states_dict["flat_stove_1"].set_joint(1.0)     # knob into the "on" range
         noop = np.array([0, 0, 0, 0, 0, 0, -1.0], dtype=np.float32)
-        for _ in range(3):
+        for _ in range(10):
             sim.step(noop)
         site = inner.sim.model.site_name2id("flat_stove_1_burner")
         assert inner.sim.model.site_rgba[site][3] > 0, "burner did not light up"
         s = snap.from_bytes(snap.to_bytes(snap.take(sim, None, {})))
+        at_snapshot = obs_digest(sim.obs)
+        assert set(sim.camera_keys) <= set(at_snapshot)
         pi05 = PI05Adapter(sim)
         fake = FakePI05()
         actions = fake(pi05.raw_observation(), sim.task_description, 1)[:15]
@@ -349,6 +333,7 @@ def test_stove_burner_light_survives_restore(other_env, fresh_env):
         for target in (other_env, fresh_env):
             snap.restore(s, target, None)
             assert target.env.env.sim.model.site_rgba[site][3] > 0
+            assert obs_digest(target.obs) == at_snapshot        # the glow is in the restored images too
             got = []
             for a in actions:
                 target.step(PI05Adapter.env_action(a))

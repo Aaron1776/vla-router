@@ -51,7 +51,7 @@ Where each item stands now (not complete; do not announce):
 | 4. Queue, spend guard, packaging | implemented and unit-tested against a local stand-in for the bucket (`src/vlar_ops`); the Cloud Storage backend is untested without credentials; the episode engine (now with `run_branch`) is not yet wired to the queue |
 | 5. Container images, lockfiles | not started |
 | 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
-| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements); the containers still to add; parity tooling and reference files are committed (`25794f7`) |
+| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements) and §12 rendering (`test_render_used.py`); the containers still to add; parity tooling and reference files are committed (`25794f7`) |
 
 ## Status
 
@@ -70,10 +70,12 @@ Where each item stands now (not complete; do not announce):
 | Decisions 25-26 (unpadded clock charges; fixed token length); effort step 5, part 2: π0.5 batching at a fixed geometry of rows and tokens (`PI05Service.load`, `PI05Batching`, `act_unbatched`), the shared-state audit of both servers with `PROCESSING_LOCK`, X-VLA's token-length check, tests on LeRobot's real π0.5 code (tiny, random weights) and a stand-in policy, X-VLA's tests with mixed-length instructions, π0.5 mutation check 6 of 6 | done on Mac; VM re-run pending | `94b9297` |
 | Usage discipline (`CLAUDE.md`) and the effort schedule (above) | done | `c1fcd78` |
 | Effort step 5 completed: the X-VLA simultaneous-requests failure reproduced (batch compositions logged, the failing batches captured and replayed deterministically), traced to the authors' post-processing over the whole batch (a CPU elementwise kernel's scalar tail) and fixed by post-processing each row alone; new position, replay and post-processing tests; X-VLA mutation check (HARNESS.md "Batching") | done on Mac; VM re-run pending | the commit after `c1fcd78` |
-| Render only the observations that are used (SPEC §12) | approved, may start now that restore exists; must pass the same exact-equality tests | |
+| Render only the observations that are used (SPEC §12, amendment 7): config option `render` (`used` default, `all`); camera sensors gated, timers untouched; unrendered steps expose no images; snapshots record `sim.images`; `RenderPhaseError` if a rendering step misses its sample; full-episode comparison with always-on rendering byte-identical at decision points; mutation check 3 of 3 (HARNESS.md "Rendering only what is used") | done on Mac; VM re-run pending | the commit after `f283023` |
 | Decider inputs (`observe()`: features, proposal, free signals, spread, drift), dataset storage format (Parquet), queue worker wiring (`run_branch` exists) | not started | |
 | Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
+
+**Test suites after §12 (Mac, 2026-11-21).** Main venv 112 passed, 8 skipped; simulator env 69 passed, 17 skipped (about 3 minutes; the 17 skips as before); X-VLA env not re-run (no code it runs changed).
 
 **Test suites after step 5 (Mac).** Main venv 112 passed, 7 skipped; simulator env 57 passed, 17 skipped (the skips
 need weights, both servers, the VM or the X-VLA environment); X-VLA env (random weights, CPU) 12 passed. Part 2's
@@ -206,6 +208,9 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 - The engine counts the π0.5 budget in executed steps and checks each segment's controller mode.
 - `xvla_state_mode` (quirk/measured), `scene_seed` (project/pi05_parity), network and probe choices are named
   options in the harness config; rollout-seed namespaces are in `src/vlar_ops/configs/collection-v1.yaml`.
+- §12 (HARNESS.md "Rendering only what is used"): the camera sensors are gated, never the observables, so the
+  sampling timers run exactly as with always-on rendering; option `render` (`used`/`all`) is recorded with the
+  other config options.
 - Step 4 (HARNESS.md "Event log, clock, network, labels and time limits"): the engine keeps one live clock per
   profile and checks each against the offline replay at the end of every episode (`ClockMismatch`); a segment's
   steps are one log event, charged one step at a time both live and offline; network draws via
@@ -228,9 +233,8 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-Effort step 5 is complete on the Mac (part 1 `f8d06d5`, part 2 `94b9297`, the concurrency fix in the commit after
-`c1fcd78`; HARNESS.md "Batching": design, shared-state audit, the failure's diagnosis, tests, mutation results). Next:
-render only the observations that are used (§12), at **xhigh** effort (max only if an exact-equality test fails).
+§12 rendering is done on the Mac (2026-11-21, the commit after `f283023`; HARNESS.md "Rendering only what is used"). Next:
+decider inputs and measurement recording (§18 item 3), at **xhigh** effort (max only for unexplained discrepancies).
 
 Worth knowing:
 - `.venv-sim` now also has LeRobot's `pi` extra (transformers 5.5.4, tokenizers 0.22.2; installed 2026-11-21 with
@@ -243,9 +247,12 @@ Worth knowing:
   `max_batch` 1 and `xvla_sample_rows` K), and the throughput at the production geometry, padded and unpadded, with
   deterministic mode on and off (sizes the worker count; never charged).
 - Engine side: no change. Each simulator worker sends single requests; the servers batch across workers.
+- §12: the sim renders only the step before each decision point by default. Anything that reads images
+  elsewhere gets `ImagesNotRendered`; a snapshot taken between decision points holds placeholders
+  (`sim.images` false). Use `render="all"` (`load_config(render="all")`) for per-step image work.
 
 Toward the §18 milestone, in order:
-1. Render only the observations that are used (§12; approved after restore; must pass the same exact tests).
+1. Done: render only the observations that are used (§12).
 2. Decider inputs and measurement recording (§18 item 3): `observe()` (features, proposal, free signals, spread and
    drift, the K-sample probes), the dataset format (Parquet), and the queue workers that run episodes and branches
    through `run_branch` (item 4: the engine is not wired to the queue yet; the Cloud Storage backend is untested).

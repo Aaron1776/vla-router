@@ -500,14 +500,45 @@ restored byte for byte), 7 of 8 caught:
 calls only read them. The lock stays: it covers the first calls' update, where a collision would raise an error (never
 a wrong prompt), and any later code that tokenizes with other settings.
 
-## Rendering only what is used (SPEC §12, approved with conditions)
+## Rendering only what is used (SPEC §12, amendment 7)
 
-On this Mac, an env step costs 12.8 ms with the 256 px cameras and 19.9 ms with the 360 px ones added.
-Models and snapshots only use images at decision points (every 10 steps), so enabling the camera
-observables only on the step before a decision point, with their timers kept in step with an always-on
-observation, could remove most rendering cost. On the VM, EGL rendering shares the L4 with model
-inference, so the GPU time it frees matters more than the CPU saving. Approved only after restore is in
-place, and only if it passes the same exact-equality tests as always-on rendering.
+Models, measurements and snapshots read images only at decision points: the observation left by the
+step that ends on a multiple of 10 (and by the last settle step, for decision point 0). Config option
+`render`: `used` (default, value `decision_points`) or `all` (`every_step`, as both references do).
+
+How (`sim/libero_sim.py`): each of the four camera observables (256 px and 360 px, both cameras) keeps
+robosuite's sampling timer and sampling logic untouched; only its sensor is wrapped in a gate. During a
+step whose observation is used the gate is open and the sensor renders; otherwise it returns a
+placeholder without rendering. So the timers stay in step with the always-on observations by
+construction (they never stop or reset), rather than by copying timer values. Safeguards:
+- On a step that did not render, `sim.obs` has no camera keys, and both adapters call
+  `sim.require_images()` first (`ImagesNotRendered`), so a placeholder can never reach a model.
+- Each rendering step must sample every camera exactly once, or it raises `RenderPhaseError` (a moved
+  sampling phase would otherwise leave a placeholder as the decision point's image).
+- Snapshots record `sim.images` (are the buffered images this step's renders?); restore hides them when
+  they are not, whatever the target env's mode. At decision points it is always true.
+- A hard reset gives robosuite's own cameras fresh sensors; the gate is re-installed after every reset
+  and checked before every step. The forced observation update in `set_init_state` renders only under
+  `all`; `reset` still renders robosuite's own two cameras once per episode (it installs their fresh
+  sensors before its forced update). The settle steps overwrite both.
+
+**Verified on the Mac** (`tests/reference/test_render_used.py`, 9 tests): one scripted routed episode
+(task 2, stove and burner light; X-VLA chunks, mid-chunk points, π0.5 segments, handoffs both ways;
+measurements and a snapshot at every decision point) runs to the 520-step limit under `used` and
+under `all`. At every step the action, MuJoCo's integration state, the success flag, every non-camera
+observation and every observable's sampling timer are identical; at every decision point the images,
+both models' requests and the snapshot file are byte-identical. `used` renders exactly 4 x 52 times
+(`all`: 4 x 520). Unrendered steps refuse image reads; a snapshot between decision points restored into
+an always-on env keeps its images hidden until the next rendering step; rendering one step late or
+early is refused, not silent; a rendering step that misses its sample raises. The other reference tests
+(snapshot replay, determinism, handoffs, live clocks) now run under `used`; the two reference-parity
+tests run under both modes (`used`: images at decision points, state at every step). Mutation check: 3 of
+3 caught (gate never closes; unrendered images not hidden; gating by `set_enabled`, which resets the
+timers: `RenderPhaseError` at the first rendering step).
+
+Cost on this Mac: the 520-step episode with fake models and measurements took 17.7 s under `all` and
+5.4 s under `used`. On the VM, EGL rendering shares the L4 with model inference, so the GPU time freed
+matters more than the CPU saving; the comparison is on the VM re-run list (EGL may differ).
 
 ## Platform rule (SPEC §11 step 3 as amended)
 
@@ -519,7 +550,7 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py` | adapters vs both references; snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py` | adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |

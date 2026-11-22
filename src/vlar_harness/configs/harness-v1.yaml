@@ -204,6 +204,11 @@ options:
     choices:
       all: every_decision_point
       sampled: sampled_points_and_their_chunk_points   # §12 reduction step 3
+  render:                     # §12, amendment 7: which steps render the cameras (results are identical)
+    default: used
+    choices:
+      used: decision_points     # only the step whose observation a decision point reads (and the last settle step)
+      all: every_step           # every step, as both reference harnesses do
   scene_seed:                 # §3: scene seed = offset + initial-state index
     default: project
     choices:

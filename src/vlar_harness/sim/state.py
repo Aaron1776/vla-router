@@ -12,6 +12,8 @@ What has to come back for a replay to match the original step for step (docs/HAR
 - robosuite: the step counters, the observation cache, and every observation's sampling timer and
   buffered value, including the extra π0.5 cameras. The observation at a decision point was
   sampled one physics substep before the end of the step, so it is restored, never re-rendered.
+  With rendering limited to decision points (§12), a capture elsewhere holds placeholder images;
+  `sim.images` says which, and restore hides them as the original step did.
 - Per robot: the controller (goals, cached pose, Jacobians, mass matrix, `use_delta`), the
   gripper (its integrated command), the robot's history buffers and last torques.
 - LIBERO: every object's, fixture's and site's `object_properties` (e.g. the stove's burner
@@ -201,7 +203,8 @@ def capture(sim) -> dict[str, Any]:
         "observables": {name: capture_leaves(o, OBSERVABLE_FIELDS) for name, o in inner._observables.items()},
         "robots": robots,
         "object_properties": objects,
-        "sim": {"steps": sim.steps, "done": sim.done},
+        # Whether the buffered camera values are this step's renders (always at decision points; §12).
+        "sim": {"steps": sim.steps, "done": sim.done, "images": sim.images_fresh},
     }
 
 
@@ -253,4 +256,5 @@ def restore(sim, state: dict[str, Any]) -> None:
 
     sim.steps = int(state["sim"]["steps"])
     sim.done = bool(state["sim"]["done"])
-    sim.obs = inner._get_observations()   # rebuilt from the restored buffered values, not re-rendered
+    # Rebuilt from the restored buffered values, not re-rendered; camera images only if they were real.
+    sim.after_restore(inner._get_observations(), bool(state["sim"]["images"]))

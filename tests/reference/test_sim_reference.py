@@ -17,9 +17,24 @@ CFG = load_config()
 TASK = 0
 
 
-def _spec():
+def _spec(render=None):
+    """The config's default spec, or the `render` option's choice (`used` / `all`, SPEC §12)."""
     from vlar_harness.sim.libero_sim import SimSpec
-    return SimSpec.from_config(CFG)
+    return SimSpec.from_config(CFG if render is None else load_config(render=render))
+
+
+def _check_images(obs_ref, sim, keys, where):
+    """Under `all` every step's images match the reference; under `used` only decision points' do,
+    and other steps expose no images at all."""
+    from vlar_harness.sim.libero_sim import ImagesNotRendered
+    if sim.spec.render == "every_step" or sim.steps % sim.spec.decision_interval == 0:
+        for key in keys:
+            assert_tree_equal(obs_ref[key], sim.obs[key], f"{where} {key}")
+        return True
+    assert not set(sim.camera_keys) & set(sim.obs), where
+    with pytest.raises(ImagesNotRendered):
+        sim.require_images()
+    return False
 
 
 def _lc():
@@ -57,15 +72,16 @@ def test_lerobot_install_matches_pins():
 # ---------------------------------------------------------------- X-VLA side
 
 @requires_libero
+@pytest.mark.parametrize("render", ["used", "all"])
 @pytest.mark.parametrize("init_idx", [0, 7])
-def test_episode_setup_and_absolute_control_match_xvla_client(init_idx):
+def test_episode_setup_and_absolute_control_match_xvla_client(init_idx, render):
     from vlar_harness.sim.libero_sim import LiberoSim
 
     lc = _lc()
     ev = lc.LIBEROEval(task_suite_name="libero_10", eval_horizon=900, act_type="abs", num_episodes=1, init_seed=42)
     env_ref, lang, obs_ref = ev._init_env(ev.task_suite_list[0], TASK, init_idx)   # seed 42+ep+100, init ep % 50
 
-    sim = LiberoSim(TASK, _spec())
+    sim = LiberoSim(TASK, _spec(render))
     obs = sim.setup_episode(init_idx, env_seed=42 + init_idx + 100)
     sim.set_control_mode("absolute")
     try:
@@ -81,6 +97,7 @@ def test_episode_setup_and_absolute_control_match_xvla_client(init_idx):
         proc = lc.LiberoAbsActionProcessor()
         start_pos = np.array(ctrl.ee_pos)
         start_aa = lc.T.quat2axisangle(lc.T.mat2quat(np.array(ctrl.ee_ori_mat)))
+        compared = 0
         for i in range(20):
             target = np.concatenate([start_pos + np.array([0.004, -0.003, -0.002]) * i, start_aa,
                                      [1.0 if i > 10 else -1.0]]).astype(np.float32)
@@ -88,8 +105,10 @@ def test_episode_setup_and_absolute_control_match_xvla_client(init_idx):
             done = sim.step(target)
             assert done == done_ref
             assert np.array_equal(sim_state(env_ref), sim_state(sim.env)), f"state differs after step {i + 1}"
-            for key in ("agentview_image", "robot0_eye_in_hand_image"):
+            for key in ("robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"):
                 assert_tree_equal(obs_ref[key], sim.obs[key], f"step {i + 1} {key}")
+            compared += _check_images(obs_ref, sim, ("agentview_image", "robot0_eye_in_hand_image"), f"step {i + 1}")
+        assert compared == (20 if render == "all" else 2)
         assert proc.Mat_to_Rotate6D(ctrl.ee_ori_mat).shape == (6,)
     finally:
         env_ref.close()
@@ -102,6 +121,9 @@ class _FakeSim:
 
     def controller_pose(self):
         return self._pose
+
+    def require_images(self):
+        pass
 
 
 @requires_libero
@@ -147,9 +169,12 @@ def test_xvla_query_pop_split_matches_client_step():
 # ---------------------------------------------------------------- π0.5 side
 
 @requires_lerobot
-def test_pi05_observation_and_delta_control_match_lerobot_env():
+@pytest.mark.parametrize("render", ["used", "all"])
+def test_pi05_observation_and_delta_control_match_lerobot_env(render):
     """Our observation for π0.5 against LeRobot's own vectorised env (built at 360 px), from the
-    first reset through 25 delta-mode steps."""
+    first reset through 25 delta-mode steps (under `used`, π0.5's observation exists only at
+    decision points; the state is compared at every step)."""
+    from vlar_harness.sim.libero_sim import ImagesNotRendered
     from lerobot.envs.configs import LiberoEnv as LiberoEnvConfig
     from lerobot.envs.utils import NEW_ROLLOUT_OPTION
 
@@ -160,7 +185,7 @@ def test_pi05_observation_and_delta_control_match_lerobot_env():
     vec = env_cfg.create_envs(n_envs=1, use_async_envs=False)["libero_10"][TASK]
     obs_ref, _ = vec.reset(seed=[1000], options={NEW_ROLLOUT_OPTION: True})   # init state 0, settle, relative
 
-    sim = LiberoSim(TASK, _spec())
+    sim = LiberoSim(TASK, _spec(render))
     sim.setup_episode(0, env_seed=1000)
     sim.set_control_mode("delta")
     adapter = PI05Adapter(sim)
@@ -174,10 +199,28 @@ def test_pi05_observation_and_delta_control_match_lerobot_env():
             obs_ref, _, term, _, _ = vec.step(a[None])
             done = sim.step(adapter.env_action(a))
             assert bool(term[0]) == done
-            assert_tree_equal(obs_ref, adapter.raw_observation(), f"step {i + 1}")
+            if render == "all" or sim.steps % sim.spec.decision_interval == 0:
+                assert_tree_equal(obs_ref, adapter.raw_observation(), f"step {i + 1}")
+            else:
+                with pytest.raises(ImagesNotRendered):
+                    adapter.raw_observation()
+                ours = _without_pixels(adapter, sim)
+                assert_tree_equal({k: v for k, v in obs_ref.items() if k != "pixels"}, ours, f"step {i + 1}")
     finally:
         vec.close()
         sim.close()
+
+
+def _without_pixels(adapter, sim):
+    """π0.5's batched observation minus the images, at a step whose images are not rendered."""
+    from gymnasium.vector.utils import concatenate, create_empty_array
+    from vlar_harness.sim.libero_sim import CAMERAS, camera_key
+
+    px = sim.spec.extra_camera_px
+    blank = {camera_key(c, px): np.zeros((px, px, 3), dtype=np.uint8) for c in CAMERAS}
+    single = adapter._lr._format_raw_obs(dict(sim.obs, **blank))
+    out = concatenate(adapter._space, [single], create_empty_array(adapter._space, n=1, fn=np.zeros))
+    return {k: v for k, v in out.items() if k != "pixels"}
 
 
 @requires_libero
@@ -205,7 +248,7 @@ def test_observations_are_sampled_at_substep_24_of_25():
     """robosuite samples observables one physics substep before the end of env.step (docs/HARNESS.md)."""
     from vlar_harness.sim.libero_sim import LiberoSim, camera_key
 
-    sim = LiberoSim(TASK, _spec())
+    sim = LiberoSim(TASK, _spec("all"))
     try:
         sim.setup_episode(0, env_seed=0)
         sim.set_control_mode("delta")

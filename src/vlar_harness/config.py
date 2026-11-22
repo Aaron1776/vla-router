@@ -268,6 +268,8 @@ def validate(values: Mapping[str, Any], raw: Mapping[str, Any]) -> None:
         for choice, spec in raw.get("options", {}).get("network", {}).get("choices", {}).items():
             need(spec.get("upload_image_bytes_status") != "placeholder",
                  f"frozen config has a placeholder upload size in network choice {choice!r}")
+    need(values["option_values"].get("render") in ("decision_points", "every_step"),
+         "option render must be decision_points or every_step")
     scene = values["option_values"].get("scene_seed")
     need(isinstance(scene, int) and not isinstance(scene, bool) and scene >= 0,
          "option scene_seed must be a non-negative integer offset")

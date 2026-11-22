@@ -23,6 +23,8 @@ def test_loads_with_spec_values(cfg_dir):
     assert cfg.max_escalations == 26
     assert cfg.option("network")["p_fail"] == 0.05
     assert cfg.option("xvla_state_mode") == "quirk"
+    assert cfg.option("render") == "decision_points"                     # §12
+    assert C.load_config(config_dir=cfg_dir, render="all").option("render") == "every_step"
     assert cfg.time_limit_s(3) == pytest.approx(37.2)
     assert "proposal" not in cfg["observe_inputs"]["router"]
 

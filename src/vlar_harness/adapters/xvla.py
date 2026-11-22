@@ -125,6 +125,7 @@ class XVLAAdapter:
     def observation(self, sim) -> dict:
         """The obs dict the authors' rollout loop passes to the client (libero_client.py:295-298):
         the env observation plus the controller's cached pose."""
+        sim.require_images()
         ee_pos, ee_ori_mat = sim.controller_pose()
         obs = dict(sim.obs)
         obs["robo_ori"] = self.client.processor.Mat_to_Rotate6D(ee_ori_mat)

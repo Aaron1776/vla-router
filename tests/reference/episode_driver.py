@@ -105,6 +105,25 @@ def obs_digest(obs: dict) -> dict:
     return {k: digest(v) for k, v in obs.items()}
 
 
+def decision_requests(sim, xa, pa) -> dict:
+    """Digests of what each model would be sent right now: the X-VLA measurement request (images +
+    measured pose from the controller's cache) and π0.5's batched raw observation."""
+    payload = xa.measurement_payload(sim, sim.task_description)
+    raw = pa.raw_observation()
+    flat = []
+
+    def feed(x):
+        if isinstance(x, dict):
+            for k in sorted(x):
+                feed(x[k])
+        else:
+            flat.append(np.ravel(np.asarray(x)).view(np.uint8))
+
+    feed(raw)
+    return {"xvla": digest(np.frombuffer(repr(sorted(payload.items())).encode(), dtype=np.uint8)),
+            "pi05": digest(np.concatenate(flat))}
+
+
 class Driver:
     """schedule(decision_index) -> 'xvla' or 'pi05'."""
 

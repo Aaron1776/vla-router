@@ -57,6 +57,7 @@ class PI05Adapter:
         """The batched observation `lerobot-eval` passes to `preprocess_observation` at this step."""
         from gymnasium.vector.utils import concatenate, create_empty_array
 
+        self.sim.require_images()
         single = self._lr._format_raw_obs(self.sim.obs)
         out = create_empty_array(self._space, n=1, fn=np.zeros)
         return concatenate(self._space, [single], out)
