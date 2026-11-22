@@ -316,8 +316,11 @@ hf-egl-probe, robomimic); egl-probe and hf-egl-probe configure and compile. With
 4.1.3 and 4.4.4 fail with the VM's error; with it 4.4.4 also configures, so the setting is the fix and the pin
 matches the notebook. egl-probe bundles its EGL/KHR/X11 headers and links only dl and pthread (build-essential).
 
-Second attempt: script 35 re-run with `caffeinate -i -s` on the commit that carries this fix; result below when
-known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+Second attempt on `6b3fccd` (this fix): the Spot VM was **preempted by Google** about 2 minutes after creation
+(audit log: `compute.instances.preempted`, 14:38:31Z), before the build uploaded anything; termination action DELETE
+removed it and its disk; the script reported "gone without a result" and confirmed both gone (also checked by hand:
+no instances or disks in any zone). Not a build failure. `containers/6b3fccd.../` holds only `src.tar.gz`. Waiting
+for the user: re-run as is (Spot) or otherwise. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
