@@ -336,7 +336,18 @@ packaging is in all three locks. Scan of all three locks: every pin is already w
 250), so the lock text cannot show this; the locked wheels' own core metadata (PyPI per-file metadata matched by the
 lock's hashes, and the locally built sdist wheels) spells only thop differently. Tests: `METADATA_SPELLINGS` in
 `tests/test_containers.py` (the thop case, checked against the lock pin) and the strictness cases; text comparison
-and always-equal are both caught. Fourth attempt: on-demand on the commit with this fix; result below when known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+and always-equal are both caught. Fourth attempt: on-demand on `e1f10ee`, 14:36-15:26 local: **all three images built and passed `check_env.py`;
+the in-container tests failed** (`FAILED: in-container tests`); VM and disk deleted and confirmed gone (also checked
+by hand); about 50 on-demand minutes. Logs in `containers/e1f10ee.../` (`build.log`, `test-{sim,pi05,xvla}.log`).
+- pi05: 8 passed, 1 skipped.
+- sim: 193 passed, 32 skipped, 10 failed, 73 errors, all 83 from one cause: LIBERO opens its scene XML from the
+  package directory, `/opt/venv/lib/python3.13/site-packages/libero/libero/assets/scenes/libero_{living_room,kitchen}
+  _tabletop_base_style.xml` (FileNotFoundError), not from the assets the image installs at `/opt/libero-assets`
+  (`LIBERO_CONFIG_PATH=/opt/libero-home`, written by `containers/libero_config.py`; `check_env.py` verified the
+  assets' tree digest at build time).
+- xvla: 11 passed, 1 failed: `test_xvla_act_matches_authors_handler`: "The starlette.testclient module requires the
+  httpx2 package to be installed" (not in `xvla.lock`).
+Waiting for the user before debugging (xhigh). Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
