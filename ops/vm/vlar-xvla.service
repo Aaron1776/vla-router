@@ -1,0 +1,20 @@
+# The X-VLA server (port 8777) in its image (docs/SPEC.md §3, §15). Weights are mounted read-only from /opt/weights
+# (downloaded once in Phase 0, SHA-256 recorded); Hugging Face runs offline. VLAR_MAX_BATCH and VLAR_XVLA_SAMPLE_ROWS
+# in /etc/vlar/batching.env must equal the harness config's servers.batching: the workers check /info and refuse
+# anything else. Start by hand: sudo systemctl start vlar-xvla
+[Unit]
+Description=vla-router X-VLA server
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/vlar/images.env
+EnvironmentFile=/etc/vlar/batching.env
+ExecStart=/usr/bin/docker run --rm --name vlar-xvla --gpus all --network host \
+  -v /opt/weights:/weights:ro -v /etc/vlar:/etc/vlar:ro \
+  vlar-xvla:${VLAR_IMAGE_COMMIT} python -m vlar_harness.servers.xvla_server \
+  --model-path /weights/X-VLA-Pt --lora-path /weights/X-VLA-libero-long-peft --host 127.0.0.1 --port 8777 \
+  --max-batch ${VLAR_MAX_BATCH} --sample-rows ${VLAR_XVLA_SAMPLE_ROWS}
+ExecStop=/usr/bin/docker stop -t 30 vlar-xvla
+Restart=on-failure
+RestartSec=30

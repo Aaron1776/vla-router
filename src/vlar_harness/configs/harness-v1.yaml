@@ -28,6 +28,7 @@ sim:
   numpy: "2.2.6"
   assets_repo: lerobot/libero-assets
   assets_revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6   # unchanged since 2025-11-03
+  assets_sha256: 2f26124a66c807b255c5234a38a165930308097cfb531b3779da47e05bc4f92c   # tree digest of that snapshot (containers/check_env.py tree_digest; .cache excluded)
 
 # Files the adapters and servers take code from, pinned by SHA-256 (vlar_harness.reference).
 reference:

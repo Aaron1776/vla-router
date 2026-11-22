@@ -48,7 +48,14 @@ def source_digest(root: Path = PACKAGE_DIR) -> str:
     return h.hexdigest()
 
 
+GIT_COMMIT_ENV = "VLAR_GIT_COMMIT"                # set in the container images, which are built from a clean commit
+
+
 def git_commit(repo: Path = PACKAGE_DIR) -> dict[str, Any]:
+    """The commit the harness came from. The images carry no .git: they are built from `git archive` of a clean
+    commit (ops/gcp/35_build_images.sh) and record it in VLAR_GIT_COMMIT."""
+    if os.environ.get(GIT_COMMIT_ENV):
+        return {"commit": os.environ[GIT_COMMIT_ENV], "harness_dirty": False}
     try:
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
                               timeout=10).stdout.strip()

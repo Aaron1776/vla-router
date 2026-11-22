@@ -1,0 +1,5 @@
+# Build tools for the few sdist-only packages in lerobot.lock (lerobot.sdists), installed with hashes in the
+# image's builder stage (containers/Dockerfile, stage sdist-wheels). egl-probe and hf-egl-probe also need cmake.
+setuptools
+wheel
+cmake

@@ -34,17 +34,34 @@ source ops/gcp/env.sh
 ops/gcp/10_bucket_and_account.sh            # bucket (soft delete off) + VM service account
 ops/gcp/20_budget_alerts.sh                 # backup email alerts at 50/80/100% of $50
 ops/gcp/40_spend_alert_policy.sh            # email when the guard logs its soft/hard event
-ops/gcp/30_create_vm.sh                     # Spot VM; prints the disk-ledger command to run next
+ops/gcp/35_build_images.sh                  # CPU-only Spot VM: build, test, export the images; then deleted
+ops/gcp/30_create_vm.sh                     # L4 Spot VM; prints the disk-ledger command to run next
 ```
 
-On the VM: clone the repo to `/opt/vla-router`, create `.venv` and `pip install -e ".[gcs]"`,
-copy `ops/ops.example.yaml` to `ops/ops.yaml` and set `storage_url`, then install the guard
+`35_build_images.sh` needs only billing, not the GPU quota (amendment 28). It runs from a clean commit,
+uploads `git archive` of it, and waits for the build VM's result in `gs://$BUCKET/containers/<commit>/`:
+the three images as `.tar.zst` files, `image-digests.json`, `SHA256SUMS`, and the build and in-container test
+logs. The VM deletes itself after `BUILD_MAX_HOURS` at the latest; the script deletes it when it is done.
+Rebuild after any harness change (a new commit means new images). The lockfiles are regenerated with
+`containers/lock.sh` (needs `uv`).
+
+On the VM: clone the repo to `/opt/vla-router`, create `.venv` and `pip install -e ".[gcs]"` (the spend
+guard and the queue commands run on the host; everything else runs in the images), copy
+`ops/ops.example.yaml` to `ops/ops.yaml` and set `storage_url`, then install the guard
 **before anything else can run**:
 
 ```bash
 sudo cp ops/vm/vlar-spend.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now vlar-spend
 ```
+
+Then load and check the images (the first step of Phase 0): `ops/vm/load_images.sh gs://$BUCKET/containers/<commit>`
+checks that the NVIDIA driver supports CUDA 13.0 (580.65.06 or later), loads the images, checks them against
+`SHA256SUMS` and their image IDs, writes `/etc/vlar/image-digests.json` (provenance), `/etc/vlar/images.env` and
+`/etc/vlar/batching.env`, and runs each image's environment check with the GPU. Install the service units
+(`sudo cp ops/vm/vlar-{xvla,pi05}.service ops/vm/vlar-worker@.service /etc/systemd/system/ && sudo systemctl
+daemon-reload`); they are started by hand, never at boot. Weights go to `/opt/weights` and the PaliGemma
+tokenizer's cache to `/opt/hf` (both mounted read-only).
 
 ## Every start (including after a preemption)
 
@@ -53,7 +70,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now vlar-spend
    straight down again; raise the limits in `ops/ops.yaml` first only if funds were added.
 3. `vlar-ops queue resume`: release stale leases, re-upload local-only results, mark everything
    already in the bucket as done.
-4. Start both model servers at the production batch geometry (`servers.batching` in the harness config).
+4. Start both model servers: `sudo systemctl start vlar-xvla vlar-pi05` (batch geometry from
+   `/etc/vlar/batching.env`, written from the harness config by `load_images.sh`).
    The golden-set self-check (§15) runs here once the harness is frozen; it is written with the freeze, and
    until then `vlar-ops worker` refuses a frozen config.
 5. Start the workers: `sudo systemctl start vlar-worker@{1..N}` (N from the Phase 0 throughput measurements;
@@ -61,7 +79,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now vlar-spend
    deterministic settings) and stops if they differ, claims jobs until none is left or the spend guard's
    STOP flag is up, and uploads every file before a job's marker. Options: `--phase P` (repeatable) to claim
    only one phase's jobs, `--option scene_seed=pi05_parity` for the π0.5 parity run (start those workers with
-   `--phase pi05_parity`). A worker given a job its options cannot run gives it back and exits with status 3.
+   `--phase pi05_parity`, as `docker run` with the unit's mounts, or a unit drop-in). A worker given a job its
+   options cannot run gives it back and exits with status 3.
 
 ## Weekly
 

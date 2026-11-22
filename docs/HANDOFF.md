@@ -35,7 +35,7 @@ The harness build is complete only when all of the following are true:
 2. Both model servers implement every endpoint in §3 (/act, /sample, /features for X-VLA; π0.5 inference), with batching and per-call seeds.
 3. Measurement recording (proposal, free signals, spread and drift, probes) and the snapshot store are implemented and tested.
 4. The job queue (idempotent jobs, ordering tiers, bucket sync, resume after preemption), the spend guard with its ledger, and the packaging and verification scripts for §13 are implemented and tested.
-5. The three container images and lockfiles build, and everything that can be tested locally in them passes.
+5. The three Dockerfiles and their lockfiles (with hashes) are complete, and everything that can be checked without a container runtime is checked on the Mac; building the images and the in-container tests are the first step of Phase 0 (§11 step 0, amendment 28).
 6. Ready-to-run setup scripts exist for the Google Cloud side: the g2-standard-16 Spot VM, the bucket, and the budget alert at 50%, 80% and 100% of $50.
 7. The VM re-run list in docs/HARNESS.md is complete, the parity tooling and reference JSON files are committed, everything is committed, git status is clean, and HANDOFF.md is up to date.
 
@@ -49,9 +49,9 @@ Where each item stands now (not complete; do not announce):
 | 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` with per-call seeds, all batched at a fixed geometry of rows and tokens (amendments 24, 26); unseeded requests and π0.5 `/upload_bytes` stay on the reference path |
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; decider inputs and measurement recording (`observe()`, proposal, free signals, spread/drift, chunk-time samples, probes, `record="full"`) done and tested on the Mac with fake models (`6c08bf5`); Parquet dataset records and snapshot sync to the bucket (through the worker) done and tested against a local bucket (the commit after `6c08bf5`); the Cloud Storage path is untested |
 | 4. Queue, spend guard, packaging | done on the Mac against a local stand-in for the bucket (`src/vlar_ops`): queue, spend guard, packaging, runner and worker loop (the commit after `6c08bf5`), the VM worker command `vlar-ops worker` and the dataset manifest and datacard (`vlar-ops dataset manifest`/`verify`; the commit after `1683b56`); the Cloud Storage backend is first exercised by the VM smoke run on the re-run list |
-| 5. Container images, lockfiles | not started |
+| 5. Dockerfiles, lockfiles | done on the Mac, the commit after `1e92964` (wording changed by amendment 28): `containers/` (Dockerfile with targets sim/pi05/xvla, hashed linux/x86_64 locks, `check_env.py`, `locktool.py`, `lock.sh`), `ops/gcp/35_build_images.sh` + `build_vm_startup.sh` (CPU build VM), `ops/vm/load_images.sh` (driver check, load, GPU checks), service units; image builds and in-container tests are Phase 0's first step |
 | 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
-| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements), §12 rendering (`test_render_used.py`), the worker and manifest tests and a real-server worker smoke run; the containers still to add; parity tooling and reference files are committed (`25794f7`) |
+| 7. VM re-run list, commits, HANDOFF | the list starts with the image build on the CPU VM and the L4 driver check and GPU checks (amendment 28), then covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements), §12 rendering (`test_render_used.py`), the worker and manifest tests and a real-server worker smoke run; parity tooling and reference files are committed (`25794f7`) |
 
 ## Status
 
@@ -74,8 +74,11 @@ Where each item stands now (not complete; do not announce):
 | Decider inputs and measurement recording (§6, §7): `measure.py` (definitions in its docstring), `Episode(measure_client=...)`, `start(record="off"/"full")`, `observe(profile)`, per-point records in `Episode.measurements` and in snapshots, seed names `sample_fresh` and `probe` (HARNESS.md "Decider inputs and measurement recording") | done on Mac; VM re-run pending | `6c08bf5` |
 | Dataset records (`dataset.py`: Parquet `runs`/`steps`/`events`/`points`, snapshots, PNG images, markers listing every file), the job runner (`collect.py`: base, explore, branch jobs) and the worker loop (`vlar_ops/worker.py`: uploads and checks every file before the marker); pyarrow 25.0.0 in `.venv-sim` (HARNESS.md "Dataset records, job runner and worker") | done on Mac against a local bucket; VM re-run pending | the commit after `6c08bf5` |
 | VM worker entry point (`vlar_ops/vm_worker.py`, `vlar-ops worker`: production factory with `XVLAClient`/`PI05Client`, one `LiberoSim` per task, server geometry and deterministic checks, the spend guard's `StopFlag`, clean abandon on SIGTERM, refuse-and-stop for jobs the worker's options cannot run, provenance in markers and snapshots, `ops/vm/vlar-worker@.service`); dataset manifest and datacard (`vlar_ops/manifest.py`, `vlar_ops/datacard-v1.md`, `vlar-ops dataset manifest`/`verify`) (HARNESS.md "VM worker entry point, dataset manifest and datacard") | done on Mac; VM smoke run pending | the commit after `1683b56` |
-| Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
+| Container definitions (amendments 28-30; HARNESS.md "Container images and lockfiles"): Dockerfile, hashed locks at the notebook's versions, CPU build VM, L4 loader with driver check, service units, `tests/test_containers.py` | done on the Mac | the commit after `1e92964` |
+| VM bring-up; Phase 0 runs (image build, latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
+
+**Tests after the container definitions (Mac, 2026-11-22).** Main venv 158 passed, 13 skipped (`tests/test_containers.py` 19); simulator env 125 passed, 17 skipped; `uv pip install --dry-run` of every lock for cp313 linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4.
 
 **Tests after the VM worker entry point, manifest and datacard (Mac, 2026-11-22).** Main venv 139 passed, 13 skipped; simulator env (`tests/reference tests/test_measure.py tests/test_labels_calibration.py tests/test_manifest.py`) 125 passed, 17 skipped (the same 17 as before), about 4.5 minutes. Mutation: forcing the X-VLA state mode to `measured` in the production factory fails the record comparison.
 
@@ -208,6 +211,17 @@ Spec amendments, all approved by the user and logged in SPEC §17:
     that chunk's chunk-time spread at the next points); `cascader_full` probes fresh there and is not charged.
     Config `profiles.<p>.act_fresh`; `clock.event_s`; tests in `test_network_clock.py` and `test_measurements.py`
     (each profile is charged exactly when its live decider draws those samples).
+28. Container builds (2026-11-22, during §18 item 5; §11, §13, §15, §18): the Dockerfiles and hashed lockfiles are
+    completed and checked on the Mac; building the images and the in-container tests move to the start of Phase 0
+    (§11 step 0), on a small CPU-only VM (billing only, no GPU quota); images exported as files to the bucket, not
+    Artifact Registry; the L4 VM loads them; GPU-only tests run on the L4.
+29. Versions (2026-11-22; §2, §11): from the notebook's install output: lerobot 0.6.1, torch 2.11.0+cu130 (also the
+    X-VLA server's, reused from Colab), transformers 5.5.4, robosuite 1.4.0, mujoco 3.8.1; possibly from a later
+    re-run than the evaluation runs, so version mismatch heads the parity-debugging checklist (§11 step 4); NVIDIA
+    driver 580.65.06+ for CUDA 13.0, checked on the VM (`ops/vm/load_images.sh`, `check_env.py --gpu`).
+30. Python (2026-11-22; §2, §11, §15): all three images run CPython 3.13.16, the notebook's (runtime-check cell; the
+    X-VLA venv was built on it with `--system-site-packages`), a hash-pinned standalone build; locks re-resolved for
+    cp313 (same pinned versions); the Python version is part of the parity checklist's version check.
 
 Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the tests that show them):
 - The reference stack: LeRobot 0.6.1, hf-libero 0.1.4, robosuite 1.4.0, MuJoCo 3.8.1, file hashes pinned in
@@ -246,12 +260,18 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-Done 2026-11-22 (the commit after `1683b56`): the VM worker entry point and the dataset manifest and
-datacard (§18 item 4 complete on the Mac). Next, at **high**: the three container images and lockfiles (§18 item 5).
-For the simulator image, the worker runs there and needs `vlar_ops` with the `gcs` and `dataset` extras (pyarrow,
-google-cloud-storage), `requests`, `json_numpy`, `pyyaml`, plus the pinned transformers for LeRobot's `pi` extra (see
-below). Adapt `ops/vm/vlar-worker@.service` (it calls `.venv-sim/bin/vlar-ops` under `/opt/vla-router` for now)
-and `ops/README.md`'s one-time setup to the containers.
+Done 2026-11-22: the VM worker entry point and the dataset manifest and datacard (`1e92964`, §18 item 4); the
+container definitions (§18 item 5 as amended by 28-30, the commit after `1e92964`). Next, at **medium**: §18 item 6, the Google
+Cloud values in `ops/gcp/env.sh` once the account has billing and the GPU quota (the CPU build VM needs billing
+only), then item 7 (everything committed, clean tree), then the milestone check. Container notes for whoever runs
+Phase 0's first step:
+- `download.pytorch.org` was unreachable from the Mac's network; the locks take PyPI's torch 2.11.0, which is the
+  CUDA 13.0 build (it depends on nvidia-cuda-runtime 13.0.96). `check_env.py` asserts CUDA 13.0 in each image.
+- CPython 3.13.16 (amendment 30): the notebook's runtime check printed it; standalone build 20261020, hash-pinned.
+- Unverified until the build: Ubuntu's GCE image carrying `gcloud` (the startup script fails clearly if not), the
+  five sdist builds (egl-probe needs cmake and a compiler, both provided), the shallow fetch of the X-VLA commit,
+  and the π0.5 CPU test running offline with config-only snapshots.
+- `.venv-tools` (git-ignored) holds uv 0.13.9 for `containers/lock.sh`.
 
 Worth knowing:
 - `.venv-sim` now also has LeRobot's `pi` extra (transformers 5.5.4, tokenizers 0.22.2; installed 2026-11-21 with
@@ -275,6 +295,9 @@ Worth knowing:
   files (use `--move-unlisted DIR`), stray files, schema or marker mismatches and mixed harness code; a dirty harness
   is only a warning. The datacard (`src/vlar_ops/datacard-v1.md`) is outside the harness source digest; a test keeps
   its field tables equal to the Parquet schemas.
+- Amendments 28-30 (2026-11-22): images built on a CPU-only VM and stored as files in the bucket; versions from
+  the notebook's install output (may be from a later re-run), version mismatch first on the parity-debugging
+  checklist (§11 step 4), driver 580.65.06+ for CUDA 13.0; CPython 3.13.16 in every image.
 - Housekeeping candidate (medium): `vlar_ops.queue.run_worker` (groundwork, handler-based, used only by
   `tests/test_queue_spend_packaging.py`) duplicates `vlar_ops.worker.run_worker`.
 - §12: the sim renders only the step before each decision point by default. Anything that reads images

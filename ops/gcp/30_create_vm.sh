@@ -5,6 +5,12 @@
 set -euo pipefail
 : "${PROJECT_ID:?source ops/gcp/env.sh first}"
 [[ "${IMAGE_FAMILY}" == REPLACE ]] && { echo "set IMAGE_FAMILY in env.sh"; exit 1; }
+# torch 2.11.0 for CUDA 13.0 needs driver 580.65.06+ (amendment 29); load_images.sh checks the installed one.
+if [[ "${IMAGE_FAMILY}" =~ nvidia-([0-9]+)$ ]]; then
+  (( BASH_REMATCH[1] >= 580 )) || { echo "${IMAGE_FAMILY}: driver ${BASH_REMATCH[1]} is too old for CUDA 13.0 (needs 580+)"; exit 1; }
+else
+  echo "warning: cannot tell the driver version from ${IMAGE_FAMILY}; ops/vm/load_images.sh will check it on the VM"
+fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 gcloud compute instances create "${VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" \
   --machine-type=g2-standard-16 \

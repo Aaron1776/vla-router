@@ -664,16 +664,91 @@ by `--quick`); unlisted and stray files; mixed source digest; differing options 
 warned; a run row against its marker; no provenance; verify finds missing, changed and extra files; the datacard's
 fields.
 
+## Container images and lockfiles (SPEC §15, §18 item 5; amendments 28-29)
+
+`containers/Dockerfile` builds three targets from one pinned base (`ubuntu:24.04` by index digest) with CPython
+3.13.16, the reference notebook's Python (amendment 30), from a hash-verified python-build-standalone archive:
+`sim` (the queue workers), `pi05` (the π0.5 server) and `xvla` (the X-VLA server). `sim` and `pi05` share one
+Python environment, `containers/lerobot.lock` (LeRobot 0.6.1 with `libero` and `pi`), because π0.5's own tests need
+LIBERO and because both sides of π0.5's preprocessing then run identical torch, LeRobot and transformers.
+`containers/xvla.lock` holds the authors' server pins. Both locks come from `containers/lock.sh`:
+`uv pip compile` for linux/x86_64 (manylinux_2_28), CPython 3.13, with hashes, from PyPI only, with
+`--exclude-newer 2026-11-07` as for the local environments. The locks pin:
+- torch 2.11.0 and torchvision 0.26.0 in both;
+- transformers 5.5.4 (LeRobot environment) and 4.51.3 (X-VLA);
+- the config's sim pins (hf-libero 0.1.4, robosuite 1.4.0, MuJoCo 3.8.1, NumPy 2.2.6);
+- pyarrow 25.0.0 and every X-VLA server pin.
+
+`download.pytorch.org` was unreachable from the Mac's network (TLS reset for curl, Python and uv alike), but PyPI's
+torch 2.11.0 Linux wheel is PyTorch's CUDA 13.0 build: it depends on `nvidia-cuda-runtime` 13.0.96. That is the
+notebook's 2.11.0+cu130 under another file name. `check_env.py` asserts `torch.version.cuda == "13.0"` in every
+image.
+
+Five LeRobot-environment packages ship only as sdists (`lerobot.sdists`: antlr4-python3-runtime, bddl, egl-probe,
+hf-egl-probe, robomimic). Pip does not hash-check an sdist's build dependencies, so a builder stage
+installs the hashed build tools of `build.lock` (setuptools, wheel, cmake) and builds wheels from the hash-checked
+sdists without build isolation. `locktool.py split` separates the lock. Everything else installs with
+`--require-hashes --no-deps --only-binary :all:`.
+
+The images also hold:
+- the X-VLA checkout at 6c4ecfb8 (shallow fetch by commit, checked);
+- for sim and pi05, LIBERO's scene assets at 0b3ea86b, checked against the tree digest now pinned in the config as
+  `sim.assets_sha256`, with LIBERO's config written by `libero_config.py`;
+- the repo's `src`, `tests`, `References` and `containers`;
+- `VLAR_GIT_COMMIT`, which `provenance.git_commit` reads when there is no `.git`;
+- the apt package list.
+
+Weights are mounted read-only and Hugging Face runs offline. Every build ends with `containers/check_env.py`:
+- CPython 3.13.16;
+- installed distributions equal the lock;
+- torch 2.11.0 built for CUDA 13.0;
+- the reference-file pins;
+- the assets digest.
+
+With `--gpu` it also checks the driver (580.65.06 or later), that torch sees the GPU and, for sim, a MuJoCo EGL
+context.
+
+Build and run (amendment 28). `ops/gcp/35_build_images.sh` builds on an e2-standard-8 Spot VM (deleted after at
+most `BUILD_MAX_HOURS`), runs the CPU in-container tests with OSMesa (`pytest tests` in sim; π0.5's and X-VLA's
+CPU model tests with config-only Hugging Face snapshots at the pinned revisions), and exports
+`vlar-{sim,pi05,xvla}.tar.zst`, `image-digests.json` and `SHA256SUMS` to `gs://$BUCKET/containers/<commit>/`. On
+the L4, `ops/vm/load_images.sh` does the driver check, loads and verifies the images, writes
+`/etc/vlar/{image-digests.json,images.env,batching.env}` and runs the GPU checks. The service units
+(`vlar-xvla`, `vlar-pi05`, `vlar-worker@`) run the images with host networking, servers on 127.0.0.1.
+
+**Checked on the Mac (no container runtime).**
+- `tests/test_containers.py`, 19 tests: base pinned by digest; COPY sources exist and are in the context; every
+  pip install hash-checked; every lock entry hashed; the locks have every pin of their inputs and match the config,
+  pyproject and the notebook; Dockerfile sources match the config; the sdist split; wheel tags; `check_env`
+  helpers; one driver threshold everywhere; build settings defined; shell scripts parse; the units' images, ports
+  and batching variables.
+- `uv pip install --dry-run` of every lock for linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4 (cp313).
+- `libero_config.py` reproduces the Mac's LIBERO config.
+- `check_env.py` against `.venv-sim` passes the reference-file and assets checks; the rest differs by platform,
+  as expected.
+
+**Not checked until Phase 0:**
+- the image builds themselves (the Python download, apt packages, the sdist builds, the shallow X-VLA fetch, the assets download);
+- the in-container tests;
+- that Ubuntu's GCE image has `gcloud` (the startup script fails clearly if not);
+- the GPU checks.
+
+**Python (amendment 30):** CPython 3.13.16, as printed by the notebook's runtime-check cell; python-build-standalone
+release 20261020, its SHA-256 matched against that release's `SHA256SUMS` and a local download. Every locked package
+supports 3.13 at its pinned version, and the 3.13 resolution has the same pinned versions as the 3.12 one.
+
 ## Platform rule (SPEC §11 step 3 as amended)
 
 The Mac runs (CPU MuJoCo, CGL rendering) show the code paths are right. Every equality and determinism
 test is re-run on the L4 VM (Linux, EGL rendering, CUDA) before the freeze; only VM results count for
 parity and determinism, because rendering and floating-point results can differ across platforms.
 
-VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
+VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come first in Phase 0, amendment 28):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
+| CPU build VM, before the L4 (needs billing only) | `ops/gcp/35_build_images.sh` from the Mac on the commit to run | the three images build from the hashed locks; their environment checks; the in-container tests that need no GPU (sim: `pytest tests` with OSMesa; π0.5 and X-VLA CPU model tests); images exported to the bucket with SHA-256 sums |
+| L4 VM, host, before anything else | `ops/vm/load_images.sh gs://<bucket>/containers/<commit>` | **driver check**: NVIDIA driver 580.65.06 or later (CUDA 13.0, amendment 29); images match `SHA256SUMS` and their recorded IDs; `check_env.py --gpu` in each image (torch sees the L4, CUDA 13.0, MuJoCo EGL context in sim) |
 | simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py tests/reference/test_collect.py tests/reference/test_vm_worker.py tests/test_manifest.py` | decider inputs and measurement recording (§6, §7); dataset records, runner and worker end to end (§12, §13); the VM worker entry point with fake clients; the dataset manifest and datacard; adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
