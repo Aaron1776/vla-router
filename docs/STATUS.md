@@ -1,7 +1,7 @@
 # Project status
 
-Last updated: 2026-11-21, describing the code on branch `harness-v1` after part 1 of effort step 5 (the commit after
-`a25053f`).
+Last updated: 2026-11-21, describing the code on branch `harness-v1` after part 1 of effort step 5 (`f8d06d5`); later
+commits change only documents.
 
 This page is for someone who has seen nothing of the project so far: what it is, where things are, how far the
 work has got, what comes next and how to run it. It is a summary; where it and [SPEC.md](SPEC.md) disagree, the spec
@@ -93,7 +93,7 @@ results count for parity and determinism, because rendering and floating-point r
 | `b3e93da` | Decisions 9-12 recorded, the milestone rule, the first HANDOFF.md |
 | `272f64b` | Effort step 4: network model, event log, simulated clock under every overhead profile with offline re-scoring, live time limit, branch runs, label computation, time-limit calibration, handoff diagnostics |
 | `a25053f` | Step-4 follow-ups (amendments 19-23): a live time limit only in routed runs with a decider profile, recorded as an explicit flag in every log and result; a time-cut run scored only under its own profile, while labels from a cut parent's log up to a decision point are computed for every profile; decision points already past the limit under a profile left out of that profile's data, counted per profile; the remaining-time input recomputed under each decider's own profile |
-| after `a25053f` | Effort step 5, part 1: a request queue that batches concurrent requests; X-VLA's three endpoints run every batch at one fixed padded size with deterministic settings and per-request noise, so a request's result is bit-identical alone, with other requests or at any position (checked on the CPU) |
+| `f8d06d5` | Effort step 5, part 1: a request queue that batches concurrent requests; X-VLA's three endpoints run every batch at one fixed padded size with deterministic settings and per-request noise, so a request's result is bit-identical alone, with other requests or at any position (checked on the CPU) |
 
 Test results after step 5 part 1 (Mac): unit tests 112 passed, 7 skipped; simulator tests 48 passed, 11 skipped (the 5
 new X-VLA batch tests skip there); X-VLA server and batch-invariance tests 7 passed (CPU, random weights). The skipped tests need model weights or both servers running, so they run on the VM.
