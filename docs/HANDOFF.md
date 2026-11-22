@@ -39,13 +39,13 @@ Where each item stands now (not complete; do not announce):
 
 | Item | State |
 | --- | --- |
-| 1. Steps 4 and 5 | step 4 done on the Mac (`272f64b`) with its follow-ups (amendments 19-23); step 5 next |
-| 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` exist, single-request, with per-call seeds (CPU generators); π0.5 `/upload_bytes` added for Phase 0 step 2; batch-invariant dynamic batching missing (step 5, amendment 24) |
+| 1. Steps 4 and 5 | step 4 done on the Mac (`272f64b`) with its follow-ups (`a25053f`); step 5 in progress: the batcher and X-VLA's batch-invariant batching done on the Mac, π0.5's next |
+| 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` exist, single-request, with per-call seeds (CPU generators); π0.5 `/upload_bytes` added for Phase 0 step 2; X-VLA's endpoints batched at a fixed geometry (amendment 24); π0.5 batching missing |
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; proposal, free signals, spread/drift and probe recording not started; snapshot sync to the bucket not wired |
 | 4. Queue, spend guard, packaging | implemented and unit-tested against a local stand-in for the bucket (`src/vlar_ops`); the Cloud Storage backend is untested without credentials; the episode engine (now with `run_branch`) is not yet wired to the queue |
 | 5. Container images, lockfiles | not started |
 | 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
-| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-4 and the follow-ups (`test_clock_live.py`, the Phase 0 step 2 upload measurement); step 5 (batch invariance on the L4, the padding cost) and the containers still to add; parity tooling and reference files are committed (`25794f7`) |
+| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-4 and the follow-ups (`test_clock_live.py`, the Phase 0 step 2 upload measurement); X-VLA's batch invariance on the L4 and the padding-cost measurement added; π0.5's invariance test (still to write) and the containers still to add; parity tooling and reference files are committed (`25794f7`) |
 
 ## Status
 
@@ -59,14 +59,18 @@ Where each item stands now (not complete; do not announce):
 | Decisions 13-16 recorded (network failures, upload size, no overhead without budget, `reset(time_limit)`), Google Cloud readiness noted | done | `272f64b` |
 | Effort step 4: network model, event log, live clocks for every profile and offline replay, live time cut, π0.5-alone retries with the 20-attempt cap, `run_branch`, labels, time-limit calibration, handoff diagnostics, upload-size tooling (`network.py`, `clock.py`, `episode.py`, `labels.py`, `calibration.py`, `eventlog.py`) | done on Mac; VM re-run pending | `272f64b` |
 | Decisions 17-18 recorded; STATUS.md added | done | `96ef752`, `11e999a` |
-| Step-4 follow-ups, amendments 19-23: live limit only in routed runs with a decider profile; the explicit `time_limit` flag in start events, results, snapshots and branch events; cut runs scored only under their own profile (scoped so DAgger points get labels for every profile); per-profile exclusion of points already past the limit; the remaining-time input recomputed per profile (`api.py`, `clock.py`, `eventlog.py`, `episode.py`, `labels.py`, `calibration.py`); each rule shown to be caught by its tests when broken | done on Mac; VM re-run pending | the commit after `11e999a` |
-| Effort step 5: batch-invariant request batching in both servers (amendment 24), the alone / companions / position checks (per-call seeds already supported) | **next** | |
+| Step-4 follow-ups, amendments 19-23: live limit only in routed runs with a decider profile; the explicit `time_limit` flag in start events, results, snapshots and branch events; cut runs scored only under their own profile (scoped so DAgger points get labels for every profile); per-profile exclusion of points already past the limit; the remaining-time input recomputed per profile (`api.py`, `clock.py`, `eventlog.py`, `episode.py`, `labels.py`, `calibration.py`); each rule shown to be caught by its tests when broken | done on Mac; VM re-run pending | `a25053f` |
+| Effort step 5, part 1: the request batcher (`servers/batching.py`), deterministic settings (`common.deterministic_torch`), X-VLA's three endpoints batched at a fixed padded geometry, alone / companions / position checks on the CPU, the batching config placeholders | done on Mac; VM re-run pending | the commit after `a25053f` |
+| Effort step 5, part 2: π0.5 batching at a fixed geometry and its tests | **next** | |
 | Render only the observations that are used (SPEC §12) | approved, may start now that restore exists; must pass the same exact-equality tests | |
 | Decider inputs (`observe()`: features, proposal, free signals, spread, drift), dataset storage format (Parquet), queue worker wiring (`run_branch` exists) | not started | |
 | Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
-Test suites after the step-4 follow-ups (Mac): main venv 106 passed, 6 skipped (the simulator modules and the
+Test suites after step 5 part 1 (Mac): main venv 112 passed, 7 skipped; simulator env 48 passed, 11 skipped (the
+5 X-VLA batch-invariance tests skip there); X-VLA env (random weights, CPU) 7 passed in about 4 minutes. Mutation
+check of step 5: 2 of 3 caught (dropping the encoder's padding is not observable on the CPU; HARNESS.md,
+"Batching"). After the step-4 follow-ups (`a25053f`): main venv 106 passed, 6 skipped (the simulator modules and the
 NumPy cross-check need NumPy); simulator env 48 passed, 6 skipped (the same 6 as before: 3 need model weights,
 3 need both servers on the VM); X-VLA env (random weights, CPU) 2 passed. Mutation check of rules 19-23: 15 of 15
 caught (HARNESS.md, "Live-limit rules"). At `272f64b`: main 84 passed and 6 skipped, simulator 46 passed and 6
@@ -182,8 +186,10 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 
 ## Open questions for the user
 
-None open. Decisions 13-16 above settled the questions raised before and during step 4; decisions 19-24 the step-4
-follow-ups and the batch-invariance requirement for step 5.
+One, raised during step 5 (not a spec change yet; needs the user's decision): SPEC §5 charges batch-size-1
+latencies "because a deployed robot serves one request at a time". With fixed padding the harness's servers always
+run padded batches, so the clock charges should be measured in Phase 0 step 2 as a true batch of one (unpadded, as
+on the robot), not as a padded batch. Recommended; confirm before Phase 0.
 
 **Google Cloud readiness (user's action, reported 2026-11-21).** The user is upgrading from the free trial if
 needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, preemptible L4
@@ -192,47 +198,50 @@ needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, pr
 confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates only the VM bring-up, which in
 any case waits for the §18 milestone and the user's go-ahead.
 
-## Next step: effort step 5 (max effort)
+## Next step: the rest of effort step 5 (max effort)
 
-Scope (SPEC §16 item 5): request batching and per-call seeding in both model servers (§3, §12), including the
-batched-versus-unbatched equivalence check, under the batch-invariance requirement (amendment 24). Raise the effort
-checkpoint before starting.
+The user switched to max effort for this step on 2026-11-21 and cleared the checkpoint for that session; a new
+session raises it again ("Effort checkpoint: please switch to max effort before I start the rest of effort step 5").
 
 Requirement (amendment 24, approved 2026-11-21): inference is batch-invariant. A request's output must be
 bit-identical regardless of which other requests share its batch, how many there are, or its position in the batch.
 Approach: every batch runs at one fixed padded batch size per endpoint; deterministic GPU settings; each request's
 noise from its own generator seeded by its per-call seed, never a batch-level random state. Tests on the CPU now
-(alone, with different companions, at different positions); on the VM (add to the re-run list, X-VLA and π0.5) the
-same three checks bit for bit on the L4 plus a measurement of the throughput cost of fixed padding. If fixed padding
-turns out too slow, stop and bring the numbers to the user before relaxing anything.
+(alone, with different companions, at different positions); on the VM (re-run list, X-VLA and π0.5) the same three
+checks bit for bit on the L4 plus a measurement of the throughput cost of fixed padding. If fixed padding turns out
+too slow, stop and bring the numbers to the user before relaxing anything.
 
-Design notes (none of this is implemented yet):
-- **What exists.** Both servers take per-call seeds and draw each sample's initial noise on the CPU from its own
-  generator (`servers/common.seeded_noise`), so a sample's noise depends only on its seed, not on its batch. Each
-  service holds a lock and runs one request at a time. The X-VLA server's `/sample` already batches the K samples
-  of one request (one encoder pass, K denoising rows). Config `servers.batching` has placeholders (`max_batch` 8,
-  `wait_window_ms` 5) to be set from Phase 0 step 2.
-- **Dynamic batching.** Per server, one GPU worker thread and a request queue: handlers enqueue (payload, future)
-  and await; the worker takes the first request, waits up to `wait_window_ms` for more (up to `max_batch` rows),
-  runs one batched pass, and resolves each future with its own slice. Batch only requests of the same endpoint
-  (X-VLA `/act`, `/sample` and `/features` have different work; `/sample` rows count K each). Keep the reference
-  behaviour for a request without seeds (global RNG) out of batches, or refuse it in batched mode.
-- **X-VLA.** Batch the processor outputs (images, 50 padded text tokens, proprio, domain id) along dim 0; encoder
-  once; denoising with stacked per-seed noise; pooled features per row (the image mask is per row). Check the
-  authors' `forward_vlm`/`generate_actions` code for anything that assumes batch size 1.
-- **π0.5.** LeRobot's processors take a batch dimension (the rollout uses gymnasium batching). The prompt includes
-  the tokenised state but is padded on the right to `tokenizer_max_length` 200 (`processor_pi05.py:142-144`), so
-  rows have equal length; confirm the attention masks keep rows independent and that `predict_action_chunk` takes
-  a [B, 50, 32] noise tensor (`modeling_pi05.py:620-638`). Post-processing is per action row, as now.
-- **Equivalence (§11 step 3, amendment 24).** Bit-identical, no tolerance: on the Mac with random weights on the
-  CPU, each row of a batch of mixed requests equals the same request alone (padded to the same fixed size), with
-  other companions, and at every position. Fixed padding is what makes this hold on the GPU, where cuBLAS kernel
-  choice can change with batch size.
-- **Engine side.** No change: each simulator worker sends single requests; the servers batch across workers.
-  `run_branch` and the episode engine are ready for the queue workers.
-- **Tests to write.** The batcher (ordering, wait window, max batch, error isolation: one bad request must not fail
-  its batch-mates), equivalence as above, the reference equivalence tests still passing through the batched path,
-  and a load test with several concurrent clients.
+Done (part 1; HARNESS.md "Batching"): `servers/batching.py` (queue, wait window, capacity vectors, error isolation
+by re-running a failed batch's requests alone), `common.deterministic_torch()`, X-VLA's `/act`, `/sample` and
+`/features` at a fixed geometry (`XVLABatching`), tests in `tests/test_batching.py` and
+`tests/reference/test_batch_invariance.py`, config `servers.batching` (`max_batch`, `xvla_sample_rows`,
+`wait_window_ms`). Mutation check: dropping the denoising rows' padding and a batch-level noise generator are
+caught; dropping the encoder's padding is not caught on the CPU (its results do not depend on the batch size
+there), so only the VM can show that one.
+
+To do (part 2), π0.5 (`pi05_server.py`), following the X-VLA pattern:
+- `PI05Batching(max_batch=8, wait_window_s=0.005)`; `PI05Service.__init__` calls `deterministic_torch()` instead
+  of lerobot-eval's `cudnn.benchmark = True` (record the deviation; TF32 stays on as in the reference).
+- `_prepare_request(request)` in the caller's thread: require `seed`; `preprocess_observation`, the task,
+  `env_preprocessor`, `preprocessor`, exactly as `act` does now (batch dimension 1).
+- `_run_batch(reqs)`: rows padded to `max_batch` with copies of the first (`batching.pad_rows`); tensors
+  concatenated on dim 0 (lists, e.g. the task, concatenated); noise `seeded_noise(padded seeds, (chunk_size,
+  max_action_dim), device, "normal")`; `policy.predict_action_chunk(batch, noise=noise)` under inference mode; then
+  each real row post-processed alone, one action at a time, as `act` does now (`chunk[i:i+1, t]`).
+- `act`: seeded requests through the batcher, unseeded ones keep the reference path (`act_unbatched`, the current
+  code). `/upload_bytes` stays unbatched (a measurement).
+- Check in LeRobot's code that nothing couples rows: `_preprocess_images` (`resize_with_pad_torch` on the whole
+  batch), `embed_prefix`, the attention masks (eager attention; tokens right-padded to 200, so every row has the
+  same length), `euler_integrate` (time is a scalar expanded over the batch).
+- Tests: on the Mac only the mechanics can be tested (no weights, and the PaliGemma tokenizer is gated): a
+  `PI05Service` built without `__init__` around a fake policy whose row results depend on the batch size, showing
+  alone / companions / positions agree with padding and differ without it (the mutation check). The real model's
+  three checks go in `tests/reference/test_batch_invariance.py -k pi05` for the VM (needs `VLAR_PI05_CHECKPOINT`).
+- Then add the π0.5 rows to the VM re-run list, update the docs, and announce "Effort checkpoint complete: you can
+  switch back to xhigh."
+
+Engine side: no change. Each simulator worker sends single requests; the servers batch across workers. `run_branch`
+and the episode engine are ready for the queue workers.
 
 After step 5: rendering only what is used, decider inputs (`observe()`) and measurement recording, the dataset
 format and queue workers, container images and lockfiles, and the VM bring-up for the Phase 0 runs.

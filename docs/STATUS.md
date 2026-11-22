@@ -1,7 +1,7 @@
 # Project status
 
-Last updated: 2026-11-21, describing the code on branch `harness-v1` after the step-4 follow-ups (amendments 19-23,
-the commit after `11e999a`).
+Last updated: 2026-11-21, describing the code on branch `harness-v1` after part 1 of effort step 5 (the commit after
+`a25053f`).
 
 This page is for someone who has seen nothing of the project so far: what it is, where things are, how far the
 work has got, what comes next and how to run it. It is a summary; where it and [SPEC.md](SPEC.md) disagree, the spec
@@ -92,10 +92,11 @@ results count for parity and determinism, because rendering and floating-point r
 | `25794f7` | Effort step 3: the episode engine (decision points, handoff rules between the models, budget, run modes); the scene/rollout seed split; the reference run's result files and checks |
 | `b3e93da` | Decisions 9-12 recorded, the milestone rule, the first HANDOFF.md |
 | `272f64b` | Effort step 4: network model, event log, simulated clock under every overhead profile with offline re-scoring, live time limit, branch runs, label computation, time-limit calibration, handoff diagnostics |
-| after `11e999a` | Step-4 follow-ups (amendments 19-23): a live time limit only in routed runs with a decider profile, recorded as an explicit flag in every log and result; a time-cut run scored only under its own profile, while labels from a cut parent's log up to a decision point are computed for every profile; decision points already past the limit under a profile left out of that profile's data, counted per profile; the remaining-time input recomputed under each decider's own profile |
+| `a25053f` | Step-4 follow-ups (amendments 19-23): a live time limit only in routed runs with a decider profile, recorded as an explicit flag in every log and result; a time-cut run scored only under its own profile, while labels from a cut parent's log up to a decision point are computed for every profile; decision points already past the limit under a profile left out of that profile's data, counted per profile; the remaining-time input recomputed under each decider's own profile |
+| after `a25053f` | Effort step 5, part 1: a request queue that batches concurrent requests; X-VLA's three endpoints run every batch at one fixed padded size with deterministic settings and per-request noise, so a request's result is bit-identical alone, with other requests or at any position (checked on the CPU) |
 
-Test results after the follow-ups (Mac): unit tests 106 passed, 6 skipped; simulator tests 48 passed, 6 skipped; X-VLA server
-tests 2 passed. The skipped tests need model weights or both servers running, so they run on the VM.
+Test results after step 5 part 1 (Mac): unit tests 112 passed, 7 skipped; simulator tests 48 passed, 11 skipped (the 5
+new X-VLA batch tests skip there); X-VLA server and batch-invariance tests 7 passed (CPU, random weights). The skipped tests need model weights or both servers running, so they run on the VM.
 
 Not started: request batching in the servers (effort step 5), rendering only the camera images that are used, the
 decider inputs and measurement recording, the dataset format and queue workers, the container images, and
@@ -105,8 +106,8 @@ The §18 milestone (all seven must hold before the harness build counts as compl
 
 | §18 item | State |
 | --- | --- |
-| 1. Effort steps 4 and 5 done, tests passing on the Mac | partial: step 4 done (`272f64b`, follow-ups after `11e999a`), step 5 next |
-| 2. Both servers implement every endpoint, with batching and per-call seeds | partial: all endpoints and per-call seeds exist; batch-invariant batching missing |
+| 1. Effort steps 4 and 5 done, tests passing on the Mac | partial: step 4 done (`272f64b`, follow-ups `a25053f`); step 5 in progress (X-VLA batching done, π0.5's next) |
+| 2. Both servers implement every endpoint, with batching and per-call seeds | partial: all endpoints and per-call seeds exist; X-VLA batched, π0.5 batching missing |
 | 3. Measurement recording and the snapshot store | partial: snapshot store done; measurement recording (proposal, spread, drift, probes) not started |
 | 4. Job queue, spend guard and packaging implemented and tested | partial: implemented and unit-tested against a local stand-in for cloud storage; the real cloud storage path is untested; the engine is not yet wired to the queue |
 | 5. Three container images and lockfiles build and pass local tests | not started |
@@ -118,10 +119,10 @@ evaluation have not started.
 
 ## What's next, in order
 
-1. Effort step 5: dynamic batching in both model servers, batch-invariant (amendment 24): a request's output must be
-   bit-identical whatever else shares its batch, so every batch runs at one fixed padded size per endpoint with
-   deterministic GPU settings and per-request noise generators; checked on the CPU now and bit for bit on the L4,
-   where the cost of the padding is also measured.
+1. The rest of effort step 5: batch-invariant batching in the π0.5 server, as already done for X-VLA (amendment 24:
+   a request's output must be bit-identical whatever else shares its batch, so every batch runs at one fixed padded
+   size with deterministic GPU settings and per-request noise generators); checked bit for bit on the L4, where the
+   cost of the padding is also measured.
 2. Render camera images only when they are used, provided it passes the same exact-equality tests.
 3. Decider inputs (`observe()`) and measurement recording at every decision point; the dataset format (Parquet);
    queue workers that run episodes and branches.
@@ -168,6 +169,10 @@ The full list, with dates, is SPEC §17 (24 entries). The most important:
   eight the training tasks; splits are always by whole task.
 
 ## Open questions and blockers
+
+- **Clock charges under fixed padding (needs a decision).** The servers now always run padded batches, so the
+  simulated clock's per-call charges (meant to be what a robot serving one request at a time would wait) should be
+  measured in Phase 0 as a true batch of one, unpadded. Recommended in HANDOFF.md; not yet confirmed.
 
 - **Cloud GPU quota (pending).** Google Cloud needs a GPU quota of at least 1 globally, 1 preemptible L4 and 1
   on-demand L4 in us-central1, possibly after upgrading from the free trial. Requested by Miguel; not confirmed yet.

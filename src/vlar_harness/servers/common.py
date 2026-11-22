@@ -58,13 +58,33 @@ class Timer:
             self.spans[name] = self.spans.get(name, 0.0) + time.perf_counter() - t
 
 
+def deterministic_torch() -> None:
+    """Deterministic kernel selection for batch invariance (SPEC §3, amendment 24): no cuDNN autotuning (it can pick
+    another algorithm after a restart), cuDNN's deterministic algorithms, PyTorch's deterministic mode, and the cuBLAS
+    workspace setting that mode needs. Call before the model is loaded and before any CUDA work. TF32 settings are
+    left as each reference sets them: they change precision, not determinism."""
+    import os
+
+    import torch
+
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
+
+
 def torch_flags() -> dict:
+    import os
+
     import torch
 
     return {
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "cudnn_deterministic": torch.backends.cudnn.deterministic,
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
         "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
         "float32_matmul_precision": torch.get_float32_matmul_precision(),

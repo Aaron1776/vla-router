@@ -19,6 +19,16 @@ Endpoints (JSON; arrays as json_numpy strings, as the authors' client sends them
   POST /features  encoder pass only -> pooled features.
 Optional request fields beyond the authors' format: `seed` (/act), `seeds` (/sample).
 
+Batching (effort step 5, SPEC §3, §12, amendment 24). Seeded requests (every request the harness sends) and every
+/features request go through one `Batcher` per endpoint, and every batch runs at a fixed geometry (`XVLABatching`):
+the encoder on exactly `max_batch` rows, /act's denoising on `max_batch` rows, /sample's on `sample_rows` rows (a
+request's samples are consecutive rows), padded with copies of the batch's first request; each row's initial noise
+comes from its own seed's CPU generator. A request's result is therefore bit-identical whichever requests share its
+batch, however many, and wherever it sits; the encoder geometry is the same for all three endpoints, so their pooled
+features agree bit for bit. Batched requests must carry exactly the two views the harness sends (main, wrist), so the
+image encoder always sees 2 x max_batch images, and the configured number of flow-matching steps. A request without a
+seed keeps the reference behaviour (global RNG, a batch of one, unpadded) outside the batchers.
+
 Pooled features [ASSUMPTION in the spec]: `enc_mean` is the mean over all encoder output tokens
 (first image's tokens and the 50 text tokens, padding included, as the encoder attends to all
 of them); `wrist_mean` is the mean over the wrist view's image tokens, which reach the action
@@ -30,23 +40,39 @@ from __future__ import annotations
 import argparse
 import logging
 import threading
+from dataclasses import asdict, dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
 
 from .. import reference
-from .common import Timer, peak_memory_gb, seeded_noise, torch_flags
+from .batching import Batcher, pad_rows
+from .common import Timer, deterministic_torch, peak_memory_gb, seeded_noise, torch_flags
 
 log = logging.getLogger("vlar.xvla_server")
+
+
+@dataclass(frozen=True)
+class XVLABatching:
+    """The fixed batch geometry (amendment 24); placeholders until Phase 0 step 2 measures the padding cost."""
+    max_batch: int = 8               # requests per batch: rows of every encoder pass and every /act denoising pass
+    sample_rows: int = 40            # rows of every /sample denoising pass (K = 5 samples per request)
+    wait_window_s: float = 0.005
+    steps: int = 10                  # flow-matching steps of every batched request (the reference's 10)
+
+    def __post_init__(self):
+        if min(self.max_batch, self.sample_rows, self.steps) < 1 or self.wait_window_s < 0:
+            raise ValueError(f"invalid batching {self}")
 
 
 class XVLAService:
     @classmethod
     def load(cls, model_path: str, lora_path: Optional[str], device: str = "cuda",
-             processor_path: Optional[str] = None) -> "XVLAService":
-        """deploy.py:63-98."""
+             processor_path: Optional[str] = None, batching: Optional[XVLABatching] = None) -> "XVLAService":
+        """deploy.py:63-98, after the deterministic settings (amendment 24)."""
         import torch
 
+        deterministic_torch()
         reference.add_xvla_repo_to_path()
         from models.modeling_xvla import XVLA            # the authors' classes, from the pinned checkout
         from models.processing_xvla import XVLAProcessor
@@ -57,9 +83,9 @@ class XVLAService:
         if lora_path:
             from peft import PeftModel
             model = PeftModel.from_pretrained(model, lora_path, torch_dtype=torch.float32).to(device)
-        return cls(model, processor)
+        return cls(model, processor, batching)
 
-    def __init__(self, model, processor):
+    def __init__(self, model, processor, batching: Optional[XVLABatching] = None):
         self.processor = processor
         self.model = model
         # deploy.py calls `model.run`, which PeftModel forwards to the wrapped XVLA (LoRA layers injected
@@ -70,11 +96,31 @@ class XVLAService:
         self.device, self.dtype = p.device, p.dtype
         self.num_actions = int(self.xvla.num_actions)
         self.dim_action = int(self.xvla.action_space.dim_action)
-        self.lock = threading.Lock()   # one request on the GPU at a time (batching comes with the queue)
+        self.lock = threading.Lock()   # one batch (or unseeded request) on the device at a time
+        self.batching = b = batching or XVLABatching()
+
+        def batcher(kind: str, capacity: tuple, cost=lambda r: (1,)):
+            return Batcher(f"xvla-{kind}", prepare=lambda p: self._prepare_request(p, kind),
+                           run=lambda reqs: self._run_batch(kind, reqs), capacity=capacity, cost=cost,
+                           wait_window_s=b.wait_window_s)
+
+        self.batchers = {"act": batcher("act", (b.max_batch,)),
+                         "sample": batcher("sample", (b.max_batch, b.sample_rows), lambda r: (1, len(r["seeds"]))),
+                         "features": batcher("features", (b.max_batch,))}
+
+    def close(self) -> None:
+        for bt in self.batchers.values():
+            bt.close()
 
     # ------------------------------------------------------------ preprocessing (authors' handler)
 
     def prepare(self, payload: dict[str, Any]) -> tuple[dict, int]:
+        """The authors' preprocessing, on the model's device."""
+        inputs, steps = self.process(payload)
+        return {k: v.to(self.device) for k, v in inputs.items()}, steps
+
+    def process(self, payload: dict[str, Any]) -> tuple[dict, int]:
+        """The authors' preprocessing, as CPU tensors (floats in the model's dtype)."""
         import cv2
         import json_numpy
         import torch
@@ -102,16 +148,86 @@ class XVLAService:
         def to_model(t):
             if not isinstance(t, torch.Tensor):
                 t = torch.as_tensor(t)
-            return t.to(device=self.device, dtype=self.dtype) if t.is_floating_point() else t.to(device=self.device)
+            return t.to(dtype=self.dtype) if t.is_floating_point() else t
 
         inputs = {k: to_model(v) for k, v in inputs.items()}
         if "proprio" in payload:
             proprio = torch.as_tensor(np.asarray(json_numpy.loads(payload["proprio"])))
             inputs["proprio"] = to_model(proprio.unsqueeze(0))
         if "domain_id" in payload:
-            inputs["domain_id"] = torch.tensor([int(payload["domain_id"])], dtype=torch.long).to(self.device)
+            inputs["domain_id"] = torch.tensor([int(payload["domain_id"])], dtype=torch.long)
         steps = int(payload.get("steps", 10))
         return inputs, steps
+
+    # ------------------------------------------------------------ batches (effort step 5, amendment 24)
+
+    def _prepare_request(self, payload: dict[str, Any], kind: str) -> dict:
+        """One request for a batcher: checked to fit the fixed geometry, preprocessed on the CPU (in the caller's
+        thread, so a bad request fails alone)."""
+        if "image2" in payload or not ("image0" in payload and "image1" in payload):
+            raise ValueError("batched requests carry exactly image0 (main view) and image1 (wrist view)")
+        steps = int(payload.get("steps", self.batching.steps))
+        if kind != "features" and steps != self.batching.steps:
+            raise ValueError(f"batched requests use {self.batching.steps} flow-matching steps, not {steps}")
+        if kind == "act":
+            if payload.get("seed") is None:
+                raise ValueError("a batched /act needs its `seed`")
+            seeds = [int(payload["seed"])]
+        elif kind == "sample":
+            seeds = [int(x) for x in payload.get("seeds") or []]
+            if not seeds:
+                raise ValueError("/sample needs a non-empty `seeds` list")
+        else:
+            seeds = []
+        inputs, _ = self.process(payload)
+        if kind == "features":                       # the encoder's inputs only, so every /features row is alike
+            inputs = {k: inputs[k] for k in ("input_ids", "image_input", "image_mask")}
+        elif not {"proprio", "domain_id"}.issubset(inputs):
+            raise ValueError("a batched /act or /sample needs `proprio` and `domain_id`")
+        return {"inputs": inputs, "seeds": seeds}
+
+    def _run_batch(self, kind: str, reqs: list[dict]) -> list[dict]:
+        """One batch at the fixed geometry; one result per request, in order."""
+        import torch
+
+        b = self.batching
+        timer = Timer(self.device.type == "cuda")
+        with self.lock, torch.no_grad():
+            self.xvla.eval()
+            rows = pad_rows([r["inputs"] for r in reqs], b.max_batch)
+            keys = rows[0].keys()
+            if any(x.keys() != keys for x in rows):
+                raise ValueError("requests in one batch must carry the same fields")
+            batch = {k: torch.cat([x[k] for x in rows], 0).to(self.device) for k in keys}
+            with timer.span("encode"):
+                enc = self.encode(batch)
+            feats = {k: v.cpu().numpy() for k, v in self.pooled_features(enc, batch["image_mask"]).items()}
+            out = [{"features": {k: v[i].tolist() for k, v in feats.items()}} for i in range(len(reqs))]
+            if kind != "features":
+                owner = [i for i, r in enumerate(reqs) for _ in r["seeds"]]
+                seeds = [s for r in reqs for s in r["seeds"]]
+                idx = pad_rows(list(range(len(seeds))), b.max_batch if kind == "act" else b.sample_rows)
+                sel = torch.tensor([owner[j] for j in idx], dtype=torch.long, device=self.device)
+                x1 = seeded_noise([seeds[j] for j in idx], (self.num_actions, self.dim_action), self.device,
+                                  "randn").to(self.dtype)
+                with timer.span("denoise"):
+                    actions = self.denoise({k: v.index_select(0, sel) for k, v in enc.items()},
+                                           batch["proprio"].index_select(0, sel),
+                                           batch["domain_id"].index_select(0, sel), b.steps, x1)
+                actions = actions.float().cpu().numpy()
+                start = 0
+                for i, r in enumerate(reqs):
+                    chunk = actions[start:start + len(r["seeds"])]
+                    start += len(r["seeds"])
+                    if kind == "act":
+                        out[i]["action"] = chunk[0].tolist()
+                    else:
+                        out[i]["actions"] = chunk.tolist()
+        info = {"requests": len(reqs), "encoder_rows": b.max_batch,
+                "denoise_rows": {"act": b.max_batch, "sample": b.sample_rows, "features": 0}[kind]}
+        for o in out:
+            o["timing_s"], o["batch"] = dict(timer.spans), info
+        return out
 
     # ------------------------------------------------------------ generation (authors' generate_actions)
 
@@ -155,6 +271,19 @@ class XVLAService:
     # ------------------------------------------------------------ endpoints
 
     def act(self, payload: dict) -> dict:
+        """Seeded: batched at the fixed geometry. Without a seed: the reference behaviour, alone."""
+        if payload.get("seed") is None:
+            return self.act_unbatched(payload)
+        return self.batchers["act"].submit(payload)
+
+    def sample(self, payload: dict) -> dict:
+        return self.batchers["sample"].submit(payload)
+
+    def features(self, payload: dict) -> dict:
+        return self.batchers["features"].submit(payload)
+
+    def act_unbatched(self, payload: dict) -> dict:
+        """One request alone, unpadded (the authors' handler with an optional seed)."""
         import torch
 
         seed = payload.get("seed")
@@ -173,7 +302,7 @@ class XVLAService:
                 "features": {k: v[0].cpu().numpy().tolist() for k, v in feats.items()},
                 "timing_s": timer.spans}
 
-    def sample(self, payload: dict) -> dict:
+    def sample_unbatched(self, payload: dict) -> dict:
         import torch
 
         seeds = payload.get("seeds")
@@ -198,7 +327,7 @@ class XVLAService:
                 "features": {k_: v[0].cpu().numpy().tolist() for k_, v in feats.items()},
                 "timing_s": timer.spans}
 
-    def features(self, payload: dict) -> dict:
+    def features_unbatched(self, payload: dict) -> dict:
         import torch
 
         timer = Timer(self.device.type == "cuda")
@@ -214,7 +343,8 @@ class XVLAService:
     def info(self) -> dict:
         return {"model": "xvla", "num_actions": self.num_actions, "dim_action": self.dim_action,
                 "device": str(self.device), "dtype": str(self.dtype), "peak_memory_gb": peak_memory_gb(self.device),
-                **torch_flags()}
+                "batching": asdict(self.batching),
+                "batch_sizes": {k: list(v.stats.sizes[-1000:]) for k, v in self.batchers.items()}, **torch_flags()}
 
 
 def create_app(service: XVLAService):
@@ -247,11 +377,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8777)
+    ap.add_argument("--max-batch", type=int, default=XVLABatching.max_batch, help="config servers.batching.max_batch")
+    ap.add_argument("--sample-rows", type=int, default=XVLABatching.sample_rows,
+                    help="config servers.batching.xvla_sample_rows")
+    ap.add_argument("--wait-window-ms", type=float, default=5.0, help="config servers.batching.wait_window_ms")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     import uvicorn
 
-    service = XVLAService.load(a.model_path, a.lora_path, a.device, a.processor_path)
+    batching = XVLABatching(max_batch=a.max_batch, sample_rows=a.sample_rows, wait_window_s=a.wait_window_ms / 1000)
+    service = XVLAService.load(a.model_path, a.lora_path, a.device, a.processor_path, batching)
     uvicorn.run(create_app(service), host=a.host, port=a.port, log_level="warning")
 
 

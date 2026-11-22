@@ -348,7 +348,52 @@ reset through 25 delta-mode steps (images, all robot-state arrays, dtypes, succe
   every decider takes both.
 - **Noise**: with seeds, each sample's initial noise comes from its own CPU generator, so it depends on
   nothing but its seed (not the batch, not the GPU). Without seeds the servers behave like the
-  references (global RNG). Seed derivation and batching are effort step 5.
+  references (global RNG). Seeds are derived by the harness (`seeding.call_seed`).
+
+### Batching (effort step 5, amendment 24; X-VLA done, π0.5 next)
+
+`servers/batching.py`: one `Batcher` per endpoint, a request queue and one worker thread that owns the model. A
+handler's `submit` prepares the request in its own thread (a bad request fails there, alone) and waits; the worker
+takes the oldest request, then later ones in arrival order while they fit the endpoint's capacity, for up to the
+wait window, and runs one batch. Capacity is a vector (X-VLA `/sample`: one encoder row and K denoising rows per
+request); nothing overtakes the head of the queue; a request larger than the capacity is refused. If a batch raises,
+each of its requests runs again alone, which is exact because of batch invariance, and only the ones that fail alone
+fail. Unit tests (`tests/test_batching.py`, fake model): own results, the wait window, capacity splits, error
+isolation, 8 concurrent clients.
+
+X-VLA (`xvla_server.py`, `XVLABatching`): every seeded `/act`, every `/sample` and every `/features` goes through
+its endpoint's batcher. Each batch runs at a fixed geometry: the encoder on exactly `max_batch` rows, `/act`'s
+denoising on `max_batch` rows, `/sample`'s on `sample_rows` rows (a request's samples are consecutive rows), padded
+with copies of the batch's first request; each row's noise comes from its own seed. Batched requests must carry
+exactly the two views the harness sends (`forward_vlm` encodes only the valid views of the whole batch, so a third
+view would change the image encoder's batch size) and the configured step count. The encoder geometry is shared by
+the three endpoints, so their pooled features agree bit for bit (§3). An unseeded `/act` keeps the reference path
+(`act_unbatched`), outside the batchers. `common.deterministic_torch()` (called by `load`): no cuDNN autotuning,
+cuDNN deterministic, `torch.use_deterministic_algorithms(True)`, `CUBLAS_WORKSPACE_CONFIG=:4096:8`; TF32 settings
+stay as each reference has them. Config: `servers.batching` (`max_batch` 8, `xvla_sample_rows` 40, `wait_window_ms`
+5), placeholders until Phase 0 step 2.
+
+**Verified on the Mac** (`tests/reference/test_batch_invariance.py`, X-VLA environment, random weights, CPU,
+geometry 3 requests / 6 sample rows / 10 steps): a request's `/act` result and features are bit-identical alone,
+with different companions and at every position; the same for a `/sample` request with 2 samples among requests of
+1 and 3 samples; `/act`, `/sample` and `/features` give bit-identical features for the same payload; three
+concurrent clients through the real queue land in one batch and each gets its alone result; requests that break the
+geometry are refused and unseeded ones bypass the batchers; at `max_batch` 1 the batched path equals the seeded
+batch-of-one path (which `test_model_servers.py` ties to the authors' handler).
+
+Findings:
+- On the CPU the denoiser's result depends on the batch size: row 0 of an unpadded batch of 2 or 8 differs from a
+  batch of one by up to 6e-8 (10 steps; a scratch probe). Fixed padding removes this; the mutation that drops the
+  denoising rows' padding is caught (as is a batch-level noise generator). The encoder gave the same bits at every
+  batch size tried on the CPU (1, 2, 3, 8), so dropping its padding is not caught on the Mac; it stays, because GPU
+  kernel choice can change with batch size, and the VM run shows whether the L4 needs it.
+- At the test geometry (3 rows) the padded result equals the batch of one exactly on the CPU; at 2 and 8 rows it
+  does not. The production geometry's results therefore need not equal a batch of one, only each other: parity is
+  judged by success rates, not bits.
+- Deterministic mode makes PyTorch fill uninitialised memory with NaN. A randomly initialised X-VLA has one tensor
+  random init never touches (Florence-2's raw `image_projection` Parameter, created with `torch.empty`); before,
+  the random-weight tests read leftover memory there. The test builder now seeds every non-finite tensor; a
+  checkpoint overwrites it in production. The NaN fill costs time, so Phase 0 step 2 measures it with the padding.
 
 ## Rendering only what is used (SPEC §12, approved with conditions)
 
@@ -374,6 +419,9 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
+| X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position; features equal across endpoints (amendment 24) |
+| LeRobot | π0.5 batch invariance (to be written with π0.5 batching, the rest of step 5) | the same three checks bit for bit on the L4 (amendment 24) |
+| both servers, Phase 0 step 2 (a measurement) | throughput at the fixed geometry against unpadded batches, with deterministic mode on and off | the cost of fixed padding and of deterministic mode; if padding is too slow, stop and bring the numbers to the user before relaxing anything (amendment 24) |
 | LeRobot | `VLAR_PI05_CHECKPOINT=… pytest tests/reference/test_model_servers.py -k pi05` | server vs lerobot-eval's per-step processing (needs the gated tokenizer) |
 | main | `pytest tests` | config, queue, spend guard, packaging; network model, clock charges, labels and calibration on synthetic logs |
 | simulator | `pytest tests/test_labels_calibration.py -k numpy` | the pure-Python percentile equals NumPy's bit for bit (the main environment has no NumPy) |

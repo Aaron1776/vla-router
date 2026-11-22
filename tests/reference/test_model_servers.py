@@ -7,8 +7,8 @@ These need the weights and (in practice) a GPU, so they run on the VM:
   LeRobot environment: VLAR_PI05_CHECKPOINT=<pi05_libero_finetuned snapshot> \
                        python -m pytest tests/reference/test_model_servers.py -k pi05
 
-Equality is exact where the computation is the same sequence of kernels; the batched /sample is
-compared with a tolerance here and pinned down in effort step 5 (batched vs unbatched).
+Equality is exact where the computation is the same sequence of kernels. /act and /sample go through the
+batchers at a fixed geometry (amendment 24); batch invariance itself is tested in test_batch_invariance.py.
 """
 
 import os
@@ -42,20 +42,43 @@ def xvla_payload(rng, steps=10):
             "domain_id": 3, "steps": steps}
 
 
-@pytest.fixture(scope="module")
-def xvla_service():
+def make_xvla_service(batching=None):
+    """The real model (VLAR_XVLA_MODEL_PATH) or a randomly initialised one from the config files."""
     from vlar_harness.servers.xvla_server import XVLAService
     if XVLA_MODEL:
-        return XVLAService.load(XVLA_MODEL, XVLA_LORA, DEVICE)
+        return XVLAService.load(XVLA_MODEL, XVLA_LORA, DEVICE, batching=batching)
     import torch
     from vlar_harness import reference
+    from vlar_harness.servers.common import deterministic_torch
     reference.add_xvla_repo_to_path()
     from models.configuration_xvla import XVLAConfig
     from models.modeling_xvla import XVLA
     from models.processing_xvla import XVLAProcessor
+    deterministic_torch()                    # as load() does; uninitialised memory is then NaN, not leftovers
     torch.manual_seed(0)
     model = XVLA(XVLAConfig.from_pretrained(XVLA_CONFIG_DIR)).to(DEVICE).to(torch.float32)
-    return XVLAService(model, XVLAProcessor.from_pretrained(XVLA_CONFIG_DIR))
+    # Florence-2's `image_projection` is a raw torch.empty Parameter that random init never touches (a checkpoint
+    # overwrites it); give every such tensor seeded values so the random model is fully defined.
+    g = torch.Generator().manual_seed(1)
+    with torch.no_grad():
+        for t in list(model.parameters()) + list(model.buffers()):
+            if t.is_floating_point() and not torch.isfinite(t).all():
+                t.copy_(torch.randn(t.shape, generator=g, dtype=t.dtype) * 0.02)
+    return XVLAService(model, XVLAProcessor.from_pretrained(XVLA_CONFIG_DIR), batching)
+
+
+def cpu_geometry():
+    """A small fixed geometry for the random-weight CPU runs (the invariance argument does not depend on the
+    sizes); the VM runs use the production geometry."""
+    from vlar_harness.servers.xvla_server import XVLABatching
+    return XVLABatching(max_batch=3, sample_rows=6, steps=10) if DEVICE == "cpu" else None
+
+
+@pytest.fixture(scope="module")
+def xvla_service():
+    svc = make_xvla_service(cpu_geometry())
+    yield svc
+    svc.close()
 
 
 @requires_xvla
@@ -87,7 +110,7 @@ def test_xvla_act_matches_authors_handler(xvla_service):
 @requires_xvla
 def test_xvla_seeds_features_and_sample(xvla_service):
     svc = xvla_service
-    payload = xvla_payload(np.random.default_rng(1))
+    payload = xvla_payload(np.random.default_rng(1), steps=svc.batching.steps)
     a1 = svc.act({**payload, "seed": 7})
     a2 = svc.act({**payload, "seed": 7})
     a3 = svc.act({**payload, "seed": 8})
