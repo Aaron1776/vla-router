@@ -72,6 +72,48 @@ class FakePI05:
         return actions.astype(np.float32)
 
 
+class FakeXVLAService:
+    """/act, /sample and /features on top of the fake chunk model; features depend only on images and text,
+    as the real encoder's do. Records every call."""
+
+    def __init__(self):
+        self.fake = FakeXVLA()
+        self.calls = []
+
+    @staticmethod
+    def features_of(payload):
+        import json_numpy
+        h = hashlib.sha256(json_numpy.loads(payload["image0"]).tobytes() + json_numpy.loads(payload["image1"]).tobytes()
+                           + payload["language_instruction"].encode()).digest()
+        rng = np.random.default_rng(int.from_bytes(h[:8], "little"))
+        return {"enc_mean": rng.normal(size=1024).astype(np.float32).tolist(),
+                "wrist_mean": rng.normal(size=1024).astype(np.float32).tolist()}
+
+    def act(self, payload, seed):
+        self.calls.append(("act", seed))
+        return {**self.fake(payload, seed), "features": self.features_of(payload)}
+
+    def sample(self, payload, seeds):
+        self.calls.append(("sample", tuple(seeds)))
+        return {"actions": [self.fake(payload, s)["action"] for s in seeds], "features": self.features_of(payload)}
+
+    def features(self, payload):
+        self.calls.append(("features", None))
+        return {"features": self.features_of(payload)}
+
+
+class FailAt:
+    def __init__(self, steps):
+        self.fail_steps = set(steps)
+
+    def request(self, call, *, step, rollout_seed, max_attempts):
+        from vlar_harness import network
+        if step in self.fail_steps:
+            return network.RemoteOutcome(False, None, [network.attempt_record(i, False, cause="dropped")
+                                                       for i in range(max_attempts)])
+        return network.RemoteOutcome(True, call(), [network.attempt_record(0, True, rtt_s=0.06)])
+
+
 @dataclass
 class StepRecord:
     step: int

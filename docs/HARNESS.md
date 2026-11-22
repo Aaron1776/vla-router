@@ -582,6 +582,33 @@ recording run measured for it; snapshots restore every profile's inputs and the 
 branches call nothing but `/act`. Server chunks are stored as float32 and checked to be exact; they are converted
 in float64 as the client converts the executed chunk (a float32 conversion differed in the last bits).
 
+## Dataset records, job runner and worker (SPEC §12, §13)
+
+`dataset.py` defines dataset v1's layout and Parquet schemas (its docstring is the reference until the datacard):
+`records/<table>/<phase>/<job_id>.parquet` (tables `runs`, `steps`, `events`, `points`), `snapshots/<episode_id>/
+dpNN.npz`, `images/<episode_id>.npz` (lossless PNGs, member `dpNN/<camera>`), and the queue's marker
+`results/<phase>/<job_id>.json`, which lists every file with its SHA-256 and size. Arrays are flattened row-major
+in their own precision (features, proposals and raw chunks float32; poses float64). Points store the previous
+segment raw, so the gripper fractions can be computed after Phase 0 calibrates the thresholds (null until then;
+zero at episode start, as `observe()` gives). pyarrow 25.0.0 (LeRobot v0.6.1's lock) is in `.venv-sim` and in
+`pyproject.toml`'s `dataset` extra.
+
+`collect.Runner` runs one job: episode jobs (`base` always local; `explore` escalates with `p_escalate` from the
+rollout seed's `explore` stream, so a re-run decides the same way; with `record="full"` a snapshot, the images and a
+`points` row at every measured decision point) and branch jobs (snapshot read from the bucket, `run_branch`).
+DAgger and evaluation need a learned decider and are refused for now. `vlar_ops.worker.run_worker` claims a job,
+runs it, uploads every file and reads it back to check its SHA-256, and only then calls `JobQueue.complete`, which
+writes the marker: a marker in the bucket means the job's snapshots, images and records are there (snapshot sync).
+A preempted job leaves no marker and is re-run after `resume()`; failures retry up to the queue's limit. The
+read-back doubles the bucket traffic; Cloud Storage's own checksums could replace it once the GCS path is tested.
+
+**Verified on the Mac** (`tests/test_worker.py`, 5 tests: order of uploads, retries, a corrupted upload never gets
+a marker, re-run after preemption, the stop check; `tests/reference/test_collect.py`, 7 tests: a base and an
+exploration episode and a branch job through the real queue into a local bucket). Every marker's files are in the
+bucket intact; the bucket's snapshots equal a direct run's byte for byte; the runs, steps, events and every point
+row equal the direct run's values; the PNGs equal the observation at each point; exploration escalates exactly
+where its seed says; the branch job continues the bucket's snapshot exactly as a direct `run_branch` does.
+
 ## Platform rule (SPEC §11 step 3 as amended)
 
 The Mac runs (CPU MuJoCo, CGL rendering) show the code paths are right. Every equality and determinism
@@ -592,7 +619,7 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py` | decider inputs and measurement recording (§6, §7); adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py tests/reference/test_collect.py` | decider inputs and measurement recording (§6, §7); dataset records, runner and worker end to end (§12, §13); adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |

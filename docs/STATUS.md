@@ -96,13 +96,16 @@ results count for parity and determinism, because rendering and floating-point r
 | `f8d06d5` | Effort step 5, part 1: a request queue that batches concurrent requests; X-VLA's three endpoints run every batch at one fixed padded size with deterministic settings and per-request noise, so a request's result is bit-identical alone, with other requests or at any position (checked on the CPU) |
 | `94b9297` | Effort step 5, part 2, and decisions 25-26: π0.5's server batched the same way; every prompt padded to one fixed token length per model; everything that keeps per-call state in a shared object (LeRobot's processor steps, the tokenizers) run one request at a time; tests on LeRobot's real π0.5 code at a tiny size, with batch-mates from different tasks and prompts of different lengths, and on simultaneous requests |
 | after `c1fcd78` | Effort step 5 completed: X-VLA's intermittent failure with simultaneous requests explained and fixed. The model's final step (a sigmoid on the gripper values) ran over the whole batch at once, and on the CPU the last few values of such a tensor are computed by different code that can differ in the last bit, so the last request in a batch could get a slightly different action. Each request is now post-processed on its own; new tests check every request at every batch position and replay the batches that failed |
+| `76a0392` | Rendering only what is used (SPEC §12): the cameras render only on the step before each decision point (about 3x faster on the Mac); a full episode is byte-identical to always-on rendering at every decision point |
+| `6c08bf5` | Decider inputs and measurement recording (SPEC §6, §7): every input a decider takes (features, proposal, free signals, spread, drift) measured at each decision point, recorded in full for data collection and per profile for a live decider; amendment 27 (the fresh-chunk charge) |
+| after `6c08bf5` | Dataset records (SPEC §13: Parquet tables, snapshots, PNG images, keyed by episode and decision point), the job runner for base, exploration and branch jobs, and the worker loop that uploads a job's files before marking it done; tested end to end through the queue into a local stand-in for the bucket |
 
 Test results after step 5 (Mac): unit tests 112 passed, 7 skipped; simulator tests 57 passed, 17 skipped; X-VLA server
 and batch-invariance tests 12 passed (CPU, random weights). The skipped tests need model weights, both servers running
 or another environment, so the weight- and server-dependent ones run on the VM.
 
-Not started: rendering only the camera images that are used, the decider inputs and measurement recording, the
-dataset format and queue workers, the container images, and everything on the VM.
+Not started: the VM worker entry point (real model clients, spend guard), the dataset's manifest and datacard, the
+container images, and everything on the VM. DAgger and evaluation jobs wait for learned deciders (Phases 2-3).
 
 The §18 milestone (all seven must hold before the harness build counts as complete):
 
@@ -110,23 +113,21 @@ The §18 milestone (all seven must hold before the harness build counts as compl
 | --- | --- |
 | 1. Effort steps 4 and 5 done, tests passing on the Mac | done: step 4 (`272f64b`, follow-ups `a25053f`); step 5 (`f8d06d5`, `94b9297` and the commit after `c1fcd78`); their equality tests are re-run on the VM later |
 | 2. Both servers implement every endpoint, with batching and per-call seeds | done on the Mac: every endpoint batched at a fixed geometry of rows and tokens, with per-call seeds |
-| 3. Measurement recording and the snapshot store | partial: snapshot store done; measurement recording (proposal, spread, drift, probes) not started |
-| 4. Job queue, spend guard and packaging implemented and tested | partial: implemented and unit-tested against a local stand-in for cloud storage; the real cloud storage path is untested; the engine is not yet wired to the queue |
+| 3. Measurement recording and the snapshot store | done on the Mac: measurement recording (`6c08bf5`), snapshot store, snapshots synced to the bucket by the worker (after `6c08bf5`); the real cloud storage path is untested |
+| 4. Job queue, spend guard and packaging implemented and tested | partial: implemented and tested against a local stand-in for cloud storage, the engine now wired to the queue (runner and worker loop, after `6c08bf5`); the real cloud storage path is untested; the VM worker entry point is not written |
 | 5. Three container images and lockfiles build and pass local tests | not started |
 | 6. Ready-to-run Google Cloud setup scripts (Spot VM, bucket, budget alerts) | partial: written, never run; account values are placeholders |
-| 7. VM re-run list complete, everything committed, HANDOFF.md current | partial: the list covers steps 1-5; the containers still to add; parity tooling and reference files committed |
+| 7. VM re-run list complete, everything committed, HANDOFF.md current | partial: the list covers steps 1-5, §12 rendering and measurement recording; the containers still to add; parity tooling and reference files committed |
 
 By phase: Phase 0 is in progress (the build, on the Mac; none of its VM steps have started). Phases 1 to 3 and the
 evaluation have not started.
 
 ## What's next, in order
 
-1. Render camera images only when they are used, provided it passes the same exact-equality tests.
-2. Decider inputs (`observe()`) and measurement recording at every decision point; the dataset format (Parquet);
-   queue workers that run episodes and branches.
-3. The three container images with lockfiles.
-4. Complete the VM re-run list and announce the §18 milestone, then wait for an explicit go-ahead.
-5. Only then: create the Google Cloud bucket, budget alerts and Spot VM, and run Phase 0 on the VM: measure latencies,
+1. The VM worker entry point (real model clients, the spend guard's stop flag), the dataset manifest and datacard.
+2. The three container images with lockfiles.
+3. Complete the VM re-run list and announce the §18 milestone, then wait for an explicit go-ahead.
+4. Only then: create the Google Cloud bucket, budget alerts and Spot VM, and run Phase 0 on the VM: measure latencies,
    batching, gripper thresholds and upload size; re-run every equality and determinism test; π0.5 parity (100
    episodes); X-VLA base rollouts (500 episodes); compute the time limits; choose five "golden" snapshots replayed at
    every start-up; freeze the harness as v1.0.

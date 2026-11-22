@@ -13,6 +13,8 @@ dependencies = ["pyyaml>=6"]
 # Cloud Storage access for the job queue, spend ledger and sync (VM only).
 gcs = ["google-cloud-storage>=2.14"]
 dev = ["pytest>=8"]
+# Dataset records (Parquet), in the simulator environment; pinned to LeRobot v0.6.1's uv.lock.
+dataset = ["pyarrow==25.0.0"]
 
 [project.scripts]
 vlar-ops = "vlar_ops.cli:main"

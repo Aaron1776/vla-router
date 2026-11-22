@@ -111,6 +111,23 @@ def drift(queued, samples) -> Drift:
                  grip_disagree_frac=float(dis.mean()))
 
 
+def tracking(segment: Sequence[dict]) -> tuple[float, float, bool]:
+    """The tracking part of the free signals (no thresholds needed): mean position and rotation error over an X-VLA
+    segment; (0, 0, False) at episode start or after a π0.5 segment."""
+    if not segment:
+        return 0.0, 0.0, False
+    drivers = {r["driver"] for r in segment}
+    if len(drivers) != 1:
+        raise ValueError(f"a segment has one driver, got {sorted(drivers)}")
+    if drivers != {"xvla"}:
+        return 0.0, 0.0, False
+    act = np.array([r["action"] for r in segment], dtype=np.float64)
+    pos_err = np.linalg.norm(np.array([r["ee_pos"] for r in segment], dtype=np.float64) - act[:, :3], axis=-1)
+    rot_err = rotation_angle(np.array([r["ee_ori_mat"] for r in segment], dtype=np.float64),
+                             axis_angle_to_mat(act[:, 3:6]))
+    return float(pos_err.mean()), float(rot_err.mean()), True
+
+
 def free_signals(segment: Sequence[dict], shut_width_m: Optional[float], open_width_m: Optional[float]) -> FreeSignals:
     """Free signals from the previous segment's per-step records (`Episode.prev_segment`): each has `driver`,
     `action` (executed form), `ee_pos` and `ee_ori_mat` (the controller's cached pose after the step) and
@@ -121,17 +138,8 @@ def free_signals(segment: Sequence[dict], shut_width_m: Optional[float], open_wi
         raise ValueError("gripper thresholds are uncalibrated (measurement.gripper_thresholds; Phase 0 step 2)")
     if not shut_width_m < open_width_m:
         raise ValueError("gripper thresholds need shut_width_m < open_width_m")
-    drivers = {r["driver"] for r in segment}
-    if len(drivers) != 1:
-        raise ValueError(f"a segment has one driver, got {sorted(drivers)}")
+    track = tracking(segment)
     act = np.array([r["action"] for r in segment], dtype=np.float64)
-    if drivers == {"xvla"}:
-        pos_err = np.linalg.norm(np.array([r["ee_pos"] for r in segment], dtype=np.float64) - act[:, :3], axis=-1)
-        rot_err = rotation_angle(np.array([r["ee_ori_mat"] for r in segment], dtype=np.float64),
-                                 axis_angle_to_mat(act[:, 3:6]))
-        track = (float(pos_err.mean()), float(rot_err.mean()), True)
-    else:
-        track = (0.0, 0.0, False)
     qpos = np.array([r["gripper_qpos"] for r in segment], dtype=np.float64)
     width = qpos[:, 0] - qpos[:, 1]
     close = act[:, 6] > 0
