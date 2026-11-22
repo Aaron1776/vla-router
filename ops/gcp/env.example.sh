@@ -25,4 +25,6 @@ export BUILD_DISK_GB=150                  # three images, their build cache and 
 export BUILD_MAX_HOURS=4                  # the VM deletes itself after this (--max-run-duration)
 export BUILD_IMAGE_PROJECT="ubuntu-os-cloud"
 export BUILD_IMAGE_FAMILY="ubuntu-2404-lts-amd64"
+export BUDGET_START="2026-11-01"              # the budget covers the whole project (20_budget_alerts.sh)
+export BUDGET_END="2027-08-20"            # when the credits expire
 export ALERT_EMAIL="REPLACE"              # where the soft-limit alert goes; never committed

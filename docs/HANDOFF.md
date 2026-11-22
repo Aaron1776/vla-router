@@ -282,8 +282,28 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
+**Created in Google Cloud (Phase 0 stage 1, 2026-11-22, approved by the user; nothing that bills by the hour):**
+- APIs enabled: compute, storage, iam, logging, monitoring, billingbudgets.
+- Bucket `gs://swift-library-515509-vla-data` (us-central1, Standard, public access prevention enforced, uniform
+  access, soft delete off). Empty; the queue and data go under `vla-router/` (`ops/ops.yaml`).
+- Service account `vlar-vm@swift-library-515509-v9.iam.gserviceaccount.com`: `roles/storage.objectAdmin` on the
+  bucket, `roles/logging.logWriter` on the project. (The first run of `10_bucket_and_account.sh` failed at the
+  bucket binding because the new account had not reached IAM yet; the two bindings were applied by hand and the
+  script now retries for up to two minutes.)
+- Budget `vla-router-50usd` (`bca134d7-e7c6-4118-93f5-b6b166c1ea49`): $50, alerts at 50/80/100%, credits excluded,
+  one custom period 2026-11-01 to 2027-08-20 (created as a calendar-month budget, which would reset monthly; changed
+  in place, and `20_budget_alerts.sh` now sets the period from `BUDGET_START`/`BUDGET_END`), alerts also sent to the
+  email channel below (`40_spend_alert_policy.sh` now attaches it).
+- Monitoring email channel `120237596798409676` (the alert email in `env.sh`) and alert policy
+  `11822138694703063206` (the spend guard's soft and hard limit log events).
+
+**Next (fresh session, at high):** Phase 0 stage 2, `ops/gcp/35_build_images.sh` from a clean, pushed commit (CPU
+build VM, about $0.25; images to `gs://swift-library-515509-vla-data/containers/<commit>/`), with the user's
+approval. Not run in the 2026-11-22 session. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with
+the user's go-ahead.
+
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
-is needed before any cloud resource is created or money spent. Then Phase 0 at **xhigh**, in this order, each script
+was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
 approved by the user after seeing what it creates and costs: `10_bucket_and_account.sh`, `20_budget_alerts.sh`,
 `40_spend_alert_policy.sh`, `35_build_images.sh` (CPU VM), then `30_create_vm.sh` and the VM setup in ops/README.md
 (`load_images.sh` first). Commands need `export PATH=$HOME/google-cloud-sdk/bin:$PATH` and `source ops/gcp/env.sh`.

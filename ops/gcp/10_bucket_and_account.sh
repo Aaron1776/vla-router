@@ -14,8 +14,13 @@ gcloud storage buckets update "gs://${BUCKET}" --clear-soft-delete
 
 gcloud iam service-accounts create "${SA_NAME}" --project="${PROJECT_ID}" --display-name="vla-router VM"
 SA="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" --member="serviceAccount:${SA}" \
-  --role="roles/storage.objectAdmin"
+# A new service account takes a few seconds to reach IAM ("does not exist"): retry for up to two minutes.
+for i in $(seq 1 12); do
+  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" --member="serviceAccount:${SA}" \
+    --role="roles/storage.objectAdmin" >/dev/null && break
+  [[ $i == 12 ]] && { echo "service account not visible to IAM after 2 minutes"; exit 1; }
+  sleep 10
+done
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${SA}" \
   --role="roles/logging.logWriter" --condition=None
 echo "bucket gs://${BUCKET} and service account ${SA} ready"

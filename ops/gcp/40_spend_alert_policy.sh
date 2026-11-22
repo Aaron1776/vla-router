@@ -23,3 +23,9 @@ cat > "${POLICY}" <<JSON
 JSON
 gcloud alpha monitoring policies create --project="${PROJECT_ID}" --policy-from-file="${POLICY}"
 rm -f "${POLICY}"
+# Budget alerts (20_budget_alerts.sh) go to the billing account's admins by default, which on a university account may
+# not include you: send them to this channel too.
+BUDGET=$(gcloud billing budgets list --billing-account="${BILLING_ACCOUNT}" --filter="displayName=vla-router-50usd" \
+  --format="value(name)" | head -n 1)
+[[ -n "${BUDGET}" ]] && gcloud billing budgets update "${BUDGET}" --billing-account="${BILLING_ACCOUNT}" \
+  --notifications-rule-monitoring-notification-channels="${CHANNEL}"
