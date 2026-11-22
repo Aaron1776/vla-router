@@ -51,7 +51,7 @@ ops/gcp/05_check_account.sh                 # read-only: sign-in, billing, APIs,
 ops/gcp/10_bucket_and_account.sh            # APIs, bucket (soft delete off) + VM service account
 ops/gcp/20_budget_alerts.sh                 # backup email alerts at 50/80/100% of $50
 ops/gcp/40_spend_alert_policy.sh            # email when the guard logs its soft/hard event
-ops/gcp/35_build_images.sh                  # CPU-only Spot VM: build, test, export the images; then deleted
+ops/gcp/35_build_images.sh                  # CPU-only VM (Spot or on-demand): build, test, export the images; then deleted
 ops/gcp/30_create_vm.sh                     # L4 Spot VM; prints the disk-ledger command to run next
 ```
 
@@ -62,6 +62,8 @@ logs. The VM deletes itself after `BUILD_MAX_HOURS` at the latest. The script su
 Mac (failed checks are retried, never read as a result) and deletes the VM only after reading DONE or FAILED,
 at the cap, or once the VM is confirmed gone (leftover disk only); it then confirms the VM and disk are gone.
 Run it as `caffeinate -i -s ops/gcp/35_build_images.sh` (tests: `tests/test_build_script.py`, fake gcloud).
+`BUILD_PROVISIONING=STANDARD` builds on an on-demand VM instead of Spot (about $0.27/h, not preempted), with the
+same cap, polling and confirmed deletion; Spot stays the default.
 Rebuild after any harness change (a new commit means new images). The lockfiles are regenerated with
 `containers/lock.sh` (needs `uv`).
 

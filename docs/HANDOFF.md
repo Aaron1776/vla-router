@@ -319,8 +319,11 @@ matches the notebook. egl-probe bundles its EGL/KHR/X11 headers and links only d
 Second attempt on `6b3fccd` (this fix): the Spot VM was **preempted by Google** about 2 minutes after creation
 (audit log: `compute.instances.preempted`, 14:38:31Z), before the build uploaded anything; termination action DELETE
 removed it and its disk; the script reported "gone without a result" and confirmed both gone (also checked by hand:
-no instances or disks in any zone). Not a build failure. `containers/6b3fccd.../` holds only `src.tar.gz`. Waiting
-for the user: re-run as is (Spot) or otherwise. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+no instances or disks in any zone). Not a build failure. `containers/6b3fccd.../` holds only `src.tar.gz`.
+The user chose on-demand for the build (a preempted Spot run costs more in time and usage than the ~$0.25
+difference): `BUILD_PROVISIONING` option in script 35 (`SPOT` default, `STANDARD` on-demand; same cap, polling and
+confirmed deletion; tests in `tests/test_build_script.py`). Third attempt: on-demand on the commit that adds it;
+result below when known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script

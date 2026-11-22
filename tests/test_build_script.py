@@ -54,7 +54,7 @@ esac
 """
 
 
-def run_build(tmp_path, outcome, done_after, outage=0, delete_fail=0, cap=None):
+def run_build(tmp_path, outcome, done_after, outage=0, delete_fail=0, cap=None, provisioning=None):
     repo, fake, bin_ = tmp_path / "repo", tmp_path / "fake", tmp_path / "bin"
     (repo / "ops" / "gcp").mkdir(parents=True)
     for name in ["35_build_images.sh", "build_vm_startup.sh"]:
@@ -74,11 +74,14 @@ def run_build(tmp_path, outcome, done_after, outage=0, delete_fail=0, cap=None):
                ZONE="z", SA_NAME="sa", BUILD_VM_NAME="vlar-build", BUILD_MACHINE="m", BUILD_DISK_GB="1",
                BUILD_MAX_HOURS="4", BUILD_IMAGE_FAMILY="f", BUILD_IMAGE_PROJECT="ip", VLAR_POLL_SECONDS="0",
                VLAR_DELETE_TRIES="20")
+    env.pop("BUILD_PROVISIONING", None)
     if cap is not None:
         env["VLAR_CAP_SECONDS"] = str(cap)
+    if provisioning is not None:
+        env["BUILD_PROVISIONING"] = provisioning
     p = subprocess.run(["bash", "ops/gcp/35_build_images.sh"], cwd=repo, env=env, capture_output=True, text=True,
                        timeout=60)
-    log = (fake / "log").read_text().splitlines()
+    log = (fake / "log").read_text().splitlines() if (fake / "log").exists() else []
     return p, log, fake
 
 
@@ -124,3 +127,32 @@ def test_an_unconfirmed_deletion_is_reported(tmp_path):
     p, log, fake = run_build(tmp_path, "done", done_after=1, delete_fail=1000)
     assert p.returncode == 2, p.stdout + p.stderr
     assert "COULD NOT CONFIRM" in p.stdout and (fake / "vm").exists()
+
+
+def create_flags(log):
+    line = log[first(log, "compute instances create")]
+    return {f for f in line.split() if f.startswith(("--provisioning-model=", "--instance-termination-action=",
+                                                       "--max-run-duration="))}
+
+
+@pytest.mark.parametrize("provisioning, model", [(None, "SPOT"), ("SPOT", "SPOT"), ("STANDARD", "STANDARD")])
+def test_provisioning_model_option_keeps_the_cap_polling_and_confirmed_deletion(tmp_path, provisioning, model):
+    p, log, fake = run_build(tmp_path, "done", done_after=3, outage=4, delete_fail=1, provisioning=provisioning)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert create_flags(log) == {f"--provisioning-model={model}", "--instance-termination-action=DELETE",
+                                 "--max-run-duration=4h"}
+    assert f"build VM created ({model})" in p.stdout and "check failed (network?)" in p.stdout
+    assert "confirmed: the build VM and its disk are deleted" in p.stdout
+    assert first(log, "LISTED DONE") < first(log, "compute instances delete")
+
+
+def test_on_demand_vm_is_deleted_at_the_cap(tmp_path):
+    p, log, fake = run_build(tmp_path, "done", done_after=1000, cap=0, provisioning="STANDARD")
+    assert p.returncode == 1 and "no result after 4 h" in p.stdout, p.stdout + p.stderr
+    assert not (fake / "vm").exists() and not (fake / "disk").exists()
+
+
+def test_an_unknown_provisioning_model_is_refused_before_anything_is_created(tmp_path):
+    p, log, fake = run_build(tmp_path, "done", done_after=1, provisioning="PREEMPTIBLE")
+    assert p.returncode == 1 and "must be SPOT or STANDARD" in p.stdout
+    assert first(log, "compute instances create") is None and first(log, "storage cp") is None

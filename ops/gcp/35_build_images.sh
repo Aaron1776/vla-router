@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Builds the three container images on a small CPU-only Spot VM (no GPU, so no GPU quota needed), runs the
+# Builds the three container images on a small CPU-only VM (no GPU, so no GPU quota needed), runs the
 # in-container tests that need no GPU, and exports the images as files to the bucket (SPEC §13, §15; amendment 28):
 #   gs://$BUCKET/containers/<commit>/{vlar-sim,vlar-pi05,vlar-xvla}.tar.zst, image-digests.json, SHA256SUMS,
 #   build.log, test-*.log, then DONE (or FAILED with the reason).
 # Run from the repo root on a clean commit, keeping the Mac awake for the whole run:
 #   caffeinate -i -s ops/gcp/35_build_images.sh
+# BUILD_PROVISIONING picks the VM's provisioning model: SPOT (default; cheapest, can be preempted at any time) or
+# STANDARD (on-demand, about $0.27/h for e2-standard-8; not preempted), e.g.
+#   BUILD_PROVISIONING=STANDARD caffeinate -i -s ops/gcp/35_build_images.sh
+# Both get the same BUILD_MAX_HOURS cap (--max-run-duration, deleted at the cap), polling and confirmed deletion.
 # Waits for the VM (polling the bucket), prints the result, then deletes the VM and its disk and confirms both gone.
 #
 # Network drops on this machine are expected and harmless: a check that fails is retried, never read as a result.
@@ -14,12 +18,17 @@
 # the VM alone and says how to delete it.
 # Exit status: 0 built and tested; 1 build failed or no result; 2 the deletion could not be confirmed.
 #
-# Cost: an e2-standard-8 Spot VM for about an hour plus its disk, well under $1; the weekly ledger reconcile
+# Cost: an e2-standard-8 VM (Spot or on-demand) for about an hour plus its disk, well under $1; the weekly ledger reconcile
 # (`vlar-ops spend reconcile`) picks it up, since the spend daemon runs on the L4 VM only.
 set -euo pipefail
 : "${PROJECT_ID:?source ops/gcp/env.sh first}"
 : "${BUCKET:?}" "${ZONE:?}" "${SA_NAME:?}" "${BUILD_VM_NAME:?}" "${BUILD_MACHINE:?}" "${BUILD_DISK_GB:?}"
 : "${BUILD_MAX_HOURS:?}" "${BUILD_IMAGE_FAMILY:?}" "${BUILD_IMAGE_PROJECT:?}"
+PROVISIONING="${BUILD_PROVISIONING:-SPOT}"
+case "${PROVISIONING}" in
+  SPOT|STANDARD) ;;
+  *) echo "BUILD_PROVISIONING must be SPOT or STANDARD, not '${PROVISIONING}'"; exit 1 ;;
+esac
 POLL_S="${VLAR_POLL_SECONDS:-60}"                           # test hook
 CAP_S="${VLAR_CAP_SECONDS:-$(( BUILD_MAX_HOURS * 3600 ))}"  # test hook; the cap is BUILD_MAX_HOURS
 DELETE_TRIES="${VLAR_DELETE_TRIES:-90}"                     # about 1.5 h of retries at 60 s
@@ -102,7 +111,7 @@ trap 'exit 130' INT TERM HUP
 deadline=$(( $(date +%s) + CAP_S ))
 if ! gcloud compute instances create "${BUILD_VM_NAME}" --project="${PROJECT_ID}" --zone="${ZONE}" \
   --machine-type="${BUILD_MACHINE}" \
-  --provisioning-model=SPOT --instance-termination-action=DELETE --max-run-duration="${BUILD_MAX_HOURS}h" \
+  --provisioning-model="${PROVISIONING}" --instance-termination-action=DELETE --max-run-duration="${BUILD_MAX_HOURS}h" \
   --boot-disk-size="${BUILD_DISK_GB}GB" --boot-disk-type=pd-balanced \
   --image-family="${BUILD_IMAGE_FAMILY}" --image-project="${BUILD_IMAGE_PROJECT}" \
   --service-account="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com" --scopes=cloud-platform \
@@ -114,7 +123,7 @@ if ! gcloud compute instances create "${BUILD_VM_NAME}" --project="${PROJECT_ID}
   [[ "${st}" == present ]] || { log "cannot tell whether the VM was created"; exit 1; }
   log "create reported an error, but the VM exists; waiting for its result"
 fi
-log "build VM created; polling ${PREFIX}/ every ${POLL_S} s (cap ${BUILD_MAX_HOURS} h)"
+log "build VM created (${PROVISIONING}); polling ${PREFIX}/ every ${POLL_S} s (cap ${BUILD_MAX_HOURS} h)"
 
 result=""
 while :; do
@@ -124,7 +133,8 @@ while :; do
   if (( $(date +%s) >= deadline )); then result=cap; break; fi
   if vm="$(vm_state)"; then
     if [[ "${vm}" == gone ]]; then
-      # Preempted or deleted at the cap: the result may have landed just before, so read the bucket for sure.
+      # Preempted (Spot), deleted at the cap, or deleted elsewhere: the result may have landed just before, so read
+      # the bucket for sure.
       r="$(settle result_state "$(( $(date +%s) + 1800 ))")" || r=unknown
       if [[ "${r}" == done || "${r}" == failed ]]; then result="${r}"; else result=gone; fi
       break
@@ -138,7 +148,7 @@ case "${result}" in
   done)   log "built and tested: ${PREFIX}"; read_object image-digests.json; rc=0 ;;
   failed) log "build FAILED: $(read_object FAILED)"; log "logs: ${PREFIX}/build.log, test-*.log"; rc=1 ;;
   cap)    log "no result after ${BUILD_MAX_HOURS} h"; rc=1 ;;
-  *)      log "the build VM is gone without a result (Spot preemption or the time cap): run this script again"; rc=1 ;;
+  *)      log "the build VM is gone without a result (Spot preemption, the time cap, or deleted elsewhere): run this script again"; rc=1 ;;
 esac
 delete_build_vm || rc=2
 exit "${rc}"
