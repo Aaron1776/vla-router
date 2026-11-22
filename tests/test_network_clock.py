@@ -174,7 +174,21 @@ def test_profile_overheads_per_point_kind():
         assert CH.point_s[p] == {"chunk": chunk, "mid": mid}
         assert clk.event_s({"t": "decision_point", "kind": "chunk", "can_escalate": True}, CH, p) == chunk
         assert clk.event_s({"t": "decision_point", "kind": "mid", "can_escalate": True}, CH, p) == mid
-    assert clk.event_s({"t": "xvla_act"}, CH, "router") == act
+    for p in PROFILES:
+        assert clk.event_s({"t": "xvla_act", "call": "act"}, CH, p) == act
+    with pytest.raises(ValueError):
+        clk.event_s({"t": "xvla_act", "call": "sample"}, CH, "router")
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_fresh_chunk_samples_are_charged_only_where_they_are_used(profile):
+    """Amendment 27: after an abandoned escalation, X-VLA's fresh chunk costs `/act`, plus t(/sample K) - t(/act)
+    for cascader_chunkspread, which reuses that chunk's chunk-time spread at the next decision points;
+    cascader_full takes fresh probes there and is not charged."""
+    lat = CFG["latency"]
+    act, samp = lat["xvla_act_s"], lat["xvla_sample_k_s"]
+    want = act + (samp - act) if profile == "cascader_chunkspread" else act
+    assert clk.event_s({"t": "xvla_act", "call": "act_fresh"}, CH, profile) == want
 
 
 @pytest.mark.parametrize("profile", PROFILES)

@@ -219,8 +219,9 @@ def validate(values: Mapping[str, Any], raw: Mapping[str, Any]) -> None:
 
     need(tuple(values["profiles"]) == PROFILES, f"profiles must be exactly {PROFILES}")
     for p, spec in values["profiles"].items():
-        need(set(spec) == {"chunk_point", "mid_point"}, f"profile {p} needs chunk_point and mid_point")
-        for kind in ("chunk_point", "mid_point"):
+        need(set(spec) == {"chunk_point", "mid_point", "act_fresh"},
+             f"profile {p} needs chunk_point, mid_point and act_fresh")
+        for kind in ("chunk_point", "mid_point", "act_fresh"):
             bad = set(spec.get(kind, [])) - set(OVERHEAD_TERMS)
             need(not bad, f"profile {p}.{kind} has unknown terms {sorted(bad)}")
     need(tuple(values["observe_inputs"]) == PROFILES, f"observe_inputs must cover exactly {PROFILES}")

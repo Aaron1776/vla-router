@@ -68,7 +68,7 @@ Decision overhead (charged per decision point at which escalation is offered, by
 - `none` (xvla_only, pi05_only, time-limit calibration): nothing.
 - `router` (the router, and all scripted baselines in routed mode): mid point: `/features` time; chunk point: nothing extra (features come with `/act`).
 - `cascader_nospread` (ablation 1): same as `router`.
-- `cascader_chunkspread` (ablation 2): chunk point: t(`/sample` K) − t(`/act`), since a deployed system would generate all K samples in one batched call; mid point: `/features` time.
+- `cascader_chunkspread` (ablation 2): chunk point: t(`/sample` K) − t(`/act`), since a deployed system would generate all K samples in one batched call; mid point: `/features` time; after an abandoned escalation, X-VLA's fresh chunk (`act_fresh`) also costs t(`/sample` K) − t(`/act`), because the chunk-time spread at the following decision points needs that chunk's K samples (approved 2026-11-21, §17). No other profile pays this: `cascader_full` takes fresh probes at those points.
 - `cascader_full` (headline): chunk point: t(`/sample` K) − t(`/act`); mid point: t(`/sample` K) for the fresh probe.
 Decider inference itself is assumed negligible and not charged; Phase 2 must verify it is under 5 ms.
 
@@ -282,6 +282,10 @@ Approved by the user on 2026-11-21, during effort step 5:
 
 25. §5, §11 step 2: the clock's per-call charges are measured as unpadded requests, the way a deployed robot runs them: X-VLA `/act`, `/features` and π0.5 inference as an unpadded batch of one, and the cascader's `/sample` charge as an unpadded batch of exactly K. The fixed padding of §3 exists only to make data collection reproducible and is never charged to the clock. Phase 0 step 2 measures these unpadded latencies separately from the padded throughput figures used to size the worker count.
 26. §3, §11 step 3: the fixed geometry includes the token length. Every batched request's prompt has one fixed token length per model, as well as the fixed batch size: π0.5's prompt (the instruction and the discretized robot state as text) is right-padded to LeRobot's 200 tokens, with attention masks so the padding cannot affect results; X-VLA's instruction is padded to the authors' 50 tokens, which its encoder attends to as in the authors' model, so the padding is part of each request's own input and never depends on its batch-mates. A request whose tokens do not have the fixed length, or fill all of it (possibly truncated), is refused. The invariance tests use batch-mates with deliberately different prompt and state token lengths, including requests from different tasks.
+
+Approved by the user on 2026-11-21, during §18 item 3 (decider inputs and measurement recording):
+
+27. §5: after an abandoned escalation, X-VLA's fresh chunk (`act_fresh`) is charged t(`/sample` K) − t(`/act`) on top of its `/act` time under `cascader_chunkspread` only, the one profile that reuses that chunk's K samples (its chunk-time spread at the next decision points). `cascader_full` takes fresh probes there and pays its mid-point probe charge as before; every other profile is unchanged. Config: `profiles.<p>.act_fresh`.
 
 ## 18. Milestone checkpoint: harness build complete
 

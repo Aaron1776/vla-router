@@ -147,12 +147,14 @@ time_limit:
 #   features          -> latency.xvla_features_s
 #   sample_k          -> latency.xvla_sample_k_s
 #   sample_k_less_act -> latency.xvla_sample_k_s - latency.xvla_act_s
+# `act_fresh`: extra terms on X-VLA's fresh chunk after an abandoned escalation, for a profile that reuses that
+# chunk's K samples at the following decision points (amendment 27: cascader_chunkspread only).
 profiles:
-  none:                 {chunk_point: [], mid_point: []}
-  router:               {chunk_point: [], mid_point: [features]}
-  cascader_nospread:    {chunk_point: [], mid_point: [features]}
-  cascader_chunkspread: {chunk_point: [sample_k_less_act], mid_point: [features]}
-  cascader_full:        {chunk_point: [sample_k_less_act], mid_point: [sample_k]}
+  none:                 {chunk_point: [], mid_point: [], act_fresh: []}
+  router:               {chunk_point: [], mid_point: [features], act_fresh: []}
+  cascader_nospread:    {chunk_point: [], mid_point: [features], act_fresh: []}
+  cascader_chunkspread: {chunk_point: [sample_k_less_act], mid_point: [features], act_fresh: [sample_k_less_act]}
+  cascader_full:        {chunk_point: [sample_k_less_act], mid_point: [sample_k], act_fresh: []}
 
 # What observe() returns for each profile's decider type (§6).
 observe_inputs:

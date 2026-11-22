@@ -25,9 +25,10 @@ from __future__ import annotations
 import hashlib
 
 MODELS = ("xvla", "pi05")
-# X-VLA: `act` at a chunk point, `act_fresh` after an abandoned escalation, `sample` for measurements;
-# π0.5: `act`.
-CALL_TYPES = ("act", "act_fresh", "sample")
+# X-VLA: `act` at a chunk point, `act_fresh` after an abandoned escalation; measurements (§6): `sample` for the
+# chunk-time samples of an `act` request, `sample_fresh` for those of an `act_fresh` request, `probe` for a mid-point
+# probe (distinct names, because an `act_fresh` and a probe at the same step can send the same request); π0.5: `act`.
+CALL_TYPES = ("act", "act_fresh", "sample", "sample_fresh", "probe")
 STREAMS = ("network", "explore")
 _MASK63 = (1 << 63) - 1
 

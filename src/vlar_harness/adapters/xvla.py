@@ -97,6 +97,22 @@ class XVLAAdapter:
         """The queued actions as stored by the client: [pos3, axis-angle3, raw gripper] rows."""
         return np.array(list(self.client.action_plan), dtype=np.float64).reshape(-1, 7)
 
+    def peek(self, n: int) -> np.ndarray:
+        """The next `n` actions exactly as `pop` would return them, without popping (the proposal, §6)."""
+        from ..measure import executed_form
+        if n > self.queue_len():
+            raise ValueError(f"{n} actions requested, {self.queue_len()} queued")
+        return executed_form([self.client.action_plan[i] for i in range(n)])
+
+    def executed_rows(self, raw_chunk) -> np.ndarray:
+        """A raw server chunk (30 x 20) as the actions it would execute: `query`'s conversion to queue rows
+        (ClientModel.step lines 200-207), then `pop`'s. Used for the `/sample` chunks, which are never queued."""
+        from ..measure import executed_form
+        action = np.array(raw_chunk, dtype=np.float64)          # as the client's np.array(data["action"])
+        rows = np.concatenate([action[:, :3], self.client.processor.Rotate6D_to_AxisAngle(action[:, 3:9]),
+                               action[:, 9:10]], axis=-1)
+        return executed_form(rows.tolist())
+
     def discard_queue(self) -> None:
         self.client.action_plan.clear()
 

@@ -4,6 +4,8 @@ of a saved event log under any overhead profile.
 The clock is a deterministic function of the event log and the configured latencies:
 - each environment step: `env.control_period_s` (0.05 s, LIBERO's 20 Hz);
 - each X-VLA `/act` (`act` at a chunk point, `act_fresh` after an abandoned escalation): `latency.xvla_act_s`;
+  an `act_fresh` also costs the profile's `act_fresh` terms: `sample_k_less_act` for `cascader_chunkspread`, whose
+  chunk-time spread at the next decision points needs that chunk's K samples (amendment 27);
 - each π0.5 request: the sum over its attempts. A failed attempt costs the timeout, plus the backoff when
   another attempt follows; the attempt that gets through costs upload + round trip + download + π0.5's
   inference (`network.NetworkParams.attempt_time_s`, from the round trip recorded in the log);
@@ -60,18 +62,20 @@ class Charges:
     xvla_act_s: float
     network: NetworkParams
     point_s: Mapping[str, Mapping[str, float]]      # profile -> {"chunk": s, "mid": s}
+    act_fresh_s: Mapping[str, float]                # profile -> charge of an `act_fresh` (amendment 27)
 
     @staticmethod
     def from_config(cfg) -> "Charges":
         lat = cfg["latency"]
         act, features, sample_k = float(lat["xvla_act_s"]), float(lat["xvla_features_s"]), float(lat["xvla_sample_k_s"])
         term_s = {"features": features, "sample_k": sample_k, "sample_k_less_act": sample_k - act}
-        point_s = {}
+        point_s, act_fresh_s = {}, {}
         for profile in PROFILES:
             spec = cfg["profiles"][profile]
             point_s[profile] = {kind: _sum(term_s[t] for t in spec[f"{kind}_point"]) for kind in POINT_KINDS}
+            act_fresh_s[profile] = _sum([act] + [term_s[t] for t in spec["act_fresh"]])
         return Charges(step_s=float(cfg["env"]["control_period_s"]), xvla_act_s=act,
-                       network=NetworkParams.from_config(cfg), point_s=point_s)
+                       network=NetworkParams.from_config(cfg), point_s=point_s, act_fresh_s=act_fresh_s)
 
 
 def request_s(attempts: Sequence[Mapping], net: NetworkParams) -> float:
@@ -94,7 +98,12 @@ def event_s(event: Mapping, charges: Charges, profile: str) -> float:
     """Charge of one logged event other than a run of steps."""
     kind = event["t"]
     if kind == "xvla_act":
-        return charges.xvla_act_s
+        call = event["call"]
+        if call == "act":
+            return charges.xvla_act_s
+        if call == "act_fresh":
+            return charges.act_fresh_s[profile]
+        raise ValueError(f"unknown X-VLA call {call!r}")
     if kind == "pi05_request":
         return request_s(event["attempts"], charges.network)
     if kind == "decision_point":                 # no overhead where escalation is not offered (amendment 15)

@@ -47,7 +47,7 @@ Where each item stands now (not complete; do not announce):
 | --- | --- |
 | 1. Steps 4 and 5 | done on the Mac: step 4 (`272f64b`, follow-ups `a25053f`); step 5 (part 1 `f8d06d5`, part 2 `94b9297`, the X-VLA concurrency fix in the commit after `c1fcd78`); their equality tests are on the VM re-run list |
 | 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` with per-call seeds, all batched at a fixed geometry of rows and tokens (amendments 24, 26); unseeded requests and π0.5 `/upload_bytes` stay on the reference path |
-| 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; proposal, free signals, spread/drift and probe recording not started; snapshot sync to the bucket not wired |
+| 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; decider inputs and measurement recording (`observe()`, proposal, free signals, spread/drift, chunk-time samples, probes, `record="full"`) done and tested on the Mac with fake models (the commit after `76a0392`); the Parquet dataset format and snapshot sync to the bucket not started |
 | 4. Queue, spend guard, packaging | implemented and unit-tested against a local stand-in for the bucket (`src/vlar_ops`); the Cloud Storage backend is untested without credentials; the episode engine (now with `run_branch`) is not yet wired to the queue |
 | 5. Container images, lockfiles | not started |
 | 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
@@ -71,9 +71,12 @@ Where each item stands now (not complete; do not announce):
 | Usage discipline (`CLAUDE.md`) and the effort schedule (above) | done | `c1fcd78` |
 | Effort step 5 completed: the X-VLA simultaneous-requests failure reproduced (batch compositions logged, the failing batches captured and replayed deterministically), traced to the authors' post-processing over the whole batch (a CPU elementwise kernel's scalar tail) and fixed by post-processing each row alone; new position, replay and post-processing tests; X-VLA mutation check (HARNESS.md "Batching") | done on Mac; VM re-run pending | the commit after `c1fcd78` |
 | Render only the observations that are used (SPEC §12, amendment 7): config option `render` (`used` default, `all`); camera sensors gated, timers untouched; unrendered steps expose no images; snapshots record `sim.images`; `RenderPhaseError` if a rendering step misses its sample; full-episode comparison with always-on rendering byte-identical at decision points; mutation check 3 of 3 (HARNESS.md "Rendering only what is used") | done on Mac; VM re-run pending | the commit after `f283023` |
-| Decider inputs (`observe()`: features, proposal, free signals, spread, drift), dataset storage format (Parquet), queue worker wiring (`run_branch` exists) | not started | |
+| Decider inputs and measurement recording (§6, §7): `measure.py` (definitions in its docstring), `Episode(measure_client=...)`, `start(record="off"/"full")`, `observe(profile)`, per-point records in `Episode.measurements` and in snapshots, seed names `sample_fresh` and `probe` (HARNESS.md "Decider inputs and measurement recording") | done on Mac; VM re-run pending | the commit after `76a0392` |
+| Dataset storage format (Parquet) from `Episode.measurements`, queue worker wiring (`run_branch` exists) | not started | |
 | Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
+
+**Test suites after decider inputs, measurement recording and amendment 27 (Mac, 2026-11-21).** Main venv 117 passed, 10 skipped; simulator env (`tests/reference tests/test_measure.py tests/test_labels_calibration.py`) 107 passed, 17 skipped.
 
 **Test suites after §12 (Mac, 2026-11-21).** Main venv 112 passed, 8 skipped; simulator env 69 passed, 17 skipped (about 3 minutes; the 17 skips as before); X-VLA env not re-run (no code it runs changed).
 
@@ -195,6 +198,11 @@ Spec amendments, all approved by the user and logged in SPEC §17:
     as in the authors' model, so the padding is the request's own). Requests of another length, or filling the whole
     length (possibly truncated), are refused; the invariance tests use batch-mates from different tasks with different
     instruction and state token lengths.
+27. Fresh-chunk samples (2026-11-21, during §18 item 3; §5): after an abandoned escalation, X-VLA's fresh chunk
+    (`act_fresh`) is charged t(`/sample` K) − t(`/act`) on top of `/act` under `cascader_chunkspread` only (it reuses
+    that chunk's chunk-time spread at the next points); `cascader_full` probes fresh there and is not charged.
+    Config `profiles.<p>.act_fresh`; `clock.event_s`; tests in `test_network_clock.py` and `test_measurements.py`
+    (each profile is charged exactly when its live decider draws those samples).
 
 Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the tests that show them):
 - The reference stack: LeRobot 0.6.1, hf-libero 0.1.4, robosuite 1.4.0, MuJoCo 3.8.1, file hashes pinned in
@@ -222,7 +230,7 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 
 ## Open questions for the user
 
-None open. (The clock-charge question raised during step 5 was decided as amendment 25.)
+None open. (The fresh-chunk charge question raised during §18 item 3 was decided as amendment 27.)
 
 **Google Cloud readiness (user's action, reported 2026-11-21).** The user is upgrading from the free trial if
 needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, preemptible L4
@@ -233,8 +241,10 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-§12 rendering is done on the Mac (2026-11-21, the commit after `f283023`; HARNESS.md "Rendering only what is used"). Next:
-decider inputs and measurement recording (§18 item 3), at **xhigh** effort (max only for unexplained discrepancies).
+Decider inputs and measurement recording (§18 item 3, first part) are done on the Mac (the commit after `76a0392`;
+HARNESS.md "Decider inputs and measurement recording"; amendment 27 decided). Next, at **xhigh**: the dataset format (Parquet rows from
+`Episode.measurements` plus labels), snapshot sync to the bucket, then the queue workers that run episodes and
+branches (§18 items 3-4).
 
 Worth knowing:
 - `.venv-sim` now also has LeRobot's `pi` extra (transformers 5.5.4, tokenizers 0.22.2; installed 2026-11-21 with
@@ -247,6 +257,9 @@ Worth knowing:
   `max_batch` 1 and `xvla_sample_rows` K), and the throughput at the production geometry, padded and unpadded, with
   deterministic mode on and off (sizes the worker count; never charged).
 - Engine side: no change. Each simulator worker sends single requests; the servers batch across workers.
+- Dataset format: pyarrow is in neither local environment. LeRobot v0.6.1's uv.lock pins pyarrow 25.0.0; install
+  it additively in `.venv-sim` (as the `pi` extra was) and add it to the simulator lockfile. Snapshot sync to the
+  bucket belongs with the queue workers: an episode job is `done` only once its snapshots are uploaded.
 - §12: the sim renders only the step before each decision point by default. Anything that reads images
   elsewhere gets `ImagesNotRendered`; a snapshot taken between decision points holds placeholders
   (`sim.images` false). Use `render="all"` (`load_config(render="all")`) for per-step image work.

@@ -540,6 +540,48 @@ Cost on this Mac: the 520-step episode with fake models and measurements took 17
 5.4 s under `used`. On the VM, EGL rendering shares the L4 with model inference, so the GPU time freed
 matters more than the CPU saving; the comparison is on the VM re-run list (EGL may differ).
 
+## Decider inputs and measurement recording (SPEC §6, §7; §18 item 3, first part)
+
+`measure.py` holds the arithmetic (pure NumPy, shared by the engine, the dataset tooling and the tests); its
+docstring defines every choice the spec leaves open: rows in executed form (what `pop` returns), rotations by
+Rodrigues' formula, the angle between rotations as 2 asin(|Ra - Rb|_F / 2 sqrt 2), the mean rotation as the SVD
+projection of the mean matrix, the position std as the RMS distance from the mean (ddof 0), gripper disagreement
+as min(#close, #open) / K, a "close" command as g > 0, finger width as qpos[0] - qpos[1].
+
+Engine (`episode.py`):
+- `Episode(..., measure_client=XVLAClient)`, `start(..., record="off" | "full")`. `record="full"` (base,
+  exploration and DAgger rollouts) measures every input group at every decision point where escalation is offered;
+  with `record="off"` a live decider measures only its own profile's groups (`observe_inputs`). Points where the
+  budget is spent are not measured (no decider is consulted there, amendment 15). Branches never measure.
+- Features: at a chunk point from the `/act` response (same encoder pass); at a mid point from the probe's
+  `/sample` response when the probe is needed, else from `/features`.
+- Chunk-time samples: after each `/act`, K-1 extra `/sample` chunks of the exact request (`last_query_payload`),
+  seeds `call_seed(..., "sample", 1..K-1)`; after an abandoned escalation's `act_fresh` (only when `chunk_spread`
+  is needed), seeds `"sample_fresh"`. Mid-point probes: K chunks of the measured-pose request, seeds
+  `"probe", 0..K-1`. The three names keep seeds distinct (an `act_fresh` and a probe at the same step can send
+  the same request).
+  The clock charges the fresh chunk's samples to `cascader_chunkspread` only (amendment 27, `profiles.<p>.act_fresh`).
+- Per point record (`Episode.measurements`, and the current one in every snapshot): index, step, kind, chunk
+  position, previous driver, robot state ([controller position, its 6D rotation, finger positions], 11 values),
+  proposal (10 x 7 executed form, `XVLAAdapter.peek`), both feature vectors (float32), the previous segment's
+  per-step records (action, controller pose after the step, finger positions), the raw chunk-time samples (K x 30
+  x 20 float32, at the point after they were drawn) or the raw probe, and the chunk spread, fresh spread and
+  drift summaries. Free signals are computed in `observe()` from the stored segment, because the gripper
+  thresholds are calibrated in Phase 0 (until then `observe()` raises for cascader profiles).
+- `observe(profile=None)` returns `api.DeciderInputs` with exactly the profile's groups; another profile's view
+  needs a recording run. Snapshots carry the point's record, the previous segment and the chunk-time samples.
+
+**Verified on the Mac** (`tests/test_measure.py`, 6 tests, hand-computed values; `tests/reference/
+test_measurements.py`, 15 tests, fake models in the simulator): `peek` and `executed_rows` equal what `pop`
+executes, bit for bit; recording and every live profile leave trajectories and event logs unchanged; `record=full`
+measures every offered point and nothing else; every stored summary recomputes from the stored raw chunks; the
+first chunk-time sample is the executed chunk; a locally continued proposal is exactly what ran next; the
+previous segment equals the executed one; the fresh chunk after an abandoned escalation has its samples; all
+seeds in an episode are distinct; each live profile calls only its own endpoints and sees exactly what the
+recording run measured for it; snapshots restore every profile's inputs and the next point's measurements;
+branches call nothing but `/act`. Server chunks are stored as float32 and checked to be exact; they are converted
+in float64 as the client converts the executed chunk (a float32 conversion differed in the last bits).
+
 ## Platform rule (SPEC §11 step 3 as amended)
 
 The Mac runs (CPU MuJoCo, CGL rendering) show the code paths are right. Every equality and determinism
@@ -550,7 +592,7 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py` | adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py` | decider inputs and measurement recording (§6, §7); adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
