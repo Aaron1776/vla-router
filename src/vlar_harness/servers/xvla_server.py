@@ -29,8 +29,9 @@ features agree bit for bit. Batched requests must carry exactly the two views th
 image encoder always sees 2 x max_batch images, and the configured number of flow-matching steps. The instruction's
 token length is part of the geometry too (amendment 26): the authors' processor pads every instruction to 50 tokens,
 which the encoder attends to as in the authors' model, so a request's padding is its own input and never depends on
-its batch-mates; an instruction that fills all 50 (possibly truncated) is refused. A request without a seed keeps the
-reference behaviour (global RNG, a batch of one, unpadded) outside the batchers.
+its batch-mates; an instruction that fills all 50 (possibly truncated) is refused. The authors' post-processing runs
+on each row alone (`denoise`), so no elementwise kernel treats a request's values differently by position. A request
+without a seed keeps the reference behaviour (global RNG, a batch of one, unpadded) outside the batchers.
 
 Pooled features [ASSUMPTION in the spec]: `enc_mean` is the mean over all encoder output tokens
 (first image's tokens and the 50 text tokens, padding included, as the encoder attends to all
@@ -255,7 +256,14 @@ class XVLAService:
         return self.xvla.forward_vlm(inputs["input_ids"], inputs["image_input"], inputs["image_mask"])
 
     def denoise(self, enc: dict, proprio, domain_id, steps: int, x1):
-        """modeling_xvla.py:198-216 from initial noise `x1` [B, num_actions, dim_action]."""
+        """modeling_xvla.py:198-216 from initial noise `x1` [B, num_actions, dim_action].
+
+        The authors' post-processing (a sigmoid on the two gripper channels) runs on each row alone. A CPU elementwise
+        kernel computes the last (element count mod vector width) elements of its tensor with scalar code, whose exp
+        can differ from the vectorised exp in the last bit; run over the whole batch, those elements are the last row's
+        last gripper values, so a request's result depended on its position and on the batch's size (the intermittent
+        simultaneous-requests failure; docs/HARNESS.md "Batching"). Row by row, every row is computed exactly as the
+        authors' batch of one."""
         import torch
 
         B = x1.shape[0]
@@ -267,7 +275,8 @@ class XVLAService:
             proprio_m, x_t_m = self.xvla.action_space.preprocess(proprio, x_t)
             action = self.xvla.transformer(domain_id=domain_id, action_with_noise=x_t_m, proprio=proprio_m,
                                            t=t, **enc)
-        return self.xvla.action_space.postprocess(action)
+        post = self.xvla.action_space.postprocess
+        return torch.cat([post(row.clone()) for row in action.split(1)], 0)
 
     def initial_noise(self, seeds: Optional[Sequence[int]], batch: int, like):
         import torch

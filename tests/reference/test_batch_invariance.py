@@ -90,6 +90,138 @@ def real_tokens(svc, prepared) -> int:
     return int((prepared["inputs"]["input_ids"] != svc.pad_token_id).sum())
 
 
+@pytest.fixture(scope="module")
+def xvla_six(xvla):
+    """The six requests of different tasks (XVLA_TASKS), prepared, and each one's action at every position of a full
+    batch of copies of itself. Position 0 is its alone result (alone, the padding rows are copies of it too)."""
+    svc = xvla
+    payloads = requests(svc, len(XVLA_TASKS))
+    prepared = [svc._prepare_request(p, "act") for p in payloads]
+    rows = [[o["action"] for o in svc._run_batch("act", [r] * svc.batching.max_batch)] for r in prepared]
+    return payloads, prepared, rows
+
+
+# Batches in which the simultaneous-requests test failed on the Mac before rows were post-processed alone (request 5
+# at the last position): captured by logging every batch's composition, replayed here without the batcher's timing.
+XVLA_CAPTURED_BATCHES = ((0, 1, 5), (1, 2, 5))
+
+
+@requires_xvla
+def test_xvla_rows_are_post_processed_alone():
+    """The authors' post-processing is a sigmoid on the gripper channels. A CPU elementwise kernel computes the last
+    (element count mod vector width) elements of its tensor with scalar code, whose exp can differ from the vectorised
+    one in the last bit, so over a whole [rows, 30, 2] batch the last row's last values could differ from the same
+    values in another row. `denoise` post-processes each row alone: with a stand-in transformer whose raw output is the
+    same for every row, its gripper logits chosen so that the two sigmoids differ on this machine, every row at every
+    batch size equals the batch of one bit for bit."""
+    import types
+
+    import torch
+    from vlar_harness import reference
+    from vlar_harness.servers.xvla_server import XVLAService
+    reference.add_xvla_repo_to_path()
+    from models.action_hub import EE6DActionSpace
+
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(4096, generator=g) * 4
+    scalar = torch.cat([torch.sigmoid(v.view(1)) for v in x])     # one element per call: the kernel's scalar code
+    tricky = x[torch.sigmoid(x) != scalar]                          # the whole tensor at once: its vectorised code
+    pool = tricky if len(tricky) else x
+    raw = torch.randn(1, 30, 20, generator=g)
+    raw[0, :, EE6DActionSpace.gripper_idx] = pool[torch.arange(60) % len(pool)].view(30, 2)
+
+    class SameForEveryRow(torch.nn.Module):                         # stands in for the action transformer
+        def forward(self, action_with_noise, **_):
+            return raw.expand(action_with_noise.shape[0], -1, -1).clone()
+
+    svc = object.__new__(XVLAService)
+    svc.xvla = types.SimpleNamespace(action_space=EE6DActionSpace(), transformer=SameForEveryRow())
+
+    def run(rows):
+        return svc.denoise({}, torch.zeros(rows, 20), torch.zeros(rows, dtype=torch.long), 1, torch.zeros(rows, 30, 20))
+
+    one = run(1)[0]
+    bad = {rows: [r for r, a in enumerate(run(rows)) if bits(a) != bits(one)] for rows in range(1, 9)}
+    assert not any(bad.values()), f"rows that differ from the batch of one, by batch size: {bad}"
+
+
+@requires_xvla
+def test_xvla_fixed_geometry_makes_rows_independent_of_their_batch():
+    """The batching mechanics with a stand-in model whose every output row is computed from that row's inputs plus a
+    term that depends on the batch's size (as GPU kernel choice can). On the Mac's CPU X-VLA's own rows do not depend
+    on the batch's size, so this is the test that catches unpadded encoder or denoiser rows, a batch-level noise
+    generator or results handed back in the wrong order; the VM runs the real model. A request's /act and /sample
+    results and features are bit-identical alone, with companions and at every position."""
+    import types
+
+    import torch
+    from vlar_harness import reference
+    from vlar_harness.servers.xvla_server import XVLABatching, XVLAService
+    reference.add_xvla_repo_to_path()
+    from models.action_hub import EE6DActionSpace
+
+    class BatchSizeSensitive(torch.nn.Module):
+        num_actions = 30
+
+        def __init__(self):
+            super().__init__()
+            self.scale = torch.nn.Parameter(torch.tensor(0.5))
+            self.action_space = EE6DActionSpace()
+
+        def forward_vlm(self, input_ids, pixel_values, image_mask):
+            B = input_ids.shape[0]
+            img = pixel_values.flatten(2).mean(-1)                                       # [B, views]
+            vlm = input_ids.float()[:, :, None] * 1e-2 + img[:, :1, None] + B * 1e-3       # [B, 50, 1]
+            aux = img[:, 1:, None].repeat_interleave(3, 1) + B * 1e-3                    # [B, 2 views x 3 tokens, 1]
+            return {"vlm_features": vlm, "aux_visual_inputs": aux}
+
+        def transformer(self, domain_id, action_with_noise, proprio, t, vlm_features, aux_visual_inputs):
+            B = action_with_noise.shape[0]
+            ctx = vlm_features.mean((1, 2)) + aux_visual_inputs.mean((1, 2)) + proprio.sum(1) + t + domain_id
+            return action_with_noise * self.scale + ctx[:, None, None] + B * 1e-3
+
+    processor = types.SimpleNamespace(language_max_length=50, tokenizer=types.SimpleNamespace(pad_token_id=1))
+    svc = XVLAService(BatchSizeSensitive(), processor, XVLABatching(max_batch=3, sample_rows=6, steps=2))
+    g = torch.Generator().manual_seed(0)
+
+    def req(seeds):
+        return {"inputs": {"input_ids": torch.randint(2, 100, (1, 50), generator=g),
+                           "image_input": torch.rand(1, 3, 3, 4, 4, generator=g),
+                           "image_mask": torch.tensor([[True, True, False]]),
+                           "proprio": torch.randn(1, 20, generator=g), "domain_id": torch.tensor([3])},
+                "seeds": list(seeds)}
+
+    try:
+        for kind, key, (x, y, z) in (("act", "action", (req([1]), req([2]), req([3]))),
+                                     ("sample", "actions", (req([4, 5]), req([6]), req([7, 8, 9])))):
+            ref = svc._run_batch(kind, [x])[0]
+            for batch in ([x, y], [y, x], [z, y, x], [y, x, z]):
+                got = svc._run_batch(kind, batch)[next(i for i, r in enumerate(batch) if r is x)]
+                assert bits(got[key]) == bits(ref[key]), (kind, len(batch))
+                assert all(bits(got["features"][f]) == bits(ref["features"][f]) for f in ref["features"]), kind
+    finally:
+        svc.close()
+
+
+@requires_xvla
+def test_xvla_every_position_computes_the_same_bits(xvla_six):
+    """The same request at every position of a full batch gives the same action, for each of the six tasks' requests.
+    Before rows were post-processed alone, request 5 differed at the last position in its last gripper value."""
+    _, _, rows = xvla_six
+    differing = [(i, q) for i, r in enumerate(rows) for q in range(1, len(r)) if bits(r[q]) != bits(r[0])]
+    assert not differing, f"(request, position) pairs that differ from position 0: {differing}"
+
+
+@requires_xvla
+def test_xvla_captured_concurrent_batches_replay_to_the_alone_results(xvla, xvla_six):
+    svc = xvla
+    _, prepared, rows = xvla_six
+    for ids in XVLA_CAPTURED_BATCHES:
+        out = svc._run_batch("act", [prepared[i] for i in ids])
+        bad = [i for i, o in zip(ids, out) if bits(o["action"]) != bits(rows[i][0])]
+        assert not bad, f"batch {list(ids)}: requests {bad} differ from their alone results"
+
+
 @requires_xvla
 def test_xvla_act_is_batch_invariant(xvla):
     svc = xvla
@@ -153,29 +285,31 @@ def test_xvla_instruction_length_is_part_of_the_fixed_geometry(xvla):
 
 
 @requires_xvla
-def test_xvla_simultaneous_requests_keep_their_own_prompts_and_outputs(xvla):
+def test_xvla_simultaneous_requests_keep_their_own_prompts_and_outputs(xvla, xvla_six, monkeypatch):
     svc = xvla
-    n = len(XVLA_TASKS)
-    reqs = requests(svc, n)
-    alone_ids = [svc._prepare_request(p, "act")["inputs"]["input_ids"] for p in reqs]
+    reqs, prepared, rows = xvla_six
+    n = len(reqs)
+    alone_ids = [r["inputs"]["input_ids"] for r in prepared]
     assert len({bytes(t.numpy()) for t in alone_ids}) == n
-    alone = [svc._run_batch("act", [svc._prepare_request(p, "act")])[0]["action"] for p in reqs]
+    alone = [r[0] for r in rows]
     got, errors = run_together(lambda i: svc._prepare_request(reqs[i], "act")["inputs"]["input_ids"], n)
     assert not errors, errors
     swapped = [i for i in range(n) if not bool((got[i] == alone_ids[i]).all())]
     assert not swapped, f"requests {swapped} got another request's prompt"
-    batcher = svc.batchers["act"]
-    before, window = len(batcher.stats.sizes), batcher.wait_window_s
-    batcher.wait_window_s = 2.0                       # long enough that the requests share batches
-    try:
-        results, errors = run_together(lambda i: svc.act(reqs[i]), n)
-    finally:
-        batcher.wait_window_s = window
+    batches, run_batch = [], svc._run_batch
+
+    def logged(kind, rs):              # each batch's composition (request ids by position), so a failure can be replayed
+        batches.append([int(r["seeds"][0]) - 500 for r in rs])
+        return run_batch(kind, rs)
+
+    monkeypatch.setattr(svc, "_run_batch", logged)
+    monkeypatch.setattr(svc.batchers["act"], "wait_window_s", 2.0)     # long enough that the requests share batches
+    results, errors = run_together(lambda i: svc.act(reqs[i]), n)
     assert not errors, errors
-    sizes = batcher.stats.sizes[before:]
-    assert sum(sizes) == n and max(sizes) > 1, sizes
+    assert sum(map(len, batches)) == n and max(map(len, batches)) > 1, batches
     swapped = [i for i in range(n) if bits(results[i]["action"]) != bits(alone[i])]
-    assert not swapped, f"requests {swapped} got another request's output"
+    assert not swapped, (f"requests {swapped} got another request's output; batches (request ids by position; the "
+                         f"padding rows copy the first): {batches}")
 
 
 @requires_xvla

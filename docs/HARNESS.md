@@ -376,20 +376,22 @@ stay as each reference has them. Config: `servers.batching` (`max_batch` 8, `xvl
 **Verified on the Mac** (`tests/reference/test_batch_invariance.py`, X-VLA environment, random weights, CPU,
 geometry 3 requests / 6 sample rows / 10 steps): a request's `/act` result and features are bit-identical alone,
 with different companions and at every position; the same for a `/sample` request with 2 samples among requests of
-1 and 3 samples; `/act`, `/sample` and `/features` give bit-identical features for the same payload; three
-concurrent clients through the real queue land in one batch and each gets its alone result; requests that break the
-geometry are refused and unseeded ones bypass the batchers; at `max_batch` 1 the batched path equals the seeded
+1 and 3 samples; `/act`, `/sample` and `/features` give bit-identical features for the same payload; six requests of
+different tasks give the same bits at every position of a full batch, and sent at once through the real queue they keep
+their prompts and get their alone results; requests that break the geometry are refused and unseeded ones bypass the
+batchers; at `max_batch` 1 the batched path equals the seeded
 batch-of-one path (which `test_model_servers.py` ties to the authors' handler).
 
 Findings:
-- On the CPU the denoiser's result depends on the batch size: row 0 of an unpadded batch of 2 or 8 differs from a
-  batch of one by up to 6e-8 (10 steps; a scratch probe). Fixed padding removes this; the mutation that drops the
-  denoising rows' padding is caught (as is a batch-level noise generator). The encoder gave the same bits at every
-  batch size tried on the CPU (1, 2, 3, 8), so dropping its padding is not caught on the Mac; it stays, because GPU
-  kernel choice can change with batch size, and the VM run shows whether the L4 needs it.
-- At the test geometry (3 rows) the padded result equals the batch of one exactly on the CPU; at 2 and 8 rows it
-  does not. The production geometry's results therefore need not equal a batch of one, only each other: parity is
-  judged by success rates, not bits.
+- Batch size on the CPU (corrected after the concurrency fix below). Part 1 saw the denoiser depend on the batch size
+  (row 0 of an unpadded batch of 2 or 8 differed from a batch of one by up to 6e-8). That was the whole-batch gripper
+  sigmoid, not the model: with rows post-processed alone, dropping the denoising rows' padding changes no result of
+  the real-model tests, and the encoder gave the same bits at every batch size tried (1, 2, 3, 8). On this CPU X-VLA's
+  rows therefore do not depend on the batch size. The padding stays because GPU kernel choice can; on the Mac the
+  stand-in model test (`test_xvla_fixed_geometry_makes_rows_independent_of_their_batch`, rows that change with the
+  batch size) checks the padding mechanics, and the VM run shows whether the L4 needs it.
+- The production geometry's results need not equal a batch of one, only each other (GPU kernels can differ by batch
+  size): parity is judged by success rates, not bits.
 - Deterministic mode makes PyTorch fill uninitialised memory with NaN. A randomly initialised X-VLA has one tensor
   random init never touches (Florence-2's raw `image_projection` Parameter, created with `torch.empty`); before,
   the random-weight tests read leftover memory there. The test builder now seeds every non-finite tensor; a
@@ -451,10 +453,52 @@ byte), 6 of 6 caught:
 | prompts trimmed to the batch's longest | reference path, stand-in policy, simultaneous requests (the real code's result does depend on the token length) |
 | geometry check skipped | the geometry test |
 
-**Open (X-VLA, part 2).** X-VLA's tests now mix instructions of 10 to 21 tokens and pass, as does the token-length
-test; the new simultaneous-requests test fails intermittently on the CPU: one of six requests sent at once gets an
-action that is not bit-identical to its alone result, though its prompt is right (HANDOFF.md, "Test suites"). Until
-it is explained, X-VLA's batch invariance under concurrent arrival is not shown, and its mutation check is not run.
+**The X-VLA simultaneous-requests failure (part 2; explained and fixed).** The test failed intermittently on the CPU:
+one of six requests sent at once got an action that was not bit-identical to its alone result, though its prompt was
+right. A scratch probe logged every batch's composition (request ids by position, per-row hashes of every encoder and
+denoiser input and output, padding rows included) over repeated concurrent runs: request 5 (task 2) failed whenever it
+was last in its batch (`[0, 1, 5]`, `[1, 2, 5]`) and passed first or second (7 batches). Each captured batch replays
+deterministically, in the main thread, in a fresh thread and from the alone-prepared inputs, so neither timing nor
+threads were involved. In every batch the padding rows were exact copies of the first request (encoder inputs, proprio,
+domain id, noise), and with forward hooks on every module no module's output for the request's rows differed from its
+alone run (per-row hashes; the encoder's views and windows are batch-major). The one differing value, step 29 channel 9
+(a gripper) by 5.96e-8 (one ulp), came after the model: the authors' `postprocess` applies a sigmoid to the gripper
+channels of the whole batch at once, `[rows, 30, 2]`. PyTorch's CPU elementwise kernels compute the last (element count
+mod 8) elements of a tensor with scalar code (`std::exp`) and the rest with the vectorised exp, and the two differ in
+the last bit for about 4% of inputs; at 3 rows (180 elements) the last row's last 4 values take the scalar path. With
+random gripper logits, 31 of 200 three-row batches of identical rows had a last row that differed from the first; none
+at 2, 4, 6, 8 or 40 rows, whose element counts are multiples of 8, so the production geometry (8 and 40 rows) does not
+show it on this CPU. The earlier tests missed it because it depends on the values (requests a and b happened to round
+alike at the last position). Fix (`XVLAService.denoise`): the authors' post-processing runs on each row alone, exactly as
+in the authors' batch of one, so every row is split the same way at any position and batch size. CUDA's elementwise
+kernels apply one function to every element, so this is a CPU effect; the VM run checks it.
+
+New tests: `test_xvla_fixed_geometry_makes_rows_independent_of_their_batch` (the batching mechanics with a stand-in
+model whose rows change with the batch size; needs no model), `test_xvla_rows_are_post_processed_alone` (needs no model: a stand-in transformer gives every row the same
+raw output, with gripper logits for which the scalar and vectorised sigmoids differ on the machine; every row at batch
+sizes 1 to 8 equals the batch of one), `test_xvla_every_position_computes_the_same_bits` (each of the six requests at
+every position of a full batch of copies of itself), `test_xvla_captured_concurrent_batches_replay_to_the_alone_results`
+(the two captured batches). The simultaneous-requests test now records each batch's composition and prints it on
+failure, so any failure can be replayed without the batcher's timing.
+
+X-VLA mutation check after the fix (a scratch script; each rule broken in the source, the X-VLA tests run, the file
+restored byte for byte), 7 of 8 caught:
+
+| Rule broken | Caught by |
+| --- | --- |
+| post-processing over the whole batch (the old code) | rows post-processed alone, every position, captured batches, simultaneous requests |
+| token length trimmed to the batch's longest instruction | `/act` invariance, captured batches, simultaneous requests, batch of one = reference path |
+| no token-length check | the token-length test |
+| encoder rows not padded | the stand-in model test only (X-VLA's own rows do not depend on the batch size on this CPU) |
+| denoising rows not padded | the stand-in model test only (the same; before the fix the whole-batch sigmoid made it visible) |
+| one batch-level noise generator | `/act` and `/sample` invariance, every position, captured batches, simultaneous requests, batch of one = reference path, the seeds test, the stand-in model test |
+| results handed back in the wrong order | the stand-in model test (run against the fast tests only) |
+| no `PROCESSING_LOCK` | not caught: not observable on the Mac |
+
+`PROCESSING_LOCK`: the fast tokenizer changes its padding and truncation settings only when a call asks for other ones
+(transformers' `set_truncation_and_padding`), and every X-VLA call asks for the same, so after the first call concurrent
+calls only read them. The lock stays: it covers the first calls' update, where a collision would raise an error (never
+a wrong prompt), and any later code that tokenizes with other settings.
 
 ## Rendering only what is used (SPEC §12, approved with conditions)
 
@@ -480,7 +524,7 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
-| X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position; features equal across endpoints (amendment 24) |
+| X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position (six tasks' requests, each at every position of a full batch); the batches captured from the Mac's concurrency failure; simultaneous requests through the queue; rows post-processed alone; features equal across endpoints (amendment 24) |
 | LeRobot (with the `pi` extra) | `VLAR_PI05_CHECKPOINT=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k pi05_real` | π0.5 at the production geometry with the real weights and tokenizer, bit for bit: alone, with companions, at every position and in a full batch, batch-mates from different tasks with different prompt and state token lengths; padding ids cannot change a result; every LIBERO-10 prompt fits the 200 tokens; max_batch 1 equals `act_unbatched`; simultaneous requests keep their prompts and outputs (amendments 24, 26). Deterministic mode must not raise on any CUDA kernel π0.5 uses. |
 | both servers, Phase 0 step 2 (a measurement) | throughput at the fixed geometry against unpadded batches, with deterministic mode on and off | the cost of fixed padding and of deterministic mode; if padding is too slow, stop and bring the numbers to the user before relaxing anything (amendment 24) |
 | both servers, Phase 0 step 2 (a measurement) | servers started at `--max-batch 1` (X-VLA also `--sample-rows 5`): median latency of `/act`, `/features`, `/sample` K = 5 and π0.5 inference | the clock charges, unpadded, as a deployed robot runs the calls (amendment 25); written to `latency` in the config; the padded figures never are |

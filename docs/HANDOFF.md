@@ -11,7 +11,8 @@ re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline
   step is finished, say: "Effort checkpoint complete: you can switch back to xhigh." Also raise a checkpoint for
   any unexplained discrepancy that could silently corrupt labels or results.
 - **Effort schedule** (set by the user 2026-11-21; tell the user the level the next task needs, not only when it is
-  max): finishing step 5: max. Measurement recording, decider inputs, dataset format and queue workers: xhigh (max
+  max): finishing step 5: max. Rendering only the observations that are used (§12): xhigh (max only if an
+  exact-equality test fails). Measurement recording, decider inputs, dataset format and queue workers: xhigh (max
   only for unexplained discrepancies). Container images and lockfiles: high. Google Cloud settings, the VM re-run
   list and housekeeping: medium. Phase 0 on the VM: xhigh (max only for parity debugging).
 - **Commits and pushes.** Only when the user asks. So far the user has asked, before each step, for the previous
@@ -44,7 +45,7 @@ Where each item stands now (not complete; do not announce):
 
 | Item | State |
 | --- | --- |
-| 1. Steps 4 and 5 | step 4 done on the Mac (`272f64b`) with its follow-ups (`a25053f`); step 5 implemented on the Mac (part 1 `f8d06d5`, part 2 the commit after `274b18a`) but not complete: one X-VLA concurrency test fails, unexplained (see "Test suites") |
+| 1. Steps 4 and 5 | done on the Mac: step 4 (`272f64b`, follow-ups `a25053f`); step 5 (part 1 `f8d06d5`, part 2 `94b9297`, the X-VLA concurrency fix in the commit after `c1fcd78`); their equality tests are on the VM re-run list |
 | 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` with per-call seeds, all batched at a fixed geometry of rows and tokens (amendments 24, 26); unseeded requests and π0.5 `/upload_bytes` stay on the reference path |
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; proposal, free signals, spread/drift and probe recording not started; snapshot sync to the bucket not wired |
 | 4. Queue, spend guard, packaging | implemented and unit-tested against a local stand-in for the bucket (`src/vlar_ops`); the Cloud Storage backend is untested without credentials; the episode engine (now with `run_branch`) is not yet wired to the queue |
@@ -66,30 +67,25 @@ Where each item stands now (not complete; do not announce):
 | Decisions 17-18 recorded; STATUS.md added | done | `96ef752`, `11e999a` |
 | Step-4 follow-ups, amendments 19-23: live limit only in routed runs with a decider profile; the explicit `time_limit` flag in start events, results, snapshots and branch events; cut runs scored only under their own profile (scoped so DAgger points get labels for every profile); per-profile exclusion of points already past the limit; the remaining-time input recomputed per profile (`api.py`, `clock.py`, `eventlog.py`, `episode.py`, `labels.py`, `calibration.py`); each rule shown to be caught by its tests when broken | done on Mac; VM re-run pending | `a25053f` |
 | Effort step 5, part 1: the request batcher (`servers/batching.py`), deterministic settings (`common.deterministic_torch`), X-VLA's three endpoints batched at a fixed padded geometry, alone / companions / position checks on the CPU, the batching config placeholders | done on Mac; VM re-run pending | `f8d06d5` |
-| Decisions 25-26 (unpadded clock charges; fixed token length); effort step 5, part 2: π0.5 batching at a fixed geometry of rows and tokens (`PI05Service.load`, `PI05Batching`, `act_unbatched`), the shared-state audit of both servers with `PROCESSING_LOCK`, X-VLA's token-length check, tests on LeRobot's real π0.5 code (tiny, random weights) and a stand-in policy, X-VLA's tests with mixed-length instructions, π0.5 mutation check 6 of 6 | implemented on Mac; one X-VLA test fails (see "Test suites") | the commit after `274b18a` |
+| Decisions 25-26 (unpadded clock charges; fixed token length); effort step 5, part 2: π0.5 batching at a fixed geometry of rows and tokens (`PI05Service.load`, `PI05Batching`, `act_unbatched`), the shared-state audit of both servers with `PROCESSING_LOCK`, X-VLA's token-length check, tests on LeRobot's real π0.5 code (tiny, random weights) and a stand-in policy, X-VLA's tests with mixed-length instructions, π0.5 mutation check 6 of 6 | done on Mac; VM re-run pending | `94b9297` |
+| Usage discipline (`CLAUDE.md`) and the effort schedule (above) | done | `c1fcd78` |
+| Effort step 5 completed: the X-VLA simultaneous-requests failure reproduced (batch compositions logged, the failing batches captured and replayed deterministically), traced to the authors' post-processing over the whole batch (a CPU elementwise kernel's scalar tail) and fixed by post-processing each row alone; new position, replay and post-processing tests; X-VLA mutation check (HARNESS.md "Batching") | done on Mac; VM re-run pending | the commit after `c1fcd78` |
 | Render only the observations that are used (SPEC §12) | approved, may start now that restore exists; must pass the same exact-equality tests | |
 | Decider inputs (`observe()`: features, proposal, free signals, spread, drift), dataset storage format (Parquet), queue worker wiring (`run_branch` exists) | not started | |
 | Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
-**Test suites after step 5 part 2 (Mac), and the one open failure.** Main venv 112 passed, 7 skipped. Simulator env:
-57 passed, 13 skipped (with LeRobot's `pi` extra now installed; the skips need weights, both servers or the VM, or
-are X-VLA tests). The new π0.5 tests (`test_batch_invariance.py -k pi05`, simulator env with LeRobot's `pi` extra): 9 passed,
-1 skipped (the VM test); π0.5 mutation check 6 of 6 caught (HARNESS.md "Batching"). X-VLA env (random weights, CPU):
-7 passed, **1 failed**: the new `test_xvla_simultaneous_requests_keep_their_own_prompts_and_outputs`. Six requests
-(instructions of tasks 4, 8, 3, 6, 0, 2) sent at once through `act`, at the CPU geometry of 3 rows: all six prompts
-match their alone prompts, but request 5 (task 2, seed 505, rng 15) gets an action that is not bit-identical to its
-alone result (`_run_batch` of it alone, main thread). It is intermittent: it failed in the full run and in one of two
-single-threaded reruns (`OMP_NUM_THREADS=MKL_NUM_THREADS=VECLIB_MAXIMUM_THREADS=1`) and passed in a rerun with default
-threads, so it depends on arrival order or timing (which requests share a batch, and where), and the single-threaded
-failure rules out CPU thread contention as the whole story. Part 1's version of
-the test (three requests with one instruction, one batch after all were prepared) never exercised this: here the
-first batch runs while later requests are still being prepared, and the batches hold combinations the invariance test
-never tried. Unexplained, so it is a §16 effort checkpoint (max effort) and step 5 is not complete. The X-VLA mutation
-run (token length trimmed, lock removed, length check removed) was not done, since its baseline fails. First
-diagnostic for the next session: run request 5 with the same companions in the same order in the main thread; if that
-equals its alone result the cause is thread-related (thread-local state in the worker), otherwise a batch-invariance
-violation for that combination.
+**Test suites after step 5 (Mac).** Main venv 112 passed, 7 skipped; simulator env 57 passed, 17 skipped (the skips
+need weights, both servers, the VM or the X-VLA environment); X-VLA env (random weights, CPU) 12 passed. Part 2's
+intermittent X-VLA failure (one of six simultaneous requests not bit-identical to its alone result) is explained and
+fixed (HARNESS.md "Batching"): logging every batch's composition showed request 5 failing whenever it was last in its
+batch, and the captured batches (`[0, 1, 5]`, `[1, 2, 5]`) replay deterministically, so timing and threads were not
+involved. Padding rows were exact copies of the first request and no module's output differed; the one differing value
+(a gripper, one ulp) came from the authors' post-processing, a sigmoid over the whole batch, whose CPU kernel computes
+the last (count mod 8) elements with scalar code. The server now post-processes each row alone, as the authors' batch
+of one does. After the fix: 0 failures in 10 concurrent trials (2 in 4 before). X-VLA mutation check 7 of 8 caught (no
+`PROCESSING_LOCK` is not observable: the tokenizer only reads its settings after the first call). Part 1's "CPU denoiser
+depends on the batch size" was the same sigmoid, so a stand-in model test now checks the padding mechanics on the Mac.
 
 Test suites after step 5 part 1 (Mac): main venv 112 passed, 7 skipped; simulator env 48 passed, 11 skipped (the
 5 X-VLA batch-invariance tests skip there); X-VLA env (random weights, CPU) 7 passed in about 4 minutes. Mutation
@@ -232,12 +228,9 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-Effort step 5 is implemented on the Mac: part 1 `f8d06d5`, part 2 in the commit that added this paragraph
-(HARNESS.md "Batching": design, shared-state audit, tests, mutation results). It is **not complete**: first resolve
-the failing X-VLA simultaneous-requests test ("Test suites" above; an unexplained discrepancy, so raise "Effort
-checkpoint: please switch to max effort before I start debugging the X-VLA concurrency failure"), then run the X-VLA
-mutation check (trim the token length to the batch's longest instruction; remove `PROCESSING_LOCK`; remove the
-token-length check), then all three suites, then "Effort checkpoint complete: you can switch back to xhigh."
+Effort step 5 is complete on the Mac (part 1 `f8d06d5`, part 2 `94b9297`, the concurrency fix in the commit after
+`c1fcd78`; HARNESS.md "Batching": design, shared-state audit, the failure's diagnosis, tests, mutation results). Next:
+render only the observations that are used (§12), at **xhigh** effort (max only if an exact-equality test fails).
 
 Worth knowing:
 - `.venv-sim` now also has LeRobot's `pi` extra (transformers 5.5.4, tokenizers 0.22.2; installed 2026-11-21 with
