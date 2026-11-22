@@ -1,0 +1,19 @@
+# One simulator worker (docs/SPEC.md §12; vlar_ops/vm_worker.py). Start several by hand after `vlar-ops queue
+# resume` and once both model servers are up:  sudo systemctl start vlar-worker@{1..N}
+# Not enabled at boot on purpose: after a preemption the queue is resumed first (ops/README.md, "Every start").
+# Adapted to the simulator container in §18 item 5.
+[Unit]
+Description=vla-router simulator worker %i
+After=network-online.target vlar-spend.service
+Wants=network-online.target
+
+[Service]
+Environment=VLAR_OPS_CONFIG=/opt/vla-router/ops/ops.yaml
+Environment=LIBERO_CONFIG_PATH=/opt/vla-router/third_party/libero-home
+Environment=MUJOCO_GL=egl
+Environment=HF_HUB_OFFLINE=1
+ExecStart=/opt/vla-router/.venv-sim/bin/vlar-ops worker --worker-id w%i
+# SIGTERM abandons the current job cleanly (lease released, no marker); exit 3 = refused a job it cannot run.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=no

@@ -1,8 +1,11 @@
 """The worker loop (vlar_ops.worker): files reach the bucket, intact, before a job's result marker; failures
-retry; a job interrupted before its marker is re-run after resume."""
+retry; a job interrupted before its marker is re-run after resume; refused or interrupted jobs go back untouched."""
 
 import hashlib
+import json
 from pathlib import Path
+
+import pytest
 
 from vlar_ops.plan import episode_plan
 from vlar_ops.queue import JobQueue, result_key
@@ -50,7 +53,8 @@ def setup(tmp_path, **kw):
 def test_files_are_uploaded_and_checked_before_the_marker(tmp_path):
     storage, q = setup(tmp_path)
     runner, _ = files_runner(tmp_path)
-    assert run_worker(q, storage, runner, "w") == {"done": 2, "done_local": 0, "retry": 0, "failed": 0}
+    assert run_worker(q, storage, runner, "w") == {"done": 2, "done_local": 0, "retry": 0, "failed": 0,
+                                                   "refused": 0}
     for jid in q.done_ids():
         marker = result_key("base", jid)
         files = [k for k in storage.order if k.startswith(f"files/{jid}/")]
@@ -97,3 +101,50 @@ def test_stop_is_checked_before_each_claim(tmp_path):
     runner, calls = files_runner(tmp_path)
     assert run_worker(q, storage, runner, "w", stop=lambda: len(calls) >= 1)["done"] == 1
     assert q.counts()["pending"] == 1
+
+
+def attempts(q):
+    return dict(q._db.execute("SELECT job_id, attempts FROM jobs").fetchall())
+
+
+def test_claims_can_be_limited_to_phases(tmp_path):
+    storage, q = setup(tmp_path)
+    q.add_plan(episode_plan("explore", tasks=[0], inits=[0], namespace=20, mode="routed", profile="none",
+                            record="full", order_seed=1))
+    runner, calls = files_runner(tmp_path)
+    assert run_worker(q, storage, runner, "w", phases=["explore"])["done"] == 1
+    assert q.counts("explore")["done"] == 1 and q.counts("base")["pending"] == 2
+
+
+def test_a_refused_job_goes_back_untouched_and_the_worker_stops(tmp_path):
+    storage, q = setup(tmp_path)
+    runner, calls = files_runner(tmp_path)
+    cleaned = []
+    stats = run_worker(q, storage, runner, "w", refuse=lambda job: "needs other options", cleanup=cleaned.append)
+    assert stats["refused"] == 1 and stats["done"] == 0 and not calls and not cleaned
+    assert q.counts()["pending"] == 2 and set(attempts(q).values()) == {0}
+
+
+@pytest.mark.parametrize("signal_exc", [KeyboardInterrupt, SystemExit])
+def test_an_interrupted_job_is_released_without_a_marker(tmp_path, signal_exc):
+    storage, q = setup(tmp_path)
+    cleaned = []
+
+    def runner(job):
+        raise signal_exc()
+    with pytest.raises(signal_exc):
+        run_worker(q, storage, runner, "w", cleanup=lambda job: cleaned.append(job.job_id))
+    assert q.counts()["pending"] == 2 and q.counts()["leased"] == 0 and set(attempts(q).values()) == {0}
+    assert len(cleaned) == 1 and not any(k.startswith("results/") for k in storage.order)
+
+
+def test_markers_carry_the_meta_and_staging_is_cleaned(tmp_path):
+    storage, q = setup(tmp_path)
+    runner, _ = files_runner(tmp_path)
+    cleaned = []
+    run_worker(q, storage, runner, "w", meta={"worker_id": "w", "provenance": {"harness_version": "x"}},
+               cleanup=lambda job: cleaned.append(job.job_id))
+    for jid in q.done_ids():
+        marker = json.loads(storage.get_bytes(result_key("base", jid)))
+        assert marker["meta"] == {"worker_id": "w", "provenance": {"harness_version": "x"}}
+    assert sorted(cleaned) == sorted(q.done_ids())

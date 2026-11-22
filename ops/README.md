@@ -53,8 +53,15 @@ sudo systemctl daemon-reload && sudo systemctl enable --now vlar-spend
    straight down again; raise the limits in `ops/ops.yaml` first only if funds were added.
 3. `vlar-ops queue resume`: release stale leases, re-upload local-only results, mark everything
    already in the bucket as done.
-4. Model servers, the golden-set self-check and the workers start here (added with the harness;
-   the queue must not start if the self-check fails, §15).
+4. Start both model servers at the production batch geometry (`servers.batching` in the harness config).
+   The golden-set self-check (§15) runs here once the harness is frozen; it is written with the freeze, and
+   until then `vlar-ops worker` refuses a frozen config.
+5. Start the workers: `sudo systemctl start vlar-worker@{1..N}` (N from the Phase 0 throughput measurements;
+   `ops/vm/vlar-worker@.service`). Each worker checks both servers' `/info` (fixed batch geometry,
+   deterministic settings) and stops if they differ, claims jobs until none is left or the spend guard's
+   STOP flag is up, and uploads every file before a job's marker. Options: `--phase P` (repeatable) to claim
+   only one phase's jobs, `--option scene_seed=pi05_parity` for the π0.5 parity run (start those workers with
+   `--phase pi05_parity`). A worker given a job its options cannot run gives it back and exits with status 3.
 
 ## Weekly
 

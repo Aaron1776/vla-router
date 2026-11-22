@@ -1,0 +1,189 @@
+"""The VM worker entry point (docs/SPEC.md §12, §15): `vlar-ops worker`, one simulator worker per process.
+
+Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch across them. Each process:
+1. loads the harness config with the named options given (`--option name=choice`), and refuses a frozen harness
+   whose code or config differ from its freeze record (provenance.verify_freeze). A frozen harness must also pass
+   the golden-set self-check (§15) before any job; that check is written with the freeze (Phase 0 step 7), so
+   until then a frozen config is refused here;
+2. checks the pinned reference files it runs: the authors' X-VLA client and LeRobot's LIBERO and π0.5 files;
+3. waits for both model servers' /info and checks they run the configured fixed batch geometry with the
+   deterministic settings (amendment 24): a server started otherwise (Phase 0 step 2's unpadded latency runs)
+   would give results that depend on it;
+4. builds the production episode factory: `XVLAClient` (the X-VLA transport and its measurement endpoints),
+   `PI05Client`, the configured network model, one `LiberoSim` per task (built on first use, then reused);
+5. runs `worker.run_worker` with the spend guard's stop flag (`<local_root>/STOP`): once the flag is up no job is
+   claimed; a SIGTERM or Ctrl-C abandons the current job cleanly (lease released, no marker). A job the worker's
+   options cannot run is given back and the worker stops (exit status 3).
+Every result marker carries the provenance header (harness version, config hash and options, source digest, git
+commit, image digests), the worker id, p_escalate and the servers' settings, so the dataset manifest can check
+that nothing from different harness versions is mixed (§15). Staged files are deleted after each job.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional, Sequence
+
+from .plan import load_collection_config
+from .queue import JobQueue
+from .spend import StopFlag
+from .storage import open_storage
+from .worker import run_worker
+
+REFUSED_EXIT = 3
+XVLA_CLIENT_FILE = "evaluation/libero/libero_client.py"
+
+
+class StartupError(RuntimeError):
+    """The worker must not start: a server, the harness or the queue is not as it must be."""
+
+
+class ProductionEpisodes:
+    """`make_episode(task_id)` for `collect.Runner`: a fresh `Episode` per job on a cached simulator of the task.
+
+    `xvla` has `act(payload, seed)`, `sample(payload, seeds)` and `features(payload)` (servers.clients.XVLAClient);
+    `pi05` has `act(raw_obs, task, seed)` returning {"actions": 50 x 7} (servers.clients.PI05Client).
+    """
+
+    def __init__(self, cfg, xvla, pi05, *, make_sim: Optional[Callable[[int], Any]] = None):
+        self.cfg, self.xvla, self.pi05 = cfg, xvla, pi05
+        self.state_mode = cfg.option("xvla_state_mode")
+        self.client_sha256 = cfg["reference"]["xvla_repo_files"][XVLA_CLIENT_FILE]
+        self._make_sim = make_sim or self._libero
+        self.sims: dict[int, Any] = {}
+
+    def _libero(self, task_id: int):
+        from vlar_harness.sim.libero_sim import LiberoSim, SimSpec
+        return LiberoSim(task_id, SimSpec.from_config(self.cfg))
+
+    def sim(self, task_id: int):
+        if task_id not in self.sims:
+            self.sims[task_id] = self._make_sim(task_id)
+        return self.sims[task_id]
+
+    def pi05_call(self, raw_obs: dict, task: str, seed: Optional[int]):
+        return self.pi05.act(raw_obs, task, seed)["actions"]
+
+    def __call__(self, task_id: int):
+        from vlar_harness.adapters.pi05 import PI05Adapter
+        from vlar_harness.adapters.xvla import XVLAAdapter
+        from vlar_harness.episode import Episode
+        sim = self.sim(task_id)
+        xvla = XVLAAdapter(self.xvla.act, state_mode=self.state_mode, client_sha256=self.client_sha256)
+        return Episode(sim, xvla, PI05Adapter(sim), self.pi05_call, self.cfg, measure_client=self.xvla)
+
+    def close(self) -> None:
+        for s in self.sims.values():
+            s.close()
+        self.sims.clear()
+
+
+def expected_servers(cfg) -> dict[str, dict[str, Any]]:
+    """What each server's /info must report for data collection (amendment 24)."""
+    b = cfg["servers"]["batching"]
+    det = {"deterministic_algorithms": True, "cudnn_deterministic": True, "cudnn_benchmark": False}
+    return {"xvla": {"model": "xvla", "batching.max_batch": int(b["max_batch"]),
+                     "batching.sample_rows": int(b["xvla_sample_rows"]),
+                     "batching.steps": int(cfg["models"]["xvla"]["flow_steps"]), **det},
+            "pi05": {"model": "pi05", "batching.max_batch": int(b["max_batch"]), **det}}
+
+
+def _lookup(info: Mapping, dotted: str) -> Any:
+    cur: Any = info
+    for part in dotted.split("."):
+        if not isinstance(cur, Mapping) or part not in cur:
+            return "<missing>"
+        cur = cur[part]
+    return cur
+
+
+def check_servers(cfg, clients: Mapping[str, Any], *, wait_s: float = 600.0, poll_s: float = 5.0,
+                  sleep: Callable[[float], None] = time.sleep,
+                  now: Callable[[], float] = time.monotonic) -> dict[str, dict]:
+    """Wait up to `wait_s` for each server's /info, then check it against `expected_servers`. Returns the infos."""
+    infos: dict[str, dict] = {}
+    deadline = now() + wait_s
+    for name, client in clients.items():
+        while True:
+            try:
+                infos[name] = client.info()
+                break
+            except Exception as e:   # not up yet (connection refused, loading weights)
+                if now() >= deadline:
+                    raise StartupError(f"{name} server not answering /info after {wait_s:.0f} s: {e}") from e
+                sleep(poll_s)
+    problems = [f"{name} {key} is {_lookup(infos[name], key)!r}, must be {want!r}"
+                for name, keys in expected_servers(cfg).items() for key, want in keys.items()
+                if _lookup(infos[name], key) != want]
+    if problems:
+        raise StartupError("model servers are not set up for data collection: " + "; ".join(problems))
+    return infos
+
+
+def parse_options(pairs: Sequence[str]) -> dict[str, str]:
+    out = {}
+    for p in pairs:
+        name, sep, choice = p.partition("=")
+        if not sep or not name or not choice:
+            raise StartupError(f"--option takes NAME=CHOICE, not {p!r}")
+        out[name] = choice
+    return out
+
+
+def _safe(worker_id: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in worker_id)
+
+
+def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, str] = {},
+          phases: Optional[Sequence[str]] = None, max_jobs: Optional[int] = None,
+          clients: Optional[Mapping[str, Any]] = None, make_sim: Optional[Callable[[int], Any]] = None,
+          p_escalate: Optional[float] = None, server_wait_s: float = 600.0) -> dict[str, int]:
+    """Run one worker until the queue has nothing it may claim, the stop flag is up, or it refuses a job.
+
+    `clients` ({"xvla": ..., "pi05": ...}) and `make_sim` replace the production ones in tests; `p_escalate`
+    defaults to the collection config's (exploration runs)."""
+    os.environ.setdefault("MUJOCO_GL", "egl" if sys.platform.startswith("linux") else "cgl")
+    from vlar_harness import provenance, reference
+    from vlar_harness.collect import Runner
+    from vlar_harness.config import load_config
+
+    cfg = load_config(**dict(options))
+    provenance.verify_freeze(cfg)
+    if cfg.frozen:
+        raise StartupError("frozen harness: the golden-set self-check (§15) must pass before any job, and it is "
+                           "not written yet")
+    reference.verify_lerobot(cfg["reference"]["lerobot_files"])
+
+    root = Path(ops_cfg["local_root"])
+    stop = StopFlag(root / "STOP")
+    if stop.is_set():
+        raise StartupError(f"stop flag is up ({stop.path}: {stop.path.read_text().strip()}); no jobs are taken")
+    if clients is None:
+        from vlar_harness.servers.clients import PI05Client, XVLAClient
+        srv = cfg["servers"]
+        clients = {"xvla": XVLAClient(srv["xvla"]["host"], int(srv["xvla"]["port"])),
+                   "pi05": PI05Client(srv["pi05"]["host"], int(srv["pi05"]["port"]))}
+    infos = check_servers(cfg, clients, wait_s=server_wait_s)
+    if p_escalate is None:
+        p_escalate = float(load_collection_config()["exploration"]["p_escalate"])
+
+    header = provenance.record_header(cfg)
+    storage = open_storage(ops_cfg["storage_url"])
+    queue = JobQueue(root / "queue.sqlite", storage, root / "local")
+    episodes = ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
+    runner = Runner(cfg, episodes, storage.get_bytes, root / "staging" / _safe(worker_id), p_escalate=p_escalate,
+                    header=header)
+    meta = {"worker_id": worker_id, "provenance": header, "p_escalate": p_escalate,
+            "servers": {n: {k: v for k, v in i.items() if k not in ("batch_sizes", "peak_memory_gb")}
+                        for n, i in infos.items()}}
+    try:
+        return run_worker(queue, storage, runner, worker_id, stop=stop.is_set, max_jobs=max_jobs, phases=phases,
+                          refuse=runner.refuse, meta=meta,
+                          cleanup=lambda job: shutil.rmtree(runner.job_dir(job), ignore_errors=True))
+    finally:
+        episodes.close()
+        queue.close()

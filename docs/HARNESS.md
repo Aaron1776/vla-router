@@ -584,7 +584,7 @@ in float64 as the client converts the executed chunk (a float32 conversion diffe
 
 ## Dataset records, job runner and worker (SPEC §12, §13)
 
-`dataset.py` defines dataset v1's layout and Parquet schemas (its docstring is the reference until the datacard):
+`dataset.py` defines dataset v1's layout and Parquet schemas (documented field by field in the datacard, below):
 `records/<table>/<phase>/<job_id>.parquet` (tables `runs`, `steps`, `events`, `points`), `snapshots/<episode_id>/
 dpNN.npz`, `images/<episode_id>.npz` (lossless PNGs, member `dpNN/<camera>`), and the queue's marker
 `results/<phase>/<job_id>.json`, which lists every file with its SHA-256 and size. Arrays are flattened row-major
@@ -609,6 +609,61 @@ bucket intact; the bucket's snapshots equal a direct run's byte for byte; the ru
 row equal the direct run's values; the PNGs equal the observation at each point; exploration escalates exactly
 where its seed says; the branch job continues the bucket's snapshot exactly as a direct `run_branch` does.
 
+## VM worker entry point, dataset manifest and datacard (SPEC §12, §13, §15)
+
+`vlar-ops worker` (`vlar_ops/vm_worker.py`) is one simulator worker per process; `ops/vm/vlar-worker@.service`
+starts N of them by hand after `queue resume` (not enabled at boot). At startup it loads the harness config with
+the given named options (`--option name=choice`), refuses a frozen config whose code differs from its freeze record,
+and refuses any frozen config until the golden-set self-check (§15) exists (it is written with the freeze, Phase 0
+step 7). It verifies LeRobot's pinned files, and the X-VLA adapter verifies the authors' `libero_client.py`. It
+waits up to `--server-wait-s` for both servers' `/info` (new `info()` on both clients) and stops unless each
+reports the configured fixed geometry (`max_batch`; X-VLA's `sample_rows` and flow steps), deterministic algorithms
+and cuDNN deterministic on, and cuDNN benchmark off. A server started at `--max-batch 1` for Phase 0 step 2's
+latency runs is refused. `ProductionEpisodes` builds a fresh `Episode` per job on one cached `LiberoSim` per task:
+`XVLAClient.act` is the X-VLA transport, `XVLAClient` is the measurement client, π0.5's call returns
+`PI05Client.act(...)["actions"]`, the state mode is the config's `xvla_state_mode`, and the network is the
+configured model.
+
+`run_worker` gained four hooks. `phases` restricts claims (`JobQueue.claim(phases=...)`). `refuse(job)`
+(`Runner.refuse`: a scene option other than the worker's, or a routed DAgger or evaluation job, which needs a learned
+decider) gives the job back untouched, spends none of its attempts and stops the worker with exit status 3; before
+this, such jobs failed three times and ended `failed`. `meta` goes into every marker: provenance, worker id,
+`p_escalate` and the servers' settings. `cleanup` deletes the job's staged files. A SystemExit or KeyboardInterrupt
+during a job releases its lease and leaves no marker; the CLI turns SIGTERM into SystemExit. The spend guard's STOP
+flag is checked before each claim, and a worker does not start while it is up. The `Runner` takes the provenance
+header (`provenance.record_header`), so snapshots carry it too. The parity run needs its own workers:
+`--phase pi05_parity --option scene_seed=pi05_parity`.
+
+`vlar-ops dataset manifest --root <local copy>` (`vlar_ops/manifest.py`) checks every marker's files (size and
+SHA-256, or sizes only with `--quick`) and refuses:
+- data files no marker lists (from interrupted jobs; `--move-unlisted DIR` moves them out, so `read_table` never
+  globs them);
+- any other file;
+- Parquet parts whose schema is not v1's;
+- run rows whose schema version, harness version, config hash, phase or job id differ from their marker;
+- markers without provenance;
+- mixed harness versions, source digests or image digests (§15).
+
+Several config hashes (named options) and git commits are allowed and listed. A dirty harness is a warning. Only a
+passing tree gets `DATACARD.md` (from `vlar_ops/datacard-v1.md`, outside the harness source digest, since it is
+documentation) and `MANIFEST.json` (versions, configs with their options, per-phase counts, table rows, every file's
+SHA-256 and size). `vlar-ops dataset verify --root <dir>` re-checks a downloaded tree: every file present and intact,
+nothing extra. The datacard documents every field of the four tables, the files, seeds, provenance and exactly how
+labels, the clock, time limits, exclusions and remaining time are computed; a test checks that its field tables
+equal the Parquet schemas, name for name and in order.
+
+**Verified on the Mac.** `tests/test_worker.py`, 5 new tests: phase filter; refused job back untouched with 0
+attempts; KeyboardInterrupt or SystemExit releases the job with no marker; meta in markers; cleanup.
+`tests/test_vm_worker.py`, 12 tests: the server checks, waiting and options parsing.
+`tests/reference/test_vm_worker.py`, 3 tests: an exploration job (p_escalate 0.5) through `serve` with fake model
+clients and a real `LiberoSim`. All four tables equal the test factory's run and the PNGs are byte-identical.
+π0.5 is called. The marker and snapshot headers carry the provenance. Staging is emptied and a DAgger job is
+refused with 0 attempts. A mutation (state mode forced to `measured`) fails the comparison.
+`tests/test_manifest.py`, 8 tests, simulator env: clean build and verify; a changed byte (caught by SHA-256, not
+by `--quick`); unlisted and stray files; mixed source digest; differing options and commits allowed, dirty code
+warned; a run row against its marker; no provenance; verify finds missing, changed and extra files; the datacard's
+fields.
+
 ## Platform rule (SPEC §11 step 3 as amended)
 
 The Mac runs (CPU MuJoCo, CGL rendering) show the code paths are right. Every equality and determinism
@@ -619,9 +674,10 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 
 | Environment | Command | Covers |
 | --- | --- | --- |
-| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py tests/reference/test_collect.py` | decider inputs and measurement recording (§6, §7); dataset records, runner and worker end to end (§12, §13); adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
+| simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py tests/reference/test_collect.py tests/reference/test_vm_worker.py tests/test_manifest.py` | decider inputs and measurement recording (§6, §7); dataset records, runner and worker end to end (§12, §13); the VM worker entry point with fake clients; the dataset manifest and datacard; adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
+| simulator, both servers up, before the base rollouts (a smoke run) | `vlar-ops worker --phase base --max-jobs 1`, then `vlar-ops dataset manifest --root <copy of the bucket>` | the production worker with the real clients and servers (geometry and deterministic checks pass, one job's files and marker in the Cloud Storage bucket), the Cloud Storage backend, and a manifest over real data; delete that job's files and marker afterwards, or keep them as the first base job |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position (six tasks' requests, each at every position of a full batch); the batches captured from the Mac's concurrency failure; simultaneous requests through the queue; rows post-processed alone; features equal across endpoints (amendment 24) |

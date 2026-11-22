@@ -11,6 +11,13 @@ class ServerError(RuntimeError):
     pass
 
 
+def _get_info(session, base: str, name: str) -> dict:
+    resp = session.get(base + "/info", timeout=30)
+    if resp.status_code != 200:
+        raise ServerError(f"{name} /info failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 class XVLAClient:
     """Talks to servers.xvla_server. Payloads are the authors' query format (adapters.xvla)."""
 
@@ -37,6 +44,9 @@ class XVLAClient:
     def features(self, payload: dict) -> dict:
         return self._post("/features", payload)
 
+    def info(self) -> dict:
+        return _get_info(self._session, self.base, "X-VLA")
+
 
 class PI05Client:
     """Talks to servers.pi05_server with a json_numpy body (arrays keep their dtype and shape)."""
@@ -59,6 +69,9 @@ class PI05Client:
         out = json_numpy.loads(resp.content)
         out["actions"] = np.asarray(out["actions"], dtype=np.float32)
         return out
+
+    def info(self) -> dict:
+        return _get_info(self._session, self.base, "π0.5")
 
     def upload_bytes(self, raw_obs: dict, task: str, quality: int = 90) -> dict[str, Any]:
         """Phase 0 step 2: JPEG sizes of the images π0.5 consumes for this observation (SPEC §5, amendment 14)."""

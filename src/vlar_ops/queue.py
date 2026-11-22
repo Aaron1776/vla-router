@@ -16,7 +16,7 @@ import sqlite3
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .plan import Job, Plan
 from .storage import Storage
@@ -99,12 +99,17 @@ class JobQueue:
 
     # ------------------------------------------------------------ worker side
 
-    def claim(self, worker_id: str, lease_s: float = 3 * 3600) -> Optional[Job]:
+    def claim(self, worker_id: str, lease_s: float = 3 * 3600,
+              phases: Optional[Sequence[str]] = None) -> Optional[Job]:
+        """The next job in order, optionally only from `phases` (workers started for one phase's options)."""
         now = time.time()
+        where, args = "(status='pending' OR (status='leased' AND lease_expires < ?))", [now]
+        if phases:
+            where += f" AND phase IN ({','.join('?' * len(phases))})"
+            args += list(phases)
         with self._tx():
-            row = self._db.execute(
-                "SELECT job_id, body FROM jobs WHERE status='pending' OR (status='leased' AND lease_expires < ?) "
-                "ORDER BY priority, tier, ord LIMIT 1", (now,)).fetchone()
+            row = self._db.execute(f"SELECT job_id, body FROM jobs WHERE {where} ORDER BY priority, tier, ord LIMIT 1",
+                                   args).fetchone()
             if row is None:
                 return None
             self._db.execute("UPDATE jobs SET status='leased', lease_owner=?, lease_expires=? WHERE job_id=?",

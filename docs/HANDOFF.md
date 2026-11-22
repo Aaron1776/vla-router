@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-21)
+# Handoff: state of the harness build (2026-11-22)
 
 For a session that starts without the previous conversation. Read this file at startup; read `docs/SPEC.md` (the
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
@@ -48,10 +48,10 @@ Where each item stands now (not complete; do not announce):
 | 1. Steps 4 and 5 | done on the Mac: step 4 (`272f64b`, follow-ups `a25053f`); step 5 (part 1 `f8d06d5`, part 2 `94b9297`, the X-VLA concurrency fix in the commit after `c1fcd78`); their equality tests are on the VM re-run list |
 | 2. Server endpoints | X-VLA `/act`, `/sample`, `/features` and π0.5 `/act` with per-call seeds, all batched at a fixed geometry of rows and tokens (amendments 24, 26); unseeded requests and π0.5 `/upload_bytes` stay on the reference path |
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; decider inputs and measurement recording (`observe()`, proposal, free signals, spread/drift, chunk-time samples, probes, `record="full"`) done and tested on the Mac with fake models (`6c08bf5`); Parquet dataset records and snapshot sync to the bucket (through the worker) done and tested against a local bucket (the commit after `6c08bf5`); the Cloud Storage path is untested |
-| 4. Queue, spend guard, packaging | implemented and tested against a local stand-in for the bucket (`src/vlar_ops`); the engine is wired to the queue (`collect.Runner`, `vlar_ops.worker.run_worker`, the commit after `6c08bf5`); the Cloud Storage backend is untested without credentials; the VM worker entry point (real clients, spend-guard stop flag) is not written |
+| 4. Queue, spend guard, packaging | done on the Mac against a local stand-in for the bucket (`src/vlar_ops`): queue, spend guard, packaging, runner and worker loop (the commit after `6c08bf5`), the VM worker command `vlar-ops worker` and the dataset manifest and datacard (`vlar-ops dataset manifest`/`verify`; the commit after `1683b56`); the Cloud Storage backend is first exercised by the VM smoke run on the re-run list |
 | 5. Container images, lockfiles | not started |
 | 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
-| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements) and §12 rendering (`test_render_used.py`); the containers still to add; parity tooling and reference files are committed (`25794f7`) |
+| 7. VM re-run list, commits, HANDOFF | the list covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements), §12 rendering (`test_render_used.py`), the worker and manifest tests and a real-server worker smoke run; the containers still to add; parity tooling and reference files are committed (`25794f7`) |
 
 ## Status
 
@@ -73,11 +73,13 @@ Where each item stands now (not complete; do not announce):
 | Render only the observations that are used (SPEC §12, amendment 7): config option `render` (`used` default, `all`); camera sensors gated, timers untouched; unrendered steps expose no images; snapshots record `sim.images`; `RenderPhaseError` if a rendering step misses its sample; full-episode comparison with always-on rendering byte-identical at decision points; mutation check 3 of 3 (HARNESS.md "Rendering only what is used") | done on Mac; VM re-run pending | the commit after `f283023` |
 | Decider inputs and measurement recording (§6, §7): `measure.py` (definitions in its docstring), `Episode(measure_client=...)`, `start(record="off"/"full")`, `observe(profile)`, per-point records in `Episode.measurements` and in snapshots, seed names `sample_fresh` and `probe` (HARNESS.md "Decider inputs and measurement recording") | done on Mac; VM re-run pending | `6c08bf5` |
 | Dataset records (`dataset.py`: Parquet `runs`/`steps`/`events`/`points`, snapshots, PNG images, markers listing every file), the job runner (`collect.py`: base, explore, branch jobs) and the worker loop (`vlar_ops/worker.py`: uploads and checks every file before the marker); pyarrow 25.0.0 in `.venv-sim` (HARNESS.md "Dataset records, job runner and worker") | done on Mac against a local bucket; VM re-run pending | the commit after `6c08bf5` |
-| VM worker entry point (production factory with `XVLAClient`/`PI05Client`, one `LiberoSim` per task, the spend guard's `StopFlag`), dataset manifest and datacard | not started | |
+| VM worker entry point (`vlar_ops/vm_worker.py`, `vlar-ops worker`: production factory with `XVLAClient`/`PI05Client`, one `LiberoSim` per task, server geometry and deterministic checks, the spend guard's `StopFlag`, clean abandon on SIGTERM, refuse-and-stop for jobs the worker's options cannot run, provenance in markers and snapshots, `ops/vm/vlar-worker@.service`); dataset manifest and datacard (`vlar_ops/manifest.py`, `vlar_ops/datacard-v1.md`, `vlar-ops dataset manifest`/`verify`) (HARNESS.md "VM worker entry point, dataset manifest and datacard") | done on Mac; VM smoke run pending | the commit after `1683b56` |
 | Container images and lockfiles; VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
-**Test suites after dataset records, runner and worker (Mac, 2026-11-21).** Main venv 122 passed, 11 skipped; simulator env (`tests/reference tests/test_measure.py tests/test_labels_calibration.py`) 114 passed, 17 skipped.
+**Tests after the VM worker entry point, manifest and datacard (Mac, 2026-11-22).** Main venv 139 passed, 13 skipped; simulator env (`tests/reference tests/test_measure.py tests/test_labels_calibration.py tests/test_manifest.py`) 125 passed, 17 skipped (the same 17 as before), about 4.5 minutes. Mutation: forcing the X-VLA state mode to `measured` in the production factory fails the record comparison.
+
+**Test suites after dataset records, runner and worker (Mac, 2026-11-21).** Main venv 122 passed, 11 skipped; simulator env (`tests/reference tests/test_measure.py tests/test_labels_calibration.py`) 114 passed, 17 skipped. From 2026-11-22 the simulator suite also includes `tests/test_manifest.py`.
 
 **Test suites after decider inputs, measurement recording and amendment 27 (Mac, 2026-11-21).** Main venv 117 passed, 10 skipped; simulator env (`tests/reference tests/test_measure.py tests/test_labels_calibration.py`) 107 passed, 17 skipped.
 
@@ -244,11 +246,12 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-Done this session (2026-11-21): §12 rendering (`76a0392`), decider inputs and measurement recording with amendment
-27 (`6c08bf5`), dataset records, the job runner and the worker loop (the commit after `6c08bf5`). Next, at
-**xhigh**: the VM worker entry point (a `vlar-ops` command that builds the production `Episode` factory with
-`XVLAClient`, `PI05Client`, one `LiberoSim` per task, and runs `run_worker` with the spend guard's `StopFlag`), then
-the dataset manifest and datacard (§13). After that, the container images and lockfiles (§18 item 5) at **high**.
+Done 2026-11-22 (the commit after `1683b56`): the VM worker entry point and the dataset manifest and
+datacard (§18 item 4 complete on the Mac). Next, at **high**: the three container images and lockfiles (§18 item 5).
+For the simulator image, the worker runs there and needs `vlar_ops` with the `gcs` and `dataset` extras (pyarrow,
+google-cloud-storage), `requests`, `json_numpy`, `pyyaml`, plus the pinned transformers for LeRobot's `pi` extra (see
+below). Adapt `ops/vm/vlar-worker@.service` (it calls `.venv-sim/bin/vlar-ops` under `/opt/vla-router` for now)
+and `ops/README.md`'s one-time setup to the containers.
 
 Worth knowing:
 - `.venv-sim` now also has LeRobot's `pi` extra (transformers 5.5.4, tokenizers 0.22.2; installed 2026-11-21 with
@@ -264,13 +267,23 @@ Worth knowing:
 - Dataset format: pyarrow is in neither local environment. LeRobot v0.6.1's uv.lock pins pyarrow 25.0.0; install
   it additively in `.venv-sim` (as the `pi` extra was) and add it to the simulator lockfile. Snapshot sync to the
   bucket belongs with the queue workers: an episode job is `done` only once its snapshots are uploaded.
+- VM worker (`vlar-ops worker`): refuses a frozen config until the golden-set self-check (§15) is written with the
+  freeze (Phase 0 step 7); the self-check belongs before the workers in the runbook's "Every start". Run parity
+  workers with `--phase pi05_parity --option scene_seed=pi05_parity`; any worker given a job its options cannot run
+  gives it back (no attempt spent) and exits 3. Workers are not enabled at boot (resume first).
+- Manifest: `vlar-ops dataset manifest --root <local copy>` needs pyarrow (simulator env). It refuses unlisted data
+  files (use `--move-unlisted DIR`), stray files, schema or marker mismatches and mixed harness code; a dirty harness
+  is only a warning. The datacard (`src/vlar_ops/datacard-v1.md`) is outside the harness source digest; a test keeps
+  its field tables equal to the Parquet schemas.
+- Housekeeping candidate (medium): `vlar_ops.queue.run_worker` (groundwork, handler-based, used only by
+  `tests/test_queue_spend_packaging.py`) duplicates `vlar_ops.worker.run_worker`.
 - §12: the sim renders only the step before each decision point by default. Anything that reads images
   elsewhere gets `ImagesNotRendered`; a snapshot taken between decision points holds placeholders
   (`sim.images` false). Use `render="all"` (`load_config(render="all")`) for per-step image work.
 
 Toward the §18 milestone, in order:
 1. Done: render only the observations that are used (§12); decider inputs, measurement recording, dataset records,
-   runner and worker loop (§18 item 3; item 4 wired). Left from item 4: the VM worker entry point.
+   runner and worker loop (§18 item 3); the VM worker entry point, dataset manifest and datacard (item 4, Mac).
 2. (done) Decider inputs and measurement recording (§18 item 3): `observe()` (features, proposal, free signals, spread and
    drift, the K-sample probes), the dataset format (Parquet), and the queue workers that run episodes and branches
    through `run_branch` (item 4: the engine is not wired to the queue yet; the Cloud Storage backend is untested).

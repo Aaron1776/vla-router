@@ -5,15 +5,18 @@ A runner returns (artifacts, summary): each artifact a mapping with `key` (bucke
 `JobQueue.complete` writes the job's result marker, so a result in the bucket always means its snapshots, images
 and records are there too (snapshot sync). A preempted worker leaves no marker; the job is re-run on resume and
 rewrites the same keys (jobs are idempotent). A failing job is retried up to the queue's attempt limit.
+The VM's worker process (vlar_ops.vm_worker) runs this loop with the production runner.
 """
 
 from __future__ import annotations
 
 import hashlib
+import sys
 import traceback
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
+from .plan import Job
 from .queue import JobQueue
 from .storage import Storage
 
@@ -34,13 +37,29 @@ def upload(storage: Storage, artifacts: Sequence[Mapping]) -> None:
 
 
 def run_worker(queue: JobQueue, storage: Storage, runner: Callable, worker_id: str, *,
-               stop: Callable[[], bool] = lambda: False, max_jobs: Optional[int] = None) -> dict[str, int]:
-    """Process jobs until none is left, `stop()` is true (spend guard, operator) or `max_jobs` were taken."""
-    stats = {"done": 0, "done_local": 0, "retry": 0, "failed": 0}
+               stop: Callable[[], bool] = lambda: False, max_jobs: Optional[int] = None,
+               phases: Optional[Sequence[str]] = None, refuse: Optional[Callable[[Job], Optional[str]]] = None,
+               meta: Optional[Mapping] = None, cleanup: Optional[Callable[[Job], None]] = None) -> dict[str, int]:
+    """Process jobs until none is left, `stop()` is true (spend guard, operator), `max_jobs` were taken, or a job
+    this worker cannot run comes up.
+
+    `phases` limits the claims to those phases. `refuse(job)` says why this worker cannot run a job (for example,
+    the job needs other harness options): the job goes back to pending untouched, spending none of its attempts,
+    and the worker stops instead of claiming it again and again. `meta` goes into every result marker (provenance,
+    worker id). `cleanup(job)` runs after every job, whatever happened. A SystemExit or KeyboardInterrupt during
+    a job (SIGTERM, Ctrl-C) releases the job, so it leaves no marker and no lease, and propagates.
+    """
+    stats = {"done": 0, "done_local": 0, "retry": 0, "failed": 0, "refused": 0}
     taken = 0
     while not stop() and (max_jobs is None or taken < max_jobs):
-        job = queue.claim(worker_id)
+        job = queue.claim(worker_id, phases=phases)
         if job is None:
+            break
+        reason = refuse(job) if refuse is not None else None
+        if reason:
+            queue.release(job)
+            stats["refused"] += 1
+            print(f"worker {worker_id}: refused job {job.job_id} ({job.phase}): {reason}", file=sys.stderr, flush=True)
             break
         taken += 1
         try:
@@ -48,8 +67,14 @@ def run_worker(queue: JobQueue, storage: Storage, runner: Callable, worker_id: s
             upload(storage, artifacts)
             record = {"summary": dict(summary),
                       "artifacts": [{k: a[k] for k in ("key", "sha256", "size")} for a in artifacts]}
-            stats["done" if queue.complete(job, record) else "done_local"] += 1
+            stats["done" if queue.complete(job, record, meta) else "done_local"] += 1
         except Exception:
             status = queue.fail(job, traceback.format_exc())
             stats["failed" if status == "failed" else "retry"] += 1
+        except BaseException:
+            queue.release(job)          # only a job still leased: a completed one keeps its result
+            raise
+        finally:
+            if cleanup is not None:
+                cleanup(job)
     return stats

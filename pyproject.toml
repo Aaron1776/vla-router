@@ -24,7 +24,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 vlar_harness = ["configs/*.yaml", "configs/*.json"]
-vlar_ops = ["configs/*.yaml", "configs/*.sha256"]
+vlar_ops = ["configs/*.yaml", "configs/*.sha256", "datacard-v1.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

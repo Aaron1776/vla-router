@@ -29,12 +29,40 @@ class Runner:
     `read_bytes(key)` reads from the bucket. Calling the runner with a job returns (artifact records, summary)."""
 
     def __init__(self, cfg, make_episode: Callable[[int], Any], read_bytes: Callable[[str], Optional[bytes]],
-                 staging: Path | str, *, p_escalate: float):
+                 staging: Path | str, *, p_escalate: float, header: Optional[Mapping[str, Any]] = None):
+        """`header` goes into every snapshot and run record: on the VM, provenance.record_header(cfg) (harness
+        version, config hash and options, source digest, git commit, image digests, §15)."""
         self.cfg, self.make_episode, self.read_bytes = cfg, make_episode, read_bytes
         self.staging, self.p_escalate = Path(staging), float(p_escalate)
         self.header = {"harness_version": cfg["harness_version"], "config_hash": getattr(cfg, "hash", None)}
+        if header is not None:
+            if (header.get("harness_version"), header.get("config_hash")) != \
+                    (self.header["harness_version"], self.header["config_hash"]):
+                raise ValueError("the record header is for another harness version or config")
+            self.header = dict(header)
+
+    def job_dir(self, job) -> Path:
+        """Where the job's files are staged before upload (JobOutput's directory)."""
+        return self.staging / job.phase / job.job_id
+
+    def refuse(self, job) -> Optional[str]:
+        """Why this runner cannot run `job` at all, or None. A refused job is not a failure: the worker gives it
+        back untouched (vlar_ops.worker.run_worker)."""
+        if job.kind != "episode":
+            return None
+        spec = job.spec
+        scene = self.cfg.selected.get("scene_seed")
+        if spec.get("scene", "project") != scene:
+            return (f"job wants harness option scene_seed={spec.get('scene', 'project')}, this worker's config has "
+                    f"{scene}")
+        if spec["mode"] == "routed" and job.phase not in POLICIES:
+            return (f"routed {job.phase!r} runs need a learned decider; the scripted policies are {POLICIES}")
+        return None
 
     def __call__(self, job) -> tuple[list[dict], dict]:
+        reason = self.refuse(job)
+        if reason:
+            raise ValueError(reason)
         out = JobOutput(self.staging, job.phase, job.job_id, header=self.header)
         summary = self._episode(job, out) if job.kind == "episode" else self._branch(job, out)
         return [a.as_record() for a in out.finish()], summary
@@ -52,9 +80,6 @@ class Runner:
 
     def _episode(self, job, out: JobOutput) -> dict:
         spec = job.spec
-        scene = self.cfg.selected.get("scene_seed")
-        if spec.get("scene", "project") != scene:
-            raise ValueError(f"job wants scene option {spec.get('scene')!r}, the worker's config has {scene!r}")
         ep = self.make_episode(int(spec["task_id"]))
         episode_id = job.subject
         dp = ep.start(int(spec["init_idx"]), int(spec["rollout_seed"]), spec["mode"], episode_id,

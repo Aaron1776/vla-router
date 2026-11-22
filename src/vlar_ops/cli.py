@@ -1,4 +1,4 @@
-"""`vlar-ops`: queue, spend and packaging commands. Settings come from an ops config file
+"""`vlar-ops`: queue, spend, worker, dataset and packaging commands. Settings come from an ops config file
 (`--ops-config`, or the VLAR_OPS_CONFIG environment variable); see ops/ops.example.yaml."""
 
 from __future__ import annotations
@@ -88,6 +88,35 @@ def cmd_spend(a: argparse.Namespace) -> None:
         print(f"spend daemon exited in state {state}")
 
 
+def cmd_worker(a: argparse.Namespace) -> None:
+    from . import vm_worker
+    cfg = _ops_config(a.ops_config)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))   # abandon the current job cleanly (lease released)
+    wid = a.worker_id or f"worker-{os.getpid()}"
+    try:
+        stats = vm_worker.serve(cfg, worker_id=wid, options=vm_worker.parse_options(a.option), phases=a.phase,
+                                max_jobs=a.max_jobs, server_wait_s=a.server_wait_s)
+    except vm_worker.StartupError as e:
+        sys.exit(f"worker {wid} not started: {e}")
+    print(json.dumps({"worker": wid, **stats}))
+    sys.exit(vm_worker.REFUSED_EXIT if stats["refused"] else 0)
+
+
+def cmd_dataset(a: argparse.Namespace) -> None:
+    from . import manifest
+    if a.action == "manifest":
+        try:
+            m = manifest.build(a.root, quick=a.quick, move_unlisted=a.move_unlisted)
+        except manifest.ManifestError as e:
+            sys.exit(f"no manifest written: {e}")
+        print(json.dumps({k: m[k] for k in ("dataset", "harness_version", "configs", "phases", "tables", "totals",
+                                            "warnings")}, indent=1))
+    else:
+        problems = manifest.verify(a.root, quick=a.quick)
+        print("\n".join(problems) if problems else "verified")
+        sys.exit(1 if problems else 0)
+
+
 def cmd_reference(a: argparse.Namespace) -> None:
     from . import reference_runs
     report = reference_runs.check(a.dir)
@@ -129,6 +158,23 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--usd-per-gb-month", type=float)
     s.add_argument("--ops-config")
     s.set_defaults(fn=cmd_spend)
+
+    w = sub.add_parser("worker", help="run one simulator worker on the VM (start one per process)")
+    w.add_argument("--worker-id", help="name in leases and result markers (default worker-<pid>)")
+    w.add_argument("--phase", action="append", help="claim only jobs of this phase (repeatable)")
+    w.add_argument("--option", action="append", default=[], metavar="NAME=CHOICE",
+                   help="named harness option, e.g. scene_seed=pi05_parity (repeatable)")
+    w.add_argument("--max-jobs", type=int)
+    w.add_argument("--server-wait-s", type=float, default=600.0, help="how long to wait for the model servers")
+    w.add_argument("--ops-config")
+    w.set_defaults(fn=cmd_worker)
+
+    d = sub.add_parser("dataset", help="write or verify the dataset's MANIFEST.json and DATACARD.md (§13)")
+    d.add_argument("action", choices=["manifest", "verify"])
+    d.add_argument("--root", required=True, help="local copy of the bucket's dataset files")
+    d.add_argument("--quick", action="store_true", help="check sizes only, not SHA-256")
+    d.add_argument("--move-unlisted", help="manifest: move data files no result marker lists into this directory")
+    d.set_defaults(fn=cmd_dataset)
 
     r = sub.add_parser("reference")
     r.add_argument("action", choices=["check"])
