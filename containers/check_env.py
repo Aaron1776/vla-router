@@ -44,12 +44,24 @@ def lock_pins(text: str) -> dict[str, str]:
     return pins
 
 
+def same_version(locked: str, installed: str) -> bool:
+    """PEP 440 equality (packaging's Version), so only different spellings of one version match: thop's wheel
+    metadata says 0.1.1-2209072238 for the lock's 0.1.1.post2209072238. Strict otherwise: a different release,
+    post-release or local version (2.11.0 vs 2.11.0+cu130) differs; an unparsable version must match exactly. The
+    hash-checked install is the real guarantee; this is the second line of defense."""
+    from packaging.version import InvalidVersion, Version
+    try:
+        return Version(locked) == Version(installed)
+    except InvalidVersion:
+        return locked == installed
+
+
 def compare(pins: dict[str, str], installed: dict[str, str], *, ignore: Iterable[str] = ()) -> list[str]:
     """Problems between the lock and what is installed: missing, different, or installed but not locked."""
     ignore = {canon(n) for n in ignore}
     out = [f"{n}: locked {v}, not installed" for n, v in sorted(pins.items()) if n not in installed]
     out += [f"{n}: locked {v}, installed {installed[n]}" for n, v in sorted(pins.items())
-            if n in installed and installed[n] != v]
+            if n in installed and not same_version(v, installed[n])]
     out += [f"{n}: installed {v}, not in the lock" for n, v in sorted(installed.items())
             if n not in pins and n not in ignore]
     return out

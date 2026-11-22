@@ -226,3 +226,23 @@ def test_sdists_build_as_the_reference_notebook_did():
     assert m and (3, 29) <= tuple(map(int, m.groups()[:2])) < (4, 2)
     stage = DOCKERFILE.split("FROM base AS sdist-wheels", 1)[1].split("\nFROM ", 1)[0]
     assert "CMAKE_POLICY_VERSION_MINIMUM=3.5" in stage and "--no-build-isolation" in stage
+
+
+# Every locked version whose wheel's core metadata spells it differently from the lock (scan of all three locks
+# against the locked wheels' metadata on PyPI and the locally built sdist wheels, 2026-11-22): only thop.
+METADATA_SPELLINGS = {"lerobot.lock": {"thop": ("0.1.1.post2209072238", "0.1.1-2209072238")}}
+
+
+@pytest.mark.parametrize("lock, name, locked, metadata",
+                         [(lk, n, a, b) for lk, d in METADATA_SPELLINGS.items() for n, (a, b) in d.items()])
+def test_metadata_spellings_of_the_locked_version_match(lock, name, locked, metadata):
+    assert check_env.lock_pins((C / lock).read_text())[name] == locked
+    assert check_env.compare({name: locked}, {name: metadata}) == []
+
+
+@pytest.mark.parametrize("locked, installed", [
+    ("1.0", "1.1"), ("0.1.1.post2209072238", "0.1.1"), ("0.1.1.post2209072238", "0.1.1-2209072239"),
+    ("2.11.0", "2.11.0+cu130"), ("2.11.0+cu130", "2.11.0+cu129"), ("1.0rc1", "1.0"), ("not-a-version", "not_a_version"),
+])
+def test_the_version_check_is_strict_otherwise(locked, installed):
+    assert check_env.compare({"p": locked}, {"p": installed}) == [f"p: locked {locked}, installed {installed}"]

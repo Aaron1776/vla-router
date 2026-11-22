@@ -322,8 +322,21 @@ removed it and its disk; the script reported "gone without a result" and confirm
 no instances or disks in any zone). Not a build failure. `containers/6b3fccd.../` holds only `src.tar.gz`.
 The user chose on-demand for the build (a preempted Spot run costs more in time and usage than the ~$0.25
 difference): `BUILD_PROVISIONING` option in script 35 (`SPOT` default, `STANDARD` on-demand; same cap, polling and
-confirmed deletion; tests in `tests/test_build_script.py`). Third attempt: on-demand on the commit that adds it;
-result below when known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+confirmed deletion; tests in `tests/test_build_script.py`). Third attempt: on-demand on `8b6e3a9`, 07:44-07:54 local: **FAILED at the sim image's last step**, after the
+sdist builds (the CMake fix works), the LeRobot environment and the LIBERO setup had all succeeded:
+`check_env.py --role sim` reported `thop: locked 0.1.1.post2209072238, installed 0.1.1-2209072238`, its only
+mismatch. Both strings are the same version under PEP 440 normalization (the hash-checked locked wheel was installed;
+its metadata spells the version differently); `check_env.py` compares the strings literally (`version_mismatches`,
+around line 51). VM and disk deleted and confirmed gone (also checked by hand); cost about 10 on-demand minutes.
+`containers/8b6e3a9.../` holds `src.tar.gz`, `build.log`, `FAILED`.
+
+Fix (approved by the user): `check_env.same_version` compares with packaging's `Version` equality (PEP 440), strict
+otherwise (other releases, post-releases and local versions differ; unparsable versions must match exactly);
+packaging is in all three locks. Scan of all three locks: every pin is already written in normalized form (250 of
+250), so the lock text cannot show this; the locked wheels' own core metadata (PyPI per-file metadata matched by the
+lock's hashes, and the locally built sdist wheels) spells only thop differently. Tests: `METADATA_SPELLINGS` in
+`tests/test_containers.py` (the thop case, checked against the lock pin) and the strictness cases; text comparison
+and always-equal are both caught. Fourth attempt: on-demand on the commit with this fix; result below when known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
