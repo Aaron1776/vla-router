@@ -1,8 +1,8 @@
 # Handoff: state of the harness build (2026-11-21)
 
-For a session that starts without the previous conversation. Read this file, then `docs/SPEC.md` (the design;
-approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
-re-run list).
+For a session that starts without the previous conversation. Read this file at startup; read `docs/SPEC.md` (the
+design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
+re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
 ## Working rules the user set
 
@@ -10,12 +10,17 @@ re-run list).
   "Effort checkpoint: please switch to max effort before I start [step]." and wait for confirmation. When the
   step is finished, say: "Effort checkpoint complete: you can switch back to xhigh." Also raise a checkpoint for
   any unexplained discrepancy that could silently corrupt labels or results.
+- **Effort schedule** (set by the user 2026-11-21; tell the user the level the next task needs, not only when it is
+  max): finishing step 5: max. Measurement recording, decider inputs, dataset format and queue workers: xhigh (max
+  only for unexplained discrepancies). Container images and lockfiles: high. Google Cloud settings, the VM re-run
+  list and housekeeping: medium. Phase 0 on the VM: xhigh (max only for parity debugging).
 - **Commits and pushes.** Only when the user asks. So far the user has asked, before each step, for the previous
   step to be committed on branch `harness-v1` with the test results in the commit message. End commit messages with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. The user had `harness-v1` pushed to `origin` on
-  2026-11-21 so the project partner can see it; push again only when asked. Never commit to or push `main`.
+  2026-11-21 so the project partner can see it; push again only when asked or at the stopping rule's stop
+  (`CLAUDE.md`, "Usage discipline"). Never commit to or push `main`.
 - **docs/STATUS.md** is the overview for readers with no context (the project partner and their AI model); update it
-  whenever the state changes, together with this file.
+  only when a §18 item or phase changes status. Update this file every session.
 - **Spec changes** need the user's approval; log each approved one in SPEC §17 with its date.
 - **Platform rule (SPEC §11 step 3).** Everything so far was verified on a Mac (CPU MuJoCo, CGL rendering). Mac
   results only show the code paths are right; every equality and determinism test must be re-run on the L4 VM
