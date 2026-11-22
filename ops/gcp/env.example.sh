@@ -6,7 +6,9 @@ export ZONE="us-central1-a"
 export BUCKET="REPLACE"                   # globally unique, e.g. <project>-vla-router
 export VM_NAME="vlar-l4"
 export SA_NAME="vlar-vm"
-export DISK_GB=200                        # container images + weights + local results buffer
+export DISK_GB=100                        # L4 boot disk, sized 2026-11-22 (ops/README.md, "Boot disk size"):
+                                          # VM image 50 + images 14 + image files while loading 7 + weights 11
+                                          # + working space 5 = 87 GB, plus a 13 GB margin. About $0.33/day.
 export DISK_TYPE="pd-balanced"
 export DISK_USD_PER_GB_MONTH=0.10         # pd-balanced list price: check for your region
 # Deep Learning VM image with the NVIDIA driver, Docker and the NVIDIA container toolkit. The images use torch

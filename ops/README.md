@@ -17,14 +17,30 @@ runs automatically; each script is run by hand from a machine logged in with `gc
 | Item | Rate used | Note |
 | --- | --- | --- |
 | VM (g2-standard-16 Spot + L4) | `spend.vm_hourly_usd`, about $0.46/h | Only while running. Set from the current Spot price before each start. |
-| Boot disk | `DISK_GB` × $0.10/GB-month (pd-balanced) | **Bills every hour it exists, running or stopped.** 200 GB ≈ $20/month ≈ $0.66/day. |
+| Boot disk | `DISK_GB` × $0.10/GB-month (pd-balanced) | **Bills every hour it exists, running or stopped.** 100 GB ≈ $10/month ≈ $0.33/day. |
 | Bucket | $0.020/GB-month (Standard, regional) | Scanned every 30 min while the VM runs. |
 | Anything else | weekly reconcile | Set the ledger to the billing report's figure: `vlar-ops spend reconcile --actual-usd X`. |
 
-The disk is the cost that grows while nothing is happening. If work pauses for more than a
-couple of days, delete the VM and its disk (`gcloud compute instances delete … --delete-disks=all`,
-then `vlar-ops spend disk-deleted --name <vm>-boot`) and recreate it on resume; everything needed
-to resume is in the bucket.
+The disk is the cost that grows while nothing is happening. **If work pauses for more than a day,
+delete the L4 VM and its disk** (`gcloud compute instances delete … --delete-disks=all`, then
+`vlar-ops spend disk-deleted --name <vm>-boot`) and recreate it from the bucket to resume
+(`30_create_vm.sh`, the one-time VM setup, `load_images.sh`, `vlar-ops queue resume`): the images,
+the queue's results, the snapshots and the ledger are all in the bucket. Only the weights are downloaded
+again (11 GB, free inbound).
+
+### Boot disk size (measured 2026-11-22)
+
+| Part | GB | Source |
+| --- | --- | --- |
+| Deep Learning VM image (OS, driver, CUDA toolkit) | 50 | the image family's minimum disk size (`diskSizeGb`), counted whole |
+| The three images, loaded | 14 | locked wheels 3.5 GB (LeRobot env, shared by sim and pi05) + 2.8 GB (X-VLA) compressed, about twice that installed, plus Python, LIBERO assets (0.4) and code |
+| Image files while loading | 7 | the `.tar.zst` files; `load_images.sh` deletes them after loading |
+| Weights and tokenizer | 11 | π0.5 checkpoint 7.47, X-VLA-Pt 3.52, LoRA 0.05 (Hugging Face, pinned revisions) |
+| Working space | 5 | queue database, result markers, each worker's staged files until upload (about 0.15 GB per job), logs |
+| Margin | 13 | |
+| **Total (`DISK_GB`)** | **100** | about $0.33/day, half the earlier 200 GB |
+
+The figure is checked on the VM: `df -h /` after `load_images.sh` and the weight download (Phase 0's first step).
 
 ## One-time setup
 

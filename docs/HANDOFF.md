@@ -251,6 +251,21 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 
 None open. (The fresh-chunk charge question raised during §18 item 3 was decided as amendment 27.)
 
+**Billing and spending rules (user, 2026-11-22).**
+- The billing account is a university education coupon for **$50**, on a paid billing account with no payment
+  method, credits expiring **2027-08-20**. $50 is a hard ceiling: the spend guard's hard stop stays at $45, and the
+  remaining $5 must cover bucket storage and the final download before the expiry (download within a month or two
+  of finishing; Cloud Storage's free tier covers 100 GB/month of outbound transfer from North America). Budget
+  alerts and ledger reconciliation use the cost before credits.
+- **Pauses:** the user works consistently, but if work pauses for more than a day, delete the L4 VM and its disk and
+  recreate it from the bucket to resume (ops/README.md, "Costs the spend guard counts"). The disk is 100 GB
+  (about $0.33/day; breakdown in ops/README.md, "Boot disk size").
+- **Decider training on the Mac where possible** (SPEC §12, §13 already allow it): download only
+  `records/{runs,events,points}` (`gcloud storage cp -r gs://swift-library-515509-vla-data/vla-router/records/<table> ...`),
+  compute labels locally (`labels.py` is pure Python; a point's prefix is the parent run's `events` rows up to its
+  `decision_point` event, so snapshots and images are not needed; check this on first use), train locally, and
+  upload the checkpoints for Phase 3 and evaluation. The VM then only collects data and runs evaluation.
+
 **Google Cloud account (user, 2026-11-22).** Project `swift-library-515509-v9`, us-central1, bucket
 `swift-library-515509-vla-data`; billing is a $50 university education coupon on a paid billing account with no
 payment method, credits expiring 2027-08-20: $50 is a hard ceiling, the hard stop stays at $45, and the rest must

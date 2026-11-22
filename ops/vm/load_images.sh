@@ -21,6 +21,7 @@ for t in sim pi05 xvla; do
   got="$(docker image inspect --format '{{.Id}}' "vlar-${t}:${COMMIT}")"
   [[ "${got}" == "${want}" ]] || { echo "vlar-${t}: image ID ${got}, recorded ${want}"; exit 1; }
 done
+rm -f vlar-*.tar.zst                                  # 7 GB back before anything else (disk budget)
 sudo install -D -m 0644 image-digests.json /etc/vlar/image-digests.json
 echo "VLAR_IMAGE_COMMIT=${COMMIT}" | sudo tee /etc/vlar/images.env >/dev/null   # the tag the services run
 # The servers' batch geometry, from the image's own harness config (the workers check /info against it).
@@ -34,4 +35,6 @@ for t in sim pi05 xvla; do
   docker run --rm --gpus all -v /etc/vlar:/etc/vlar:ro "vlar-${t}:${COMMIT}" \
     python containers/check_env.py --role "${t}" --lock "containers/${lock}" --gpu
 done
+cd / && rm -rf "${D}"
+df -h / | tail -n 1
 echo "images vlar-{sim,pi05,xvla}:${COMMIT} loaded and checked"
