@@ -350,7 +350,7 @@ reset through 25 delta-mode steps (images, all robot-state arrays, dtypes, succe
   nothing but its seed (not the batch, not the GPU). Without seeds the servers behave like the
   references (global RNG). Seeds are derived by the harness (`seeding.call_seed`).
 
-### Batching (effort step 5, amendment 24; X-VLA done, π0.5 next)
+### Batching (effort step 5, amendments 24 and 26)
 
 `servers/batching.py`: one `Batcher` per endpoint, a request queue and one worker thread that owns the model. A
 handler's `submit` prepares the request in its own thread (a bad request fails there, alone) and waits; the worker
@@ -395,6 +395,67 @@ Findings:
   the random-weight tests read leftover memory there. The test builder now seeds every non-finite tensor; a
   checkpoint overwrites it in production. The NaN fill costs time, so Phase 0 step 2 measures it with the padding.
 
+π0.5 (`pi05_server.py`, `PI05Batching`, part 2). `PI05Service.load` is lerobot-eval's loading with one recorded
+deviation, `deterministic_torch()` instead of `cudnn.benchmark = True` (TF32 stays on, as in the reference). Seeded
+`/act` requests go through the batcher: each is pre-processed alone (batch dimension 1) in its caller's thread and
+checked against the fixed geometry (`check_geometry`: exactly the checkpoint's two cameras, the prompt exactly 200
+tokens, right-padded, not filling them); a batch is padded to `max_batch` rows with copies of its first request,
+tensors concatenated, each row's noise from its own seed, `predict_action_chunk` once, then each real row
+post-processed alone, one action at a time, as the unbatched path does. Unseeded requests (`act_unbatched`, the
+reference path) and `/upload_bytes` stay outside the batcher.
+
+Reading LeRobot's π0.5 inference (`sample_actions`, `embed_prefix`, `denoise_step`, `euler_integrate`,
+`_preprocess_images`, `make_att_2d_masks`): every operation is per row; the attention mask is additive with a finite
+large negative value, so masked keys get exactly zero weight; the time is a scalar expanded over the batch; the empty
+camera is the same padding image in every row. Nothing couples rows; only kernel choice can depend on the batch's
+shape, which the fixed geometry pins.
+
+Fixed token length (amendment 26). π0.5's prompt is the instruction plus the robot state as text (8 numbers in 256
+bins, so its token count varies with the state as well as the task); LeRobot's tokenizer step pads it to the
+checkpoint's 200 tokens (`padding="max_length"`, right) with an attention mask. X-VLA's processor pads every
+instruction to 50 tokens and the encoder attends to the padding, as in the authors' model. Both servers now refuse a
+request of another length or one that fills the whole length (possibly truncated). LIBERO-10's instructions take 10
+to 21 of X-VLA's 50 tokens. X-VLA's part-1 tests used one instruction for every request; they now mix instructions
+from different tasks.
+
+Shared per-call state (audit of both servers' pre- and post-processing). LeRobot's `ProcessorStep.__call__` stores
+each call's transition on the step object, and `TokenizerProcessorStep.observation` reads the prompt back from it
+(`self.transition`), so two requests pre-processed at once could swap prompts; the (un)normaliser moves its
+statistics to the input's device and dtype inside a call (`_apply_transform` → `to`). The checkpoint's pipelines
+(rename, to-batch, normaliser, π0.5 state-prompt step, tokenizer, device; un-normaliser, device; LIBERO's env step;
+an empty env post-processor) have no relative/absolute action steps, so pre- and post-processing share no step. The
+authors' X-VLA processor and model keep no per-call state (an AST scan for attribute writes outside construction
+found none on any call path), but its Hugging Face fast tokenizer holds mutable padding and truncation settings. Each
+server therefore runs every processor call under a module-level `PROCESSING_LOCK`; the model runs under the device
+lock, one batch at a time; lock order device, then processing.
+
+**Verified on the Mac** (`tests/reference/test_batch_invariance.py -k pi05`, simulator environment with LeRobot's `pi`
+extra; `pi05_testkit.py`): LeRobot's own π0.5 code at a tiny size (one layer in the vision tower, the language model
+and the action expert; the checkpoint's widths and heads; a 4,096-entry vocabulary; random weights) with the
+checkpoint's own processor pipelines loaded from its JSON files (synthetic statistics) and a stand-in tokenizer that
+splits numbers into digits as Gemma's does. Bit for bit: a request alone, with companions and at every position, its
+batch-mates from different tasks with prompts of 52, 39 and 24 tokens, in float32 and in the checkpoint's bfloat16;
+other ids in the padding leave a result unchanged while one changed real token changes it; every LIBERO-10 prompt fits;
+max_batch 1 equals `act_unbatched` (on the CPU the padded batch of 3 also equals it); six simultaneous requests keep
+their own prompts (with LeRobot's race window widened by a sleep) and outputs; a stand-in policy whose rows change with
+the batch size and the prompt tensor's length still gives every request its alone result. Requests that break the
+geometry are refused. Mutation check (a scratch script, each rule broken in the source, the file restored byte for
+byte), 6 of 6 caught:
+
+| Rule broken | Caught by |
+| --- | --- |
+| rows not padded to `max_batch` | the stand-in policy test only (the tiny model's CPU results do not depend on the batch size) |
+| one batch-level noise generator | invariance (float32, bfloat16), stand-in policy, simultaneous requests |
+| no `PROCESSING_LOCK` | simultaneous requests (prompts swapped) |
+| outputs handed back in the wrong order | invariance (float32, bfloat16), stand-in policy, simultaneous requests |
+| prompts trimmed to the batch's longest | reference path, stand-in policy, simultaneous requests (the real code's result does depend on the token length) |
+| geometry check skipped | the geometry test |
+
+**Open (X-VLA, part 2).** X-VLA's tests now mix instructions of 10 to 21 tokens and pass, as does the token-length
+test; the new simultaneous-requests test fails intermittently on the CPU: one of six requests sent at once gets an
+action that is not bit-identical to its alone result, though its prompt is right (HANDOFF.md, "Test suites"). Until
+it is explained, X-VLA's batch invariance under concurrent arrival is not shown, and its mutation check is not run.
+
 ## Rendering only what is used (SPEC §12, approved with conditions)
 
 On this Mac, an env step costs 12.8 ms with the 256 px cameras and 19.9 ms with the 360 px ones added.
@@ -420,8 +481,9 @@ VM re-run list (each in its own environment, `MUJOCO_GL=egl`):
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
 | X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position; features equal across endpoints (amendment 24) |
-| LeRobot | π0.5 batch invariance (to be written with π0.5 batching, the rest of step 5) | the same three checks bit for bit on the L4 (amendment 24) |
+| LeRobot (with the `pi` extra) | `VLAR_PI05_CHECKPOINT=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k pi05_real` | π0.5 at the production geometry with the real weights and tokenizer, bit for bit: alone, with companions, at every position and in a full batch, batch-mates from different tasks with different prompt and state token lengths; padding ids cannot change a result; every LIBERO-10 prompt fits the 200 tokens; max_batch 1 equals `act_unbatched`; simultaneous requests keep their prompts and outputs (amendments 24, 26). Deterministic mode must not raise on any CUDA kernel π0.5 uses. |
 | both servers, Phase 0 step 2 (a measurement) | throughput at the fixed geometry against unpadded batches, with deterministic mode on and off | the cost of fixed padding and of deterministic mode; if padding is too slow, stop and bring the numbers to the user before relaxing anything (amendment 24) |
+| both servers, Phase 0 step 2 (a measurement) | servers started at `--max-batch 1` (X-VLA also `--sample-rows 5`): median latency of `/act`, `/features`, `/sample` K = 5 and π0.5 inference | the clock charges, unpadded, as a deployed robot runs the calls (amendment 25); written to `latency` in the config; the padded figures never are |
 | LeRobot | `VLAR_PI05_CHECKPOINT=… pytest tests/reference/test_model_servers.py -k pi05` | server vs lerobot-eval's per-step processing (needs the gated tokenizer) |
 | main | `pytest tests` | config, queue, spend guard, packaging; network model, clock charges, labels and calibration on synthetic logs |
 | simulator | `pytest tests/test_labels_calibration.py -k numpy` | the pure-Python percentile equals NumPy's bit for bit (the main environment has no NumPy) |

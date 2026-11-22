@@ -109,12 +109,15 @@ servers:
     # Fixed padded geometry (amendment 24): every pass runs at exactly these sizes, so a request's result never
     # depends on its batch. max_batch: requests per batch (rows of every X-VLA encoder and /act denoising pass,
     # and of every π0.5 pass); xvla_sample_rows: rows of every X-VLA /sample denoising pass (K samples a request).
+    # Token length is fixed by each model (amendment 26): π0.5 200 (the checkpoint's tokenizer step), X-VLA 50.
     max_batch: 8
     xvla_sample_rows: 40
     wait_window_ms: 5
 
 latency:
-  # Batch-size-1 medians charged by the simulated clock (§5).
+  # Charged by the simulated clock (§5, amendment 25): unpadded medians, as a deployed robot runs its calls: /act,
+  # /features and π0.5 inference as an unpadded batch of one, /sample as an unpadded batch of exactly K. Phase 0
+  # step 2 measures them with the servers at max_batch 1 and xvla_sample_rows K; padded figures never come here.
   status: placeholder
   source: reference notebook, NVIDIA L4, 20 calls after 3 warm-ups (X-VLA timed over HTTP)
   xvla_act_s: 0.420

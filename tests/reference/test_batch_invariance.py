@@ -1,11 +1,19 @@
-"""Batch invariance of the model servers (SPEC §3, §11 step 3, amendment 24): a request's output is bit-identical when
-sent alone, with different companions, and at different positions in the batch.
+"""Batch invariance of the model servers (SPEC §3, §11 step 3, amendments 24 and 26): a request's output is bit-identical
+when sent alone, with different companions, and at different positions in the batch. Batch-mates carry deliberately
+different instructions (from different LIBERO-10 tasks) and, for π0.5, robot states with different token lengths, so
+the fixed token length is tested along with the fixed batch size; simultaneous requests keep their own prompts and
+their own outputs.
 
 X-VLA, on the Mac with random weights on the CPU (a small fixed geometry; the argument does not depend on the sizes):
   VLAR_XVLA_CONFIG_DIR=third_party/hf/X-VLA-Pt VLAR_TEST_DEVICE=cpu \
     .venv-xvla/bin/python -m pytest tests/reference/test_batch_invariance.py -k xvla
-On the L4 VM the same tests run with the real weights and the production geometry (VLAR_XVLA_MODEL_PATH,
-VLAR_XVLA_LORA_PATH, VLAR_TEST_DEVICE=cuda), bit for bit.
+π0.5, on the Mac in the simulator environment (LeRobot 0.6.1 with its `pi` extra): LeRobot's own π0.5 code at a tiny
+size with random weights, the checkpoint's own processor pipelines and a stand-in tokenizer (`pi05_testkit.py`), and a
+stand-in policy for the mechanics:
+  .venv-sim/bin/python -m pytest tests/reference/test_batch_invariance.py -k pi05
+On the L4 VM the same checks run with the real weights at the production geometry, bit for bit: X-VLA with
+VLAR_XVLA_MODEL_PATH, VLAR_XVLA_LORA_PATH and VLAR_TEST_DEVICE=cuda; π0.5 with VLAR_PI05_CHECKPOINT (and the gated
+tokenizer) and VLAR_TEST_DEVICE=cuda.
 """
 
 import threading
@@ -14,11 +22,54 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from test_model_servers import cpu_geometry, make_xvla_service, requires_xvla, xvla_payload  # noqa: E402
+from conftest import LIBERO_10, have, requires_lerobot, requires_libero  # noqa: E402
+from pi05_testkit import PI05_CONFIG_READY, make_tiny_pi05, pi05_request  # noqa: E402
+from test_model_servers import (DEVICE, PI05_CKPT, cpu_geometry, make_xvla_service,  # noqa: E402
+                                requires_pi05, requires_xvla, xvla_payload)
+
+TOKENS, MASK = "observation.language.tokens", "observation.language.attention_mask"   # LeRobot's batch keys
+
+requires_tiny_pi05 = pytest.mark.skipif(
+    not (PI05_CONFIG_READY and have("lerobot") and have("transformers")),
+    reason="needs LeRobot 0.6.1 with its `pi` extra and the checkpoint's config files "
+           "(third_party/hf/pi05_libero_finetuned or VLAR_PI05_CONFIG_DIR)")
 
 
 def bits(x) -> bytes:
     return np.asarray(x, dtype=np.float32).tobytes()
+
+
+def run_together(fn, n):
+    """`fn(i)` for i in range(n), each in its own thread, all released at once; (results, errors) by index."""
+    barrier = threading.Barrier(n)
+    results, errors = {}, {}
+
+    def body(i):
+        barrier.wait()
+        try:
+            results[i] = fn(i)
+        except Exception as e:  # noqa: BLE001
+            errors[i] = e
+
+    threads = [threading.Thread(target=body, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results, errors
+
+
+@requires_libero
+def test_libero10_instructions_match_the_benchmark():
+    from libero.libero import benchmark
+    suite = benchmark.get_benchmark_dict()["libero_10"]()
+    assert [suite.get_task(i).language for i in range(10)] == LIBERO_10
+
+
+# ---------------------------------------------------------------------------------------------------------- X-VLA
+
+# Instructions from different tasks, of different lengths (X-VLA tokens 21, 10, 16, 20, 14, 14 of the fixed 50).
+XVLA_TASKS = (4, 8, 3, 6, 0, 2)
 
 
 @pytest.fixture(scope="module")
@@ -31,14 +82,19 @@ def xvla():
 
 
 def requests(svc, n=3):
-    return [dict(xvla_payload(np.random.default_rng(10 + i), steps=svc.batching.steps), seed=500 + i)
-            for i in range(n)]
+    return [dict(xvla_payload(np.random.default_rng(10 + i), steps=svc.batching.steps,
+                              instruction=LIBERO_10[XVLA_TASKS[i]]), seed=500 + i) for i in range(n)]
+
+
+def real_tokens(svc, prepared) -> int:
+    return int((prepared["inputs"]["input_ids"] != svc.pad_token_id).sum())
 
 
 @requires_xvla
 def test_xvla_act_is_batch_invariant(xvla):
     svc = xvla
     a, b, c = (svc._prepare_request(p, "act") for p in requests(svc))
+    assert len({real_tokens(svc, r) for r in (a, b, c)}) == 3, "batch-mates' instructions differ in length"
     batches = {"alone": [a], "with b": [a, b], "with c, b": [a, c, b], "second": [b, a], "last": [c, b, a]}
     out = {name: svc._run_batch("act", reqs) for name, reqs in batches.items()}
     pos = {name: next(i for i, r in enumerate(reqs) if r is a) for name, reqs in batches.items()}
@@ -80,25 +136,46 @@ def test_xvla_sample_is_batch_invariant_and_features_agree_across_endpoints(xvla
 
 
 @requires_xvla
-def test_xvla_concurrent_clients_get_their_alone_results(xvla):
+def test_xvla_instruction_length_is_part_of_the_fixed_geometry(xvla):
+    """Amendment 26: every instruction is the authors' 50 tokens, padding included (the encoder attends to it, as in
+    the authors' model), so a request's padding is its own input; LIBERO-10's instructions all fit with room to spare;
+    an instruction that fills all 50 tokens (possibly truncated) is refused."""
     svc = xvla
-    reqs = requests(svc)
+    base = requests(svc, 1)[0]
+    lengths = []
+    for text in LIBERO_10:
+        ids = svc._prepare_request(dict(base, language_instruction=text), "act")["inputs"]["input_ids"]
+        assert tuple(ids.shape) == (1, svc.token_length) == (1, 50)
+        lengths.append(int((ids != svc.pad_token_id).sum()))
+    assert (min(lengths), max(lengths)) == (10, 21), lengths
+    with pytest.raises(ValueError, match="fills all 50 tokens"):
+        svc.act(dict(base, language_instruction=" ".join(["word"] * 60)))
+
+
+@requires_xvla
+def test_xvla_simultaneous_requests_keep_their_own_prompts_and_outputs(xvla):
+    svc = xvla
+    n = len(XVLA_TASKS)
+    reqs = requests(svc, n)
+    alone_ids = [svc._prepare_request(p, "act")["inputs"]["input_ids"] for p in reqs]
+    assert len({bytes(t.numpy()) for t in alone_ids}) == n
     alone = [svc._run_batch("act", [svc._prepare_request(p, "act")])[0]["action"] for p in reqs]
+    got, errors = run_together(lambda i: svc._prepare_request(reqs[i], "act")["inputs"]["input_ids"], n)
+    assert not errors, errors
+    swapped = [i for i in range(n) if not bool((got[i] == alone_ids[i]).all())]
+    assert not swapped, f"requests {swapped} got another request's prompt"
     batcher = svc.batchers["act"]
-    before, window = batcher.stats.batches, batcher.wait_window_s
-    batcher.wait_window_s = 2.0                       # long enough that all three arrive in one batch
-    results = {}
+    before, window = len(batcher.stats.sizes), batcher.wait_window_s
+    batcher.wait_window_s = 2.0                       # long enough that the requests share batches
     try:
-        ts = [threading.Thread(target=lambda i=i, p=p: results.__setitem__(i, svc.act(p))) for i, p in enumerate(reqs)]
-        for t in ts:
-            t.start()
-        for t in ts:
-            t.join()
+        results, errors = run_together(lambda i: svc.act(reqs[i]), n)
     finally:
         batcher.wait_window_s = window
-    assert batcher.stats.batches == before + 1 and batcher.stats.sizes[-1] == 3
-    for i in range(3):
-        assert bits(results[i]["action"]) == bits(alone[i]) and results[i]["batch"]["requests"] == 3
+    assert not errors, errors
+    sizes = batcher.stats.sizes[before:]
+    assert sum(sizes) == n and max(sizes) > 1, sizes
+    swapped = [i for i in range(n) if bits(results[i]["action"]) != bits(alone[i])]
+    assert not swapped, f"requests {swapped} got another request's output"
 
 
 @requires_xvla
@@ -136,3 +213,266 @@ def test_xvla_a_batch_of_one_unpadded_is_the_reference_path(xvla):
     diff = float(np.abs(np.asarray(padded) - np.asarray(unbatched)).max())
     print(f"max |padded to {svc.batching.max_batch} - batch of one| = {diff:.3g}")
     assert diff < 1e-4
+
+
+# ---------------------------------------------------------------------------------------------------------- π0.5
+# The checks are functions so the Mac (tiny model) and the VM (real model, production geometry) run the same ones.
+
+def prompt_tokens(prepared) -> int:
+    return int(prepared["observation"][MASK].sum())
+
+
+def check_pi05_act_invariance(svc, rng):
+    """Alone, with companions, at every position (and in a full batch). The batch-mates come from different tasks, with
+    prompts of deliberately different instruction and state token lengths."""
+    a, b, c = (svc._prepare_request(pi05_request(rng, t, s, seed))
+               for t, s, seed in ((4, "long", 101), (8, "short", 102), (3, "medium", 103)))
+    la, lb, lc = (prompt_tokens(r) for r in (a, b, c))
+    assert la > lc > lb, (la, lb, lc)
+    n = svc.batching.max_batch
+    fill = [b, c] * n
+    batches = {"alone": [a], "with b": [a, b], "second": [b, a], "with c, b": [a, c, b], "last": [c, b, a],
+               "full": fill[:n // 2] + [a] + fill[n // 2:n - 1]}
+    batches = {name: reqs for name, reqs in batches.items() if len(reqs) <= n}
+    out = {name: svc._run_batch(reqs) for name, reqs in batches.items()}
+    ref = out["alone"][0]["actions"]
+    assert ref.shape == (50, 7) and np.isfinite(ref).all()
+    for name, reqs in batches.items():
+        got = out[name][next(i for i, r in enumerate(reqs) if r is a)]
+        assert bits(got["actions"]) == bits(ref), name
+        assert got["batch"]["rows"] == n and got["batch"]["tokens"] == svc.token_length
+    b_alone = svc._run_batch([b])[0]["actions"]
+    for name in ("with b", "second", "with c, b", "last"):
+        if name in out:
+            got = out[name][next(i for i, r in enumerate(batches[name]) if r is b)]
+            assert bits(got["actions"]) == bits(b_alone), name
+    assert bits(b_alone) != bits(ref)
+
+
+def check_pi05_padding_tokens(svc, rng):
+    """The prompt's padding is masked out of attention: other ids in the padding leave the result unchanged bit for
+    bit, while changing one real token changes it."""
+    import torch
+    a = svc._prepare_request(pi05_request(rng, 9, "medium", 104))
+    ids, n = a["observation"][TOKENS], prompt_tokens(a)
+    length = ids.shape[1]
+    pads = ids.clone()
+    pads[0, n:] = ids[0, torch.arange(n, length, device=ids.device) % n]         # real ids in the padding
+    real = ids.clone()
+    real[0, n - 2] = ids[0, 1] if ids[0, 1] != ids[0, n - 2] else ids[0, 2]
+    ref = svc._run_batch([a])[0]["actions"]
+    with_ids = lambda new: {"observation": dict(a["observation"], **{TOKENS: new}), "seed": a["seed"]}  # noqa: E731
+    assert bits(svc._run_batch([with_ids(pads)])[0]["actions"]) == bits(ref)
+    assert bits(svc._run_batch([with_ids(real)])[0]["actions"]) != bits(ref)
+
+
+def check_pi05_prompts_fit(svc, rng) -> list[int]:
+    """Every LIBERO-10 instruction with the shortest and the longest state fits the fixed token length without filling
+    it (`check_geometry` refuses a full prompt); returns the prompt lengths."""
+    return [prompt_tokens(svc._prepare_request(pi05_request(rng, t, s, 1)))
+            for t in range(len(LIBERO_10)) for s in ("short", "long")]
+
+
+def check_pi05_reference_path(svc, rng, max_diff):
+    """At max_batch 1 the batched path is the seeded batch of one (`act_unbatched`, the reference path); padded to the
+    service's geometry the result may differ in the last bits (recorded)."""
+    from vlar_harness.servers.pi05_server import PI05Batching, PI05Service
+    one = PI05Service(svc.policy, svc.cfg, svc.preprocessor, svc.postprocessor, svc.env_preprocessor,
+                      svc.env_postprocessor, PI05Batching(max_batch=1))
+    try:
+        req = pi05_request(rng, 6, "long", 105)
+        batched_one = one.act(req)["actions"]
+        unbatched = svc.act_unbatched(req)["actions"]
+        padded = svc.act(req)["actions"]
+    finally:
+        one.close()
+    assert bits(batched_one) == bits(unbatched)
+    diff = float(np.abs(padded - unbatched).max())
+    print(f"max |padded to {svc.batching.max_batch} - batch of one| = {diff:.3g}")
+    assert diff <= max_diff
+
+
+def check_pi05_concurrency(svc, rng, monkeypatch):
+    """Simultaneous requests keep their own prompts and their own outputs. LeRobot's TokenizerProcessorStep reads the
+    prompt back from per-call state it stores on the shared step object; a sleep before that read widens the window,
+    so without PROCESSING_LOCK simultaneous requests would swap prompts (the mutation check removes the lock)."""
+    import time
+
+    import torch
+    from lerobot.processor.tokenizer_processor import TokenizerProcessorStep
+
+    specs = [(0, "short"), (4, "long"), (8, "medium"), (3, "short"), (6, "long"), (2, "medium")]
+    n = len(specs)
+    reqs = [pi05_request(rng, t, s, 200 + i) for i, (t, s) in enumerate(specs)]
+    alone_tokens = [svc._prepare_request(r)["observation"][TOKENS] for r in reqs]
+    assert len({bytes(t.cpu().numpy()) for t in alone_tokens}) == n
+    alone = [svc._run_batch([svc._prepare_request(r)])[0]["actions"] for r in reqs]
+
+    original = TokenizerProcessorStep.observation
+
+    def slow_observation(self, observation):
+        time.sleep(0.005)
+        return original(self, observation)
+
+    monkeypatch.setattr(TokenizerProcessorStep, "observation", slow_observation)
+    for _ in range(2):
+        got, errors = run_together(lambda i: svc._prepare_request(reqs[i])["observation"][TOKENS], n)
+        assert not errors, errors
+        swapped = [i for i in range(n) if not torch.equal(got[i], alone_tokens[i])]
+        assert not swapped, f"requests {swapped} got another request's prompt"
+    batcher = svc.batcher
+    before, window = len(batcher.stats.sizes), batcher.wait_window_s
+    batcher.wait_window_s = 2.0                       # long enough that the requests share batches
+    try:
+        results, errors = run_together(lambda i: svc.act(reqs[i]), n)
+    finally:
+        batcher.wait_window_s = window
+    assert not errors, errors
+    sizes = batcher.stats.sizes[before:]
+    assert sum(sizes) == n and max(sizes) > 1, sizes
+    swapped = [i for i in range(n) if bits(results[i]["actions"]) != bits(alone[i])]
+    assert not swapped, f"requests {swapped} got another request's output"
+
+
+class BatchSensitivePolicy:
+    """Stand-in π0.5 policy for the mechanics: each row's chunk comes from its own noise, prompt and image only, but is
+    scaled by a factor that depends on the batch size and on the prompt tensor's length, as a GPU kernel's choice can.
+    Only the fixed geometry (rows and tokens) and per-request noise make a request's result independent of its batch."""
+
+    def __init__(self, cfg):
+        self.config = cfg
+
+    def eval(self):
+        return self
+
+    def predict_action_chunk(self, batch, noise=None):
+        import torch
+        tokens, mask = batch[TOKENS], batch[MASK]
+        rows, length = tokens.shape
+        if noise is None:
+            noise = torch.zeros(rows, self.config.chunk_size, self.config.max_action_dim)
+        scale = 1.0 + 1e-3 * rows + 1e-6 * length
+        own = (tokens * mask).sum(dim=1).double() * 1e-6 + batch["observation.images.image"].double().mean(dim=(1, 2, 3))
+        return noise[:, :, :7] * scale + own.float()[:, None, None]
+
+
+@pytest.fixture(scope="module")
+def pi05_tiny():
+    from vlar_harness.servers.pi05_server import PI05Batching
+    svc = make_tiny_pi05(PI05Batching(max_batch=3))
+    yield svc
+    svc.close()
+
+
+@requires_tiny_pi05
+def test_pi05_act_is_batch_invariant(pi05_tiny):
+    check_pi05_act_invariance(pi05_tiny, np.random.default_rng(0))
+
+
+@requires_tiny_pi05
+def test_pi05_act_is_batch_invariant_in_bfloat16():
+    """The checkpoint's own dtype (bfloat16 with the vision path and norms in float32, as LeRobot sets it). Slow on the
+    CPU, so only alone and at the two other positions among batch-mates of different lengths."""
+    from vlar_harness.servers.pi05_server import PI05Batching
+    svc = make_tiny_pi05(PI05Batching(max_batch=3), dtype="bfloat16")
+    try:
+        rng = np.random.default_rng(3)
+        a, b, c = (svc._prepare_request(pi05_request(rng, t, s, seed))
+                   for t, s, seed in ((4, "long", 1), (8, "short", 2), (3, "medium", 3)))
+        assert len({prompt_tokens(r) for r in (a, b, c)}) == 3
+        ref = svc._run_batch([a])[0]["actions"]
+        assert bits(svc._run_batch([b, a, c])[1]["actions"]) == bits(ref)
+        assert bits(svc._run_batch([c, b, a])[2]["actions"]) == bits(ref)
+    finally:
+        svc.close()
+
+
+@requires_tiny_pi05
+def test_pi05_padding_tokens_cannot_affect_results(pi05_tiny):
+    check_pi05_padding_tokens(pi05_tiny, np.random.default_rng(4))
+
+
+@requires_tiny_pi05
+def test_pi05_every_libero10_prompt_fits_the_fixed_token_length(pi05_tiny):
+    lengths = check_pi05_prompts_fit(pi05_tiny, np.random.default_rng(8))
+    assert len(set(lengths)) > 5, lengths              # the stand-in tokenizer's lengths vary as the real one's do
+
+
+@requires_tiny_pi05
+def test_pi05_simultaneous_requests_keep_their_own_prompts_and_outputs(pi05_tiny, monkeypatch):
+    check_pi05_concurrency(pi05_tiny, np.random.default_rng(6), monkeypatch)
+
+
+@requires_tiny_pi05
+def test_pi05_a_batch_of_one_unpadded_is_the_reference_path(pi05_tiny):
+    check_pi05_reference_path(pi05_tiny, np.random.default_rng(7), max_diff=1e-4)
+
+
+@requires_tiny_pi05
+def test_pi05_fixed_geometry_makes_rows_independent_of_their_batch():
+    """Mechanics: a policy whose rows change with the batch size and the prompt tensor's length still gives a request
+    the same result alone, with companions and at every position, because every batch has max_batch rows of
+    fixed-length prompts and every row its own noise; at another geometry the same request differs."""
+    from vlar_harness.servers.pi05_server import PI05Batching, PI05Service
+    svc = make_tiny_pi05(PI05Batching(max_batch=3), policy=BatchSensitivePolicy)
+    one = PI05Service(svc.policy, svc.cfg, svc.preprocessor, svc.postprocessor, svc.env_preprocessor,
+                      svc.env_postprocessor, PI05Batching(max_batch=1))
+    try:
+        check_pi05_act_invariance(svc, np.random.default_rng(1))
+        a = svc._prepare_request(pi05_request(np.random.default_rng(2), 1, "long", 1))
+        assert bits(one._run_batch([a])[0]["actions"]) != bits(svc._run_batch([a])[0]["actions"])
+    finally:
+        one.close()
+        svc.close()
+
+
+@requires_tiny_pi05
+def test_pi05_batched_requests_must_fit_the_fixed_geometry(pi05_tiny):
+    import torch
+    svc = pi05_tiny
+    rng = np.random.default_rng(5)
+    req = pi05_request(rng, 2, "medium", 9)
+    unseeded = {k: v for k, v in req.items() if k != "seed"}
+    with pytest.raises(ValueError, match="needs its `seed`"):
+        svc._prepare_request(unseeded)
+    n = svc.batcher.stats.requests
+    out = svc.act(unseeded)                                # the reference behaviour, outside the batcher
+    assert svc.batcher.stats.requests == n and "batch" not in out and out["actions"].shape == (50, 7)
+    one_camera = dict(req, obs=dict(req["obs"], pixels={"image": req["obs"]["pixels"]["image"]}))
+    with pytest.raises(ValueError, match="exactly the cameras"):
+        svc.act(one_camera)
+    with pytest.raises(ValueError, match=f"fills all {svc.token_length} tokens"):
+        svc.act(dict(req, task=" ".join(["word"] * 300)))
+    obs = svc._prepare_request(req)["observation"]
+    with pytest.raises(ValueError, match=f"exactly {svc.token_length} tokens"):
+        svc.check_geometry(dict(obs, **{TOKENS: obs[TOKENS][:, :150], MASK: obs[MASK][:, :150]}))
+    with pytest.raises(ValueError, match="right-padded"):
+        svc.check_geometry(dict(obs, **{MASK: obs[MASK].flip(1)}))
+    with pytest.raises(ValueError, match="batch dimension 1"):
+        svc.check_geometry(dict(obs, **{TOKENS: obs[TOKENS].repeat(2, 1)}))
+    other = svc._prepare_request(pi05_request(rng, 5, "long", 10))
+    odd = {"observation": dict(other["observation"], extra=torch.zeros(1, 1)), "seed": 10}
+    with pytest.raises(ValueError, match="same fields"):
+        svc._run_batch([svc._prepare_request(req), odd])
+
+
+@pytest.fixture(scope="module")
+def pi05_real():
+    from vlar_harness.servers.pi05_server import PI05Service
+    svc = PI05Service.load(PI05_CKPT, DEVICE)                # the production geometry
+    yield svc
+    svc.close()
+
+
+@requires_pi05
+@requires_lerobot
+def test_pi05_real_model_is_batch_invariant_on_the_vm(pi05_real, monkeypatch):
+    """The real checkpoint, tokenizer and GPU at the production geometry, bit for bit (amendments 24 and 26)."""
+    svc = pi05_real
+    rng = np.random.default_rng(0)
+    lengths = check_pi05_prompts_fit(svc, rng)
+    print(f"prompt tokens over LIBERO-10 x short/long states: {min(lengths)}-{max(lengths)} of {svc.token_length}")
+    check_pi05_act_invariance(svc, rng)
+    check_pi05_padding_tokens(svc, rng)
+    check_pi05_reference_path(svc, rng, max_diff=0.05)
+    check_pi05_concurrency(svc, rng, monkeypatch)

@@ -1,7 +1,7 @@
 # Project status
 
-Last updated: 2026-11-21, describing the code on branch `harness-v1` after part 1 of effort step 5 (`f8d06d5`); later
-commits change only documents.
+Last updated: 2026-11-21, describing the code on branch `harness-v1` after part 2 of effort step 5 (the commit after
+`274b18a`).
 
 This page is for someone who has seen nothing of the project so far: what it is, where things are, how far the
 work has got, what comes next and how to run it. It is a summary; where it and [SPEC.md](SPEC.md) disagree, the spec
@@ -94,35 +94,33 @@ results count for parity and determinism, because rendering and floating-point r
 | `272f64b` | Effort step 4: network model, event log, simulated clock under every overhead profile with offline re-scoring, live time limit, branch runs, label computation, time-limit calibration, handoff diagnostics |
 | `a25053f` | Step-4 follow-ups (amendments 19-23): a live time limit only in routed runs with a decider profile, recorded as an explicit flag in every log and result; a time-cut run scored only under its own profile, while labels from a cut parent's log up to a decision point are computed for every profile; decision points already past the limit under a profile left out of that profile's data, counted per profile; the remaining-time input recomputed under each decider's own profile |
 | `f8d06d5` | Effort step 5, part 1: a request queue that batches concurrent requests; X-VLA's three endpoints run every batch at one fixed padded size with deterministic settings and per-request noise, so a request's result is bit-identical alone, with other requests or at any position (checked on the CPU) |
+| after `274b18a` | Effort step 5, part 2, and decisions 25-26: π0.5's server batched the same way; every prompt padded to one fixed token length per model; everything that keeps per-call state in a shared object (LeRobot's processor steps, the tokenizers) run one request at a time; tests on LeRobot's real π0.5 code at a tiny size, with batch-mates from different tasks and prompts of different lengths, and on simultaneous requests |
 
 Test results after step 5 part 1 (Mac): unit tests 112 passed, 7 skipped; simulator tests 48 passed, 11 skipped (the 5
 new X-VLA batch tests skip there); X-VLA server and batch-invariance tests 7 passed (CPU, random weights). The skipped tests need model weights or both servers running, so they run on the VM.
 
-Not started: request batching in the servers (effort step 5), rendering only the camera images that are used, the
-decider inputs and measurement recording, the dataset format and queue workers, the container images, and
-everything on the VM.
+Not started: rendering only the camera images that are used, the decider inputs and measurement recording, the
+dataset format and queue workers, the container images, and everything on the VM.
 
 The §18 milestone (all seven must hold before the harness build counts as complete):
 
 | §18 item | State |
 | --- | --- |
-| 1. Effort steps 4 and 5 done, tests passing on the Mac | partial: step 4 done (`272f64b`, follow-ups `a25053f`); step 5 in progress (X-VLA batching done, π0.5's next) |
-| 2. Both servers implement every endpoint, with batching and per-call seeds | partial: all endpoints and per-call seeds exist; X-VLA batched, π0.5 batching missing |
+| 1. Effort steps 4 and 5 done, tests passing on the Mac | partial: step 4 done (`272f64b`, follow-ups `a25053f`); step 5 implemented (`f8d06d5` and the commit after `274b18a`); see HANDOFF.md "Test suites" for what is left |
+| 2. Both servers implement every endpoint, with batching and per-call seeds | done on the Mac: every endpoint batched at a fixed geometry of rows and tokens, with per-call seeds |
 | 3. Measurement recording and the snapshot store | partial: snapshot store done; measurement recording (proposal, spread, drift, probes) not started |
 | 4. Job queue, spend guard and packaging implemented and tested | partial: implemented and unit-tested against a local stand-in for cloud storage; the real cloud storage path is untested; the engine is not yet wired to the queue |
 | 5. Three container images and lockfiles build and pass local tests | not started |
 | 6. Ready-to-run Google Cloud setup scripts (Spot VM, bucket, budget alerts) | partial: written, never run; account values are placeholders |
-| 7. VM re-run list complete, everything committed, HANDOFF.md current | partial: the list covers steps 1-4; parity tooling and reference files committed |
+| 7. VM re-run list complete, everything committed, HANDOFF.md current | partial: the list covers steps 1-5; the containers still to add; parity tooling and reference files committed |
 
 By phase: Phase 0 is in progress (the build, on the Mac; none of its VM steps have started). Phases 1 to 3 and the
 evaluation have not started.
 
 ## What's next, in order
 
-1. The rest of effort step 5: batch-invariant batching in the π0.5 server, as already done for X-VLA (amendment 24:
-   a request's output must be bit-identical whatever else shares its batch, so every batch runs at one fixed padded
-   size with deterministic GPU settings and per-request noise generators); checked bit for bit on the L4, where the
-   cost of the padding is also measured.
+1. Finish effort step 5's checks (HANDOFF.md "Test suites"); the batch-invariance checks run again bit for bit on the
+   L4, where the cost of the padding is also measured.
 2. Render camera images only when they are used, provided it passes the same exact-equality tests.
 3. Decider inputs (`observe()`) and measurement recording at every decision point; the dataset format (Parquet);
    queue workers that run episodes and branches.
@@ -142,7 +140,7 @@ guard stops all work at $45.
 
 ## Key decisions so far
 
-The full list, with dates, is SPEC §17 (24 entries). The most important:
+The full list, with dates, is SPEC §17 (26 entries). The most important:
 - **Two seeds per episode.** The scene seed fixes the scene (some LIBERO fixtures move by up to 19 mm with it) and
   is 142 + k for initial state k in every run except π0.5's parity check (1000 + k, its own reference's value). A
   separate rollout seed drives all other randomness (model noise, the network, random exploration), different for
@@ -164,16 +162,17 @@ The full list, with dates, is SPEC §17 (24 entries). The most important:
   log under each decider type's own profile, and a point already past the limit under a profile is left out of that
   profile's data.
 - **Batch invariance.** The model servers batch requests from many simulator workers, but a request's result must
-  not depend on its batch: otherwise exact replay of snapshots and runs would break whenever batching differed.
+  not depend on its batch: otherwise exact replay of snapshots and runs would break whenever batching differed. So
+  every batch has a fixed number of rows and every prompt a fixed number of tokens. The padding is never charged to
+  the simulated clock: per-call charges are measured unpadded, as a robot would run the call (decision 25).
 - **Leave-one-task-out folds.** Ten folds: task i is the test task, task i+1 (mod 10) the validation task, the other
   eight the training tasks; splits are always by whole task.
 
 ## Open questions and blockers
 
-- **Clock charges under fixed padding (needs a decision).** The servers now always run padded batches, so the
-  simulated clock's per-call charges (meant to be what a robot serving one request at a time would wait) should be
-  measured in Phase 0 as a true batch of one, unpadded. Recommended in HANDOFF.md; not yet confirmed.
-
+- **One failing test (X-VLA batching, under investigation).** When six requests reach the X-VLA server at once, one of
+  them gets an action that is not bit-identical to its result alone (its prompt is right). Not explained yet; effort
+  step 5 is not complete until it is (details in HANDOFF.md, "Test suites").
 - **Cloud GPU quota (pending).** Google Cloud needs a GPU quota of at least 1 globally, 1 preemptible L4 and 1
   on-demand L4 in us-central1, possibly after upgrading from the free trial. Requested by Miguel; not confirmed yet.
   It blocks only the VM work, which waits for the §18 milestone anyway.

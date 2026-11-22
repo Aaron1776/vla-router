@@ -32,12 +32,12 @@ requires_xvla = pytest.mark.skipif(not ((XVLA_MODEL or XVLA_CONFIG_DIR) and have
 requires_pi05 = pytest.mark.skipif(not PI05_CKPT, reason="needs the LeRobot environment and VLAR_PI05_CHECKPOINT")
 
 
-def xvla_payload(rng, steps=10):
+def xvla_payload(rng, steps=10, instruction="put both moka pots on the stove"):
     import json_numpy
     img0 = rng.integers(0, 256, (256, 256, 3), dtype=np.uint8)
     img1 = rng.integers(0, 256, (256, 256, 3), dtype=np.uint8)
     proprio = np.concatenate([rng.normal(size=9), [0.0], np.zeros(10)])
-    return {"proprio": json_numpy.dumps(proprio), "language_instruction": "put both moka pots on the stove",
+    return {"proprio": json_numpy.dumps(proprio), "language_instruction": instruction,
             "image0": json_numpy.dumps(np.flip(np.flip(img0, 0), 1)), "image1": json_numpy.dumps(img1),
             "domain_id": 3, "steps": steps}
 
@@ -130,7 +130,8 @@ def test_xvla_seeds_features_and_sample(xvla_service):
 @requires_lerobot
 def test_pi05_server_matches_lerobot_eval_step():
     """The server's first 10 actions against lerobot-eval's own per-step ops (select_action +
-    post-processors) on LeRobot's own env observation, with the policy's noise pinned."""
+    post-processors) on LeRobot's own env observation, with the policy's noise pinned. The server side is the seeded
+    batch of one (`act_unbatched`); test_batch_invariance.py ties the batched path to it at max_batch 1."""
     import torch
     from lerobot.envs.configs import LiberoEnv as LiberoEnvConfig
     from lerobot.envs.utils import NEW_ROLLOUT_OPTION, preprocess_observation
@@ -139,7 +140,7 @@ def test_pi05_server_matches_lerobot_eval_step():
     from vlar_harness.servers.common import seeded_noise
     from vlar_harness.servers.pi05_server import PI05Service
 
-    svc = PI05Service(PI05_CKPT, DEVICE)
+    svc = PI05Service.load(PI05_CKPT, DEVICE)
     vec = LiberoEnvConfig(task="libero_10", task_ids=[0]).create_envs(n_envs=1, use_async_envs=False)["libero_10"][0]
     obs, _ = vec.reset(seed=[1000], options={NEW_ROLLOUT_OPTION: True})
     task = list(vec.call("task_description"))
@@ -161,8 +162,9 @@ def test_pi05_server_matches_lerobot_eval_step():
                 a = svc.env_postprocessor({ACTION: svc.postprocessor(a)})[ACTION]
                 ref.append(a.to("cpu").numpy())
         policy.model.sample_noise = original
-        out = svc.act({"obs": obs, "task": task[0], "seed": 7})
+        out = svc.act_unbatched({"obs": obs, "task": task[0], "seed": 7})
         assert out["actions"].shape == (50, 7)
         assert np.array_equal(out["actions"][:10], np.concatenate(ref, axis=0))
     finally:
         vec.close()
+        svc.close()

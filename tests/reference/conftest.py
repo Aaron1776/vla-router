@@ -30,5 +30,20 @@ def have(module: str) -> bool:
 LIBERO_READY = have("libero") and have("robosuite") and have("mujoco") and \
     (Path(os.environ["LIBERO_CONFIG_PATH"]) / "config.yaml").exists()
 
+# LIBERO-10's instructions in task order (hf-libero 0.1.4, `task.language`; checked against the benchmark by
+# test_batch_invariance.py where LIBERO is installed). Their lengths differ, which the batching tests rely on.
+LIBERO_10 = [
+    "put both the alphabet soup and the tomato sauce in the basket",
+    "put both the cream cheese box and the butter in the basket",
+    "turn on the stove and put the moka pot on it",
+    "put the black bowl in the bottom drawer of the cabinet and close it",
+    "put the white mug on the left plate and put the yellow and white mug on the right plate",
+    "pick up the book and place it in the back compartment of the caddy",
+    "put the white mug on the plate and put the chocolate pudding to the right of the plate",
+    "put both the alphabet soup and the cream cheese box in the basket",
+    "put both moka pots on the stove",
+    "put the yellow and white mug in the microwave and close it",
+]
+
 requires_libero = pytest.mark.skipif(not LIBERO_READY, reason="needs the simulator environment (LIBERO + robosuite)")
 requires_lerobot = pytest.mark.skipif(not (LIBERO_READY and have("lerobot")), reason="needs lerobot 0.6.1 + LIBERO")

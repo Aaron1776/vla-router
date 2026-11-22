@@ -26,8 +26,11 @@ request's samples are consecutive rows), padded with copies of the batch's first
 comes from its own seed's CPU generator. A request's result is therefore bit-identical whichever requests share its
 batch, however many, and wherever it sits; the encoder geometry is the same for all three endpoints, so their pooled
 features agree bit for bit. Batched requests must carry exactly the two views the harness sends (main, wrist), so the
-image encoder always sees 2 x max_batch images, and the configured number of flow-matching steps. A request without a
-seed keeps the reference behaviour (global RNG, a batch of one, unpadded) outside the batchers.
+image encoder always sees 2 x max_batch images, and the configured number of flow-matching steps. The instruction's
+token length is part of the geometry too (amendment 26): the authors' processor pads every instruction to 50 tokens,
+which the encoder attends to as in the authors' model, so a request's padding is its own input and never depends on
+its batch-mates; an instruction that fills all 50 (possibly truncated) is refused. A request without a seed keeps the
+reference behaviour (global RNG, a batch of one, unpadded) outside the batchers.
 
 Pooled features [ASSUMPTION in the spec]: `enc_mean` is the mean over all encoder output tokens
 (first image's tokens and the 50 text tokens, padding included, as the encoder attends to all
@@ -50,6 +53,13 @@ from .batching import Batcher, pad_rows
 from .common import Timer, deterministic_torch, peak_memory_gb, seeded_noise, torch_flags
 
 log = logging.getLogger("vlar.xvla_server")
+
+# Shared per-call state (audited for amendment 24; docs/HARNESS.md "Batching"): the authors' processor and model keep
+# none, but the processor's Hugging Face fast tokenizer holds mutable padding and truncation settings inside a shared
+# Rust object, which concurrent calls can trip over. Every processor call runs under this lock (requests are
+# pre-processed in their callers' threads); the model runs under the service's device lock, one batch at a time.
+# Lock order: device lock, then PROCESSING_LOCK, never the reverse.
+PROCESSING_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -98,6 +108,10 @@ class XVLAService:
         self.dim_action = int(self.xvla.action_space.dim_action)
         self.lock = threading.Lock()   # one batch (or unseeded request) on the device at a time
         self.batching = b = batching or XVLABatching()
+        # Amendment 26: the instruction's token length is part of the fixed geometry (the authors' processor pads to
+        # it; the encoder attends to the padding, so it is part of each request's own input, never its batch-mates').
+        self.token_length = int(processor.language_max_length)
+        self.pad_token_id = int(processor.tokenizer.pad_token_id)
 
         def batcher(kind: str, capacity: tuple, cost=lambda r: (1,)):
             return Batcher(f"xvla-{kind}", prepare=lambda p: self._prepare_request(p, kind),
@@ -141,7 +155,8 @@ class XVLAService:
         if not images:
             raise ValueError("No valid images found.")
 
-        inputs = self.processor(images, payload["language_instruction"])
+        with PROCESSING_LOCK:
+            inputs = self.processor(images, payload["language_instruction"])
         if not {"input_ids", "image_input", "image_mask"}.issubset(inputs):
             raise ValueError("Processor returned incomplete inputs.")
 
@@ -180,6 +195,11 @@ class XVLAService:
         else:
             seeds = []
         inputs, _ = self.process(payload)
+        ids = inputs["input_ids"]
+        if tuple(ids.shape) != (1, self.token_length):
+            raise ValueError(f"the instruction must be exactly {self.token_length} tokens, got {tuple(ids.shape)}")
+        if int(ids[0, -1]) != self.pad_token_id:
+            raise ValueError(f"the instruction fills all {self.token_length} tokens (it may have been truncated)")
         if kind == "features":                       # the encoder's inputs only, so every /features row is alike
             inputs = {k: inputs[k] for k in ("input_ids", "image_input", "image_mask")}
         elif not {"proprio", "domain_id"}.issubset(inputs):
