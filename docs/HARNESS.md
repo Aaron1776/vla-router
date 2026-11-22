@@ -692,8 +692,10 @@ sdists without build isolation. `locktool.py split` separates the lock. Everythi
 
 The images also hold:
 - the X-VLA checkout at 6c4ecfb8 (shallow fetch by commit, checked);
-- for sim and pi05, LIBERO's scene assets at 0b3ea86b, checked against the tree digest now pinned in the config as
-  `sim.assets_sha256`, with LIBERO's config written by `libero_config.py`;
+- for sim and pi05, LIBERO's scene assets at 0b3ea86b in `/root/.cache/libero/assets`, where hf-libero 0.1.4's
+  `get_assets_path()` finds them offline as in the reference run (amendment 32; config.yaml's `assets` key is never
+  read), checked against the tree digest pinned in the config as `sim.assets_sha256`; `check_env.py` checks that
+  LIBERO resolves that directory and builds all ten LIBERO-Long scenes; LIBERO's config written by `libero_config.py`;
 - the repo's `src`, `tests`, `References` and `containers`;
 - `VLAR_GIT_COMMIT`, which `provenance.git_commit` reads when there is no `.git`;
 - the apt package list.
@@ -724,6 +726,15 @@ the L4, `ops/vm/load_images.sh` does the driver check, loads and verifies the im
   and batching variables.
 - `uv pip install --dry-run` of every lock for linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4 (cp313).
 - `libero_config.py` reproduces the Mac's LIBERO config.
+- X-VLA's tests use starlette's test client, which needs httpx2 (starlette 1.10.0's `full` extra; httpx is a
+  deprecated fallback, which `.venv-xvla` happens to have). `containers/xvla-test.lock` (from `xvla-test.in`, resolved
+  with `xvla.lock` as constraints, `locktool.py minus` keeps only what `xvla.lock` lacks: httpx2 2.16.0, httpcore2
+  2.16.0, truststore 0.10.5) is installed with hashes into the throwaway container of each X-VLA test run, never into
+  the image. Checked on the Mac: the hashes verify and the test passes through httpx2 with the httpx fallback's warning
+  as an error.
+- `tests/reference/test_libero_assets.py`: LIBERO's resolved assets directory and digest, all ten scenes; missing
+  assets, the same files elsewhere and a changed file are each refused. On the Mac 4 passed in 7 s (the ten scenes
+  about 5 s).
 - `check_env.py` against `.venv-sim` passes the reference-file and assets checks; the rest differs by platform,
   as expected.
 
@@ -754,8 +765,8 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
 | simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
 | simulator, both servers up, before the base rollouts (a smoke run) | `vlar-ops worker --phase base --max-jobs 1`, then `vlar-ops dataset manifest --root <copy of the bucket>` | the production worker with the real clients and servers (geometry and deterministic checks pass, one job's files and marker in the Cloud Storage bucket), the Cloud Storage backend, and a manifest over real data; delete that job's files and marker afterwards, or keep them as the first base job |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
-| X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
-| X-VLA | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position (six tasks' requests, each at every position of a full batch); the batches captured from the Mac's concurrency failure; simultaneous requests through the queue; rows post-processed alone; features equal across endpoints (amendment 24) |
+| X-VLA (throwaway container: first `pip install --require-hashes --no-deps --only-binary :all: -r containers/xvla-test.lock`) | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
+| X-VLA (throwaway container: first `pip install --require-hashes --no-deps --only-binary :all: -r containers/xvla-test.lock`) | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position (six tasks' requests, each at every position of a full batch); the batches captured from the Mac's concurrency failure; simultaneous requests through the queue; rows post-processed alone; features equal across endpoints (amendment 24) |
 | LeRobot (with the `pi` extra) | `VLAR_PI05_CHECKPOINT=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k pi05_real` | π0.5 at the production geometry with the real weights and tokenizer, bit for bit: alone, with companions, at every position and in a full batch, batch-mates from different tasks with different prompt and state token lengths; padding ids cannot change a result; every LIBERO-10 prompt fits the 200 tokens; max_batch 1 equals `act_unbatched`; simultaneous requests keep their prompts and outputs (amendments 24, 26). Deterministic mode must not raise on any CUDA kernel π0.5 uses. |
 | both servers, Phase 0 step 2 (a measurement) | throughput at the fixed geometry against unpadded batches, with deterministic mode on and off | the cost of fixed padding and of deterministic mode; if padding is too slow, stop and bring the numbers to the user before relaxing anything (amendment 24) |
 | both servers, Phase 0 step 2 (a measurement) | servers started at `--max-batch 1` (X-VLA also `--sample-rows 5`): median latency of `/act`, `/features`, `/sample` K = 5 and π0.5 inference | the clock charges, unpadded, as a deployed robot runs the calls (amendment 25); written to `latency` in the config; the padded figures never are |

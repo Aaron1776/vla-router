@@ -1,5 +1,7 @@
 """Writes LIBERO's config.yaml for an image (as third_party/libero-home/config.yaml on the Mac) without importing
-libero, which asks for it interactively on first import.
+libero, which asks for it interactively on first import. hf-libero 0.1.4 reads only bddl_files, init_states and
+datasets from it; its scene and object loaders ignore the `assets` key (get_assets_path(), see containers/Dockerfile),
+which is written anyway, pointing at the directory LIBERO does read.
 
     python libero_config.py OUT_DIR ASSETS_DIR
 """

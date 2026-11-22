@@ -85,7 +85,7 @@ def test_every_pip_install_is_hash_checked():
         assert "--require-hashes" in cmd and "--no-deps" in cmd, cmd
 
 
-@pytest.mark.parametrize("lock", ["lerobot.lock", "xvla.lock", "build.lock"])
+@pytest.mark.parametrize("lock", ["lerobot.lock", "xvla.lock", "build.lock", "xvla-test.lock"])
 def test_every_lock_entry_carries_hashes_and_targets_the_vm(lock):
     text = (C / lock).read_text()
     assert "linux/x86_64" in text and "CPython 3.13" in text
@@ -246,3 +246,39 @@ def test_metadata_spellings_of_the_locked_version_match(lock, name, locked, meta
 ])
 def test_the_version_check_is_strict_otherwise(locked, installed):
     assert check_env.compare({"p": locked}, {"p": installed}) == [f"p: locked {locked}, installed {installed}"]
+
+
+def test_libero_assets_sit_where_libero_reads_them():
+    # hf-libero 0.1.4's get_assets_path() ignores config.yaml and falls back to ~/.cache/libero/assets, as in the
+    # reference run (amendment 32): the snapshot goes there, HOME is /root, and check_env checks that directory.
+    where = check_env.LIBERO_ASSETS
+    assert where == "/root/.cache/libero/assets"
+    stage = DOCKERFILE.split("FROM lerobot-env AS libero-assets", 1)[1].split("\nFROM ", 1)[0]
+    assert f"local_dir='{where}'" in stage
+    runtime = DOCKERFILE.split("FROM lerobot-env AS lerobot-runtime", 1)[1].split("\nFROM ", 1)[0]
+    assert f"COPY --from=libero-assets {where} {where}" in runtime
+    assert f"libero_config.py /opt/libero-home {where}" in runtime
+    env = runtime.replace("\\\n", " ")
+    assert "HOME=/root" in env and f"VLAR_LIBERO_ASSETS={where}" in env and "/opt/libero-assets" not in DOCKERFILE
+    assert "USER " not in DOCKERFILE
+
+
+def test_sim_and_pi05_builds_check_assets_and_scenes_without_a_gpu():
+    joined = DOCKERFILE.replace("\\\n", " ")
+    for role in ("sim", "pi05"):
+        assert re.search(rf"MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa python containers/check_env\.py --role {role} ",
+                         joined), role
+
+
+def test_xvla_test_dependencies_stay_out_of_the_image():
+    # starlette 1.10.0's test client needs httpx2 (its `full` extra); it is installed with hashes only into the
+    # throwaway container of the X-VLA test run, never into the exported image (which keeps exactly xvla.lock).
+    test_lock, server = pins("xvla-test.lock"), pins("xvla.lock")
+    assert pins("xvla.lock")["starlette"] == "1.10.0" and "httpx2" in test_lock
+    assert not set(test_lock) & set(server)
+    assert "xvla-test" not in DOCKERFILE
+    startup = (REPO / "ops" / "gcp" / "build_vm_startup.sh").read_text() if (REPO / "ops").exists() else None
+    if startup is not None or not IN_IMAGE:
+        run = startup.replace("\\\n", " ")
+        assert re.search(r'docker run --rm [^\n]*"vlar-xvla:\$\{COMMIT\}" sh -c\s+"pip install -q --require-hashes '
+                         r'--no-deps --only-binary :all: -r containers/xvla-test\.lock && \s*python -m pytest', run)

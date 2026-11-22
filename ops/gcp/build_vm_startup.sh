@@ -38,8 +38,12 @@ cpu=(-e MUJOCO_GL=osmesa -e PYOPENGL_PLATFORM=osmesa -e VLAR_TEST_DEVICE=cpu -v 
 docker run --rm "${cpu[@]}" "vlar-sim:${COMMIT}" python -m pytest -q -rs tests > "${W}/test-sim.log" 2>&1 || status=1
 docker run --rm "${cpu[@]}" "vlar-pi05:${COMMIT}" python -m pytest -q -rs \
   tests/reference/test_batch_invariance.py -k pi05 > "${W}/test-pi05.log" 2>&1 || status=1
-docker run --rm "${cpu[@]}" "vlar-xvla:${COMMIT}" python -m pytest -q -rs \
-  tests/reference/test_model_servers.py tests/reference/test_batch_invariance.py -k xvla > "${W}/test-xvla.log" 2>&1 || status=1
+# X-VLA's tests need starlette's test client (httpx2, containers/xvla-test.lock), installed with hashes into this
+# throwaway container only: the exported image keeps exactly xvla.lock.
+docker run --rm "${cpu[@]}" "vlar-xvla:${COMMIT}" sh -c \
+  "pip install -q --require-hashes --no-deps --only-binary :all: -r containers/xvla-test.lock && \
+   python -m pytest -q -rs tests/reference/test_model_servers.py tests/reference/test_batch_invariance.py -k xvla" \
+  > "${W}/test-xvla.log" 2>&1 || status=1
 tail -n 3 "${W}"/test-*.log
 (( status == 0 )) || fail "in-container tests (see test-*.log)"
 

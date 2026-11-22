@@ -4,10 +4,12 @@ the bare base image.
     python locktool.py sdists LOCK                  # names in LOCK with no wheel for CPython 3.13 on linux/x86_64
                                                     # (asks PyPI; containers/lock.sh writes them to <env>.sdists)
     python locktool.py split LOCK SDISTS --wheels W --sdists S
+    python locktool.py minus LOCK BASE              # LOCK without the packages BASE pins (same version required)
 
 `split` writes two pip requirement files, each entry with its hashes: the packages installed from hashed wheels,
 and the sdist-only ones, which the image builds into wheels in a builder stage from their hash-checked sources with
-the hashed build tools of build.lock (pip does not hash-check an sdist's own build dependencies).
+the hashed build tools of build.lock (pip does not hash-check an sdist's own build dependencies). `minus` keeps a
+test-only lock (xvla-test.lock, resolved with BASE as constraints) to the packages BASE does not already install.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import urllib.request
 from pathlib import Path
 
 _PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==")
+_PIN_VERSION = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)")
 
 
 def canon(name: str) -> str:
@@ -99,6 +102,18 @@ def sdist_only(lock: str) -> list[str]:
     return sorted(out)
 
 
+def minus(lock: str, base: str) -> str:
+    """LOCK's entries for packages not in BASE; a package in both must be pinned to the same version in both."""
+    options, ents = entries(lock)
+    version = lambda e: _PIN_VERSION.match(e.strip()).group(2)
+    pinned = {n: version(e) for n, e in entries(base)[1]}
+    for n, e in ents:
+        if n in pinned and version(e) != pinned[n]:
+            raise SystemExit(f"{n}: {version(e)} here, {pinned[n]} in the base lock")
+    keep = [e for n, e in ents if n not in pinned]
+    return "\n".join(options) + "\n" + "\n".join(keep) + "\n"
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -109,9 +124,15 @@ def main(argv=None) -> None:
     p.add_argument("sdists", type=Path)
     p.add_argument("--wheels", type=Path, required=True)
     p.add_argument("--sdists", dest="sdists_out", type=Path, required=True)
+    m = sub.add_parser("minus")
+    m.add_argument("lock", type=Path)
+    m.add_argument("base", type=Path)
     a = ap.parse_args(argv)
     if a.cmd == "sdists":
         print("\n".join(sdist_only(a.lock.read_text())))
+        return
+    if a.cmd == "minus":
+        sys.stdout.write(minus(a.lock.read_text(), a.base.read_text()))
         return
     names = {canon(n) for n in a.sdists.read_text().split() if n and not n.startswith("#")}
     wheels, sdists = split(a.lock.read_text(), names)

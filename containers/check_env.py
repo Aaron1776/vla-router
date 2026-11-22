@@ -6,9 +6,10 @@ Run at the end of every image build (no GPU) and again on the L4 VM with `--gpu`
 
 Checks: CPython 3.13.16; every installed distribution equals the lockfile's pin and nothing is missing; torch is
 2.11.0 built for CUDA 13.0 (the notebook's 2.11.0+cu130); the harness's pinned reference files (LeRobot's files for
-sim and pi05, the X-VLA checkout's for sim and xvla); for sim and pi05 the LIBERO scene assets' tree digest. With
-`--gpu`: the NVIDIA driver is new enough for CUDA 13.0, torch sees the GPU, and (sim) MuJoCo opens an EGL context.
-Exit status 0 only if everything holds; every problem is printed.
+sim and pi05, the X-VLA checkout's for sim and xvla); for sim and pi05, that LIBERO itself resolves its assets to
+the expected directory, whose tree digest is the pinned one, and that all ten LIBERO-Long scenes build from it
+(amendment 32). With `--gpu`: the NVIDIA driver is new enough for CUDA 13.0, torch sees the GPU, and (sim) MuJoCo
+opens an EGL context. Exit status 0 only if everything holds; every problem is printed.
 """
 
 from __future__ import annotations
@@ -85,6 +86,59 @@ def tree_digest(root: Path, exclude: Iterable[str] = (".cache",)) -> str:
     return h.hexdigest()
 
 
+# Where the images' LIBERO reads its assets: hf-libero 0.1.4's get_assets_path() falls back to its download cache,
+# ~/.cache/libero/assets, as in the reference run; the containers run as root (containers/Dockerfile, amendment 32).
+LIBERO_ASSETS = "/root/.cache/libero/assets"
+LIBERO_LONG_TASKS = 10
+
+
+def libero_asset_problems(want_sha256: str, expected: Path) -> list[str]:
+    """The directory LIBERO itself resolves for its scene and object files (get_assets_path(), not config.yaml, which
+    its loaders ignore) must be `expected` and hold the pinned snapshot (tree digest)."""
+    try:
+        from libero.libero import get_assets_path
+        used = Path(get_assets_path())
+    except Exception as e:
+        return [f"LIBERO assets: cannot ask LIBERO where they are: {type(e).__name__}: {e}"]
+    if not used.is_dir():
+        return [f"LIBERO assets: LIBERO reads them from {used}, which does not exist (expected {expected})"]
+    out = []
+    if used.resolve() != expected.resolve():
+        out.append(f"LIBERO assets: LIBERO reads them from {used}, expected {expected}")
+    got = tree_digest(used)
+    if got != want_sha256:
+        out.append(f"LIBERO assets at {used}: tree digest {got}, pinned {want_sha256}")
+    return out
+
+
+def libero_scene_problems(expected: Path, suite: str = "libero_10") -> list[str]:
+    """Builds every LIBERO-Long task's environment through LIBERO's own loader (bddl file, scene XML, objects, the
+    compiled MuJoCo model; no renderer, no camera observations), as the harness's OffScreenRenderEnv does, and checks
+    each scene XML came from `expected`."""
+    try:
+        from libero.libero import benchmark, get_libero_path
+        from libero.libero.envs.env_wrapper import ControlEnv
+        tasks = benchmark.get_benchmark_dict()[suite]()
+    except Exception as e:
+        return [f"LIBERO scenes: cannot load the {suite} benchmark: {type(e).__name__}: {e}"]
+    out = [] if tasks.n_tasks == LIBERO_LONG_TASKS else [f"LIBERO scenes: {suite} has {tasks.n_tasks} tasks, not 10"]
+    for i in range(tasks.n_tasks):
+        task = tasks.get_task(i)
+        bddl = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+        try:
+            env = ControlEnv(bddl_file_name=bddl, use_camera_obs=False, has_renderer=False,
+                             has_offscreen_renderer=False)
+            try:
+                arena = Path(env.env._arena_xml).resolve()
+                if expected.resolve() not in arena.parents:
+                    out.append(f"LIBERO scene of {suite} task {i} ({task.name}) came from {arena}, not {expected}")
+            finally:
+                env.close()
+        except Exception as e:
+            out.append(f"LIBERO scene of {suite} task {i} ({task.name}): {type(e).__name__}: {e}")
+    return out
+
+
 def parse_driver(text: str) -> tuple[int, ...]:
     return tuple(int(x) for x in text.strip().split("."))
 
@@ -133,11 +187,9 @@ def check(role: str, lock: Path, gpu: bool) -> list[str]:
     except Exception as e:
         problems.append(f"reference files: {e}")
     if role in ("sim", "pi05"):
-        assets = Path(os.environ.get("VLAR_LIBERO_ASSETS", "/opt/libero-assets"))
-        want = cfg["sim"]["assets_sha256"]
-        got = tree_digest(assets) if assets.is_dir() else "missing"
-        if got != want:
-            problems.append(f"LIBERO assets at {assets}: tree digest {got}, pinned {want}")
+        assets = Path(os.environ.get("VLAR_LIBERO_ASSETS", LIBERO_ASSETS))
+        problems += libero_asset_problems(cfg["sim"]["assets_sha256"], assets)
+        problems += libero_scene_problems(assets)
 
     if gpu:
         p = driver_problem(nvidia_driver())

@@ -116,7 +116,9 @@ skipped, X-VLA 2 passed.
 The local environments are git-ignored and live in the repo root:
 - `.venv`: Python 3.13, the unit tests: `.venv/bin/python -m pytest` (no NumPy: the clock, network, labels and
   calibration modules are pure Python on purpose).
-- `.venv-sim`: LIBERO (hf-libero 0.1.4), robosuite 1.4.0, MuJoCo 3.8.1, LeRobot 0.6.1, CPU torch. Reference tests:
+- `.venv-sim`: LIBERO (hf-libero 0.1.4), robosuite 1.4.0, MuJoCo 3.8.1, LeRobot 0.6.1, CPU torch. Its LIBERO finds
+  its assets through a hand-made symlink `.venv-sim/lib/python3.13/site-packages/libero/libero/assets ->
+  third_party/libero-assets` (made 2026-11-20; recreate it if the venv is rebuilt; amendment 32). Reference tests:
   `.venv-sim/bin/python -m pytest tests/reference` (about 6 minutes; `tests/reference/conftest.py` sets
   `LIBERO_CONFIG_PATH=third_party/libero-home` and `MUJOCO_GL`).
 - `.venv-xvla`: the X-VLA authors' pins, CPU. `VLAR_XVLA_CONFIG_DIR=third_party/hf/X-VLA-Pt VLAR_TEST_DEVICE=cpu
@@ -347,7 +349,18 @@ by hand); about 50 on-demand minutes. Logs in `containers/e1f10ee.../` (`build.l
   assets' tree digest at build time).
 - xvla: 11 passed, 1 failed: `test_xvla_act_matches_authors_handler`: "The starlette.testclient module requires the
   httpx2 package to be installed" (not in `xvla.lock`).
-Waiting for the user before debugging (xhigh). Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+Waiting for the user before debugging (xhigh).
+
+Fixes (approved by the user, at xhigh): (1) LIBERO assets, amendment 32: hf-libero's `get_assets_path()` ignores
+config.yaml and takes `<package>/libero/assets`, else its download cache `~/.cache/libero/assets` (the reference run's
+path; the Mac uses the package-relative symlink); the images now put the pinned snapshot at
+`/root/.cache/libero/assets` (`HOME=/root`), and `check_env.py` (sim, pi05) checks the resolved directory, its digest
+and builds all ten LIBERO-Long scenes at build time (OSMesa, no rendering; about 5 s on the Mac);
+`tests/reference/test_libero_assets.py`. (2) X-VLA test dependency: the locked starlette 1.10.0's metadata lists
+httpx2>=2.0.0 (and httpx<0.29 as a deprecated fallback) in its `full` extra; `containers/xvla-test.lock` (httpx2,
+httpcore2, truststore) is installed with hashes only into the throwaway X-VLA test container
+(`build_vm_startup.sh`; the L4 re-run rows say the same). Fifth attempt: on-demand on the commit with these fixes;
+result below when known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
