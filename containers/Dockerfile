@@ -22,7 +22,8 @@ FROM --platform=linux/amd64 ${UBUNTU} AS base
 ARG PYTHON_VERSION
 ARG PYTHON_RELEASE
 ARG PYTHON_SHA256
-ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1 \
+    VLAR_IN_IMAGE=1
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \

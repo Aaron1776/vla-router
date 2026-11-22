@@ -1,6 +1,6 @@
 """The VM worker's startup checks (vlar_ops.vm_worker): the model servers must run the configured fixed batch geometry
 with the deterministic settings before any job is taken; options parse strictly. The production factory and a full
-run with fake model clients are in tests/reference/test_vm_worker.py (simulator environment)."""
+run with fake model clients are in tests/reference/test_vm_worker_sim.py (simulator environment)."""
 
 import copy
 

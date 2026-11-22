@@ -58,7 +58,10 @@ ops/gcp/30_create_vm.sh                     # L4 Spot VM; prints the disk-ledger
 `35_build_images.sh` needs only billing, not the GPU quota (amendment 28). It runs from a clean commit,
 uploads `git archive` of it, and waits for the build VM's result in `gs://$BUCKET/containers/<commit>/`:
 the three images as `.tar.zst` files, `image-digests.json`, `SHA256SUMS`, and the build and in-container test
-logs. The VM deletes itself after `BUILD_MAX_HOURS` at the latest; the script deletes it when it is done.
+logs. The VM deletes itself after `BUILD_MAX_HOURS` at the latest. The script survives network drops on the
+Mac (failed checks are retried, never read as a result) and deletes the VM only after reading DONE or FAILED,
+at the cap, or once the VM is confirmed gone (leftover disk only); it then confirms the VM and disk are gone.
+Run it as `caffeinate -i -s ops/gcp/35_build_images.sh` (tests: `tests/test_build_script.py`, fake gcloud).
 Rebuild after any harness change (a new commit means new images). The lockfiles are regenerated with
 `containers/lock.sh` (needs `uv`).
 

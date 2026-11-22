@@ -8,6 +8,7 @@ lock split, the environment check's helpers and the driver threshold behave; the
 """
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -22,6 +23,14 @@ C = REPO / "containers"
 DOCKERFILE = (C / "Dockerfile").read_text()
 CFG = load_config()
 CONTEXT = {"pyproject.toml", "src", "tests", "References", "containers"}     # .dockerignore's allow list
+IN_IMAGE = os.environ.get("VLAR_IN_IMAGE") == "1"                            # set by containers/Dockerfile
+
+
+def repo_only(*paths):
+    """Skip inside an image (VLAR_IN_IMAGE=1) when these repo files are absent there; outside one, a missing file
+    still fails the test."""
+    missing = [p for p in paths if not (REPO / p).exists()]
+    return pytest.mark.skipif(IN_IMAGE and bool(missing), reason=f"repo-only files, not in the image: {missing}")
 
 
 def load(name):
@@ -55,6 +64,7 @@ def test_the_base_image_is_pinned_by_digest_and_every_stage_builds_on_it():
     assert len(re.findall(r"^FROM ", DOCKERFILE, re.M)) == len(stages)
 
 
+@repo_only(".dockerignore")
 def test_copy_sources_exist_and_are_in_the_build_context():
     ignore = (REPO / ".dockerignore").read_text().split()
     assert "*" in ignore and {f"!{c}" if "." in c else f"!{c}/" for c in CONTEXT} <= set(ignore)
@@ -170,6 +180,7 @@ def test_environment_check_helpers(tmp_path):
     assert check_env.tree_digest(tmp_path) != d
 
 
+@repo_only("ops/vm/load_images.sh", "ops/gcp/30_create_vm.sh")
 def test_the_driver_threshold_is_the_same_everywhere():
     want = check_env.MIN_DRIVER_TEXT
     assert want == "580.65.06" and check_env.MIN_DRIVER == (580, 65, 6)
@@ -177,6 +188,8 @@ def test_the_driver_threshold_is_the_same_everywhere():
     assert ">= 580" in (REPO / "ops" / "gcp" / "30_create_vm.sh").read_text()
 
 
+@repo_only("ops/gcp/env.example.sh", "ops/gcp/35_build_images.sh", "ops/gcp/build_vm_startup.sh",
+           "ops/vm/load_images.sh", "ops/gcp/30_create_vm.sh")
 def test_build_settings_exist_and_scripts_parse():
     env = (REPO / "ops" / "gcp" / "env.example.sh").read_text()
     used = set(re.findall(r"\$\{(BUILD_[A-Z_]+)", (REPO / "ops" / "gcp" / "35_build_images.sh").read_text()))
@@ -186,6 +199,7 @@ def test_build_settings_exist_and_scripts_parse():
         assert subprocess.run(["bash", "-n", str(REPO / script)]).returncode == 0, script
 
 
+@repo_only("ops/vm")
 def test_service_units_run_the_right_images_on_the_configured_ports():
     vm = REPO / "ops" / "vm"
     for model, image in (("xvla", "vlar-xvla"), ("pi05", "vlar-pi05")):
@@ -198,3 +212,9 @@ def test_service_units_run_the_right_images_on_the_configured_ports():
     assert "--sample-rows ${VLAR_XVLA_SAMPLE_ROWS}" in (vm / "vlar-xvla.service").read_text()
     loader = (vm / "load_images.sh").read_text()
     assert "/etc/vlar/images.env" in loader and "/etc/vlar/batching.env" in loader
+
+
+def test_every_image_carries_the_in_image_marker():
+    # Set in the base stage, which all three targets build on; the repo-only skips depend on it.
+    base = DOCKERFILE.split("FROM base AS", 1)[0]
+    assert "VLAR_IN_IMAGE=1" in base and DOCKERFILE.count("VLAR_IN_IMAGE") == 1
