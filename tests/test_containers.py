@@ -218,3 +218,11 @@ def test_every_image_carries_the_in_image_marker():
     # Set in the base stage, which all three targets build on; the repo-only skips depend on it.
     base = DOCKERFILE.split("FROM base AS", 1)[0]
     assert "VLAR_IN_IMAGE=1" in base and DOCKERFILE.count("VLAR_IN_IMAGE") == 1
+
+
+def test_sdists_build_as_the_reference_notebook_did():
+    # The notebook's install cell: cmake>=3.29,<4.2, CMAKE_POLICY_VERSION_MINIMUM=3.5, --no-build-isolation (SPEC §2).
+    m = re.search(r"^cmake==(\d+)\.(\d+)\.(\d+) ", (C / "build.lock").read_text(), re.M)
+    assert m and (3, 29) <= tuple(map(int, m.groups()[:2])) < (4, 2)
+    stage = DOCKERFILE.split("FROM base AS sdist-wheels", 1)[1].split("\nFROM ", 1)[0]
+    assert "CMAKE_POLICY_VERSION_MINIMUM=3.5" in stage and "--no-build-isolation" in stage

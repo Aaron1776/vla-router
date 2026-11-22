@@ -1,5 +1,7 @@
 # Build tools for the few sdist-only packages in lerobot.lock (lerobot.sdists), installed with hashes in the
 # image's builder stage (containers/Dockerfile, stage sdist-wheels). egl-probe and hf-egl-probe also need cmake.
+# cmake in the reference notebook's range (its install cell built egl_probe and hf_egl_probe with cmake>=3.29,<4.2,
+# CMAKE_POLICY_VERSION_MINIMUM=3.5 and --no-build-isolation; SPEC §2): cmake 4.2+ fails their configure step.
 setuptools
 wheel
-cmake
+cmake>=3.29,<4.2

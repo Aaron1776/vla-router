@@ -44,6 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
  && test "$(git rev-parse HEAD)" = "${XVLA_COMMIT}" && rm -rf .git
 
 # ---------------------------------------------------------------- wheels for lerobot.lock's sdist-only packages
+# As the reference notebook built them (SPEC §2): cmake>=3.29,<4.2 (build.lock), CMAKE_POLICY_VERSION_MINIMUM=3.5,
+# --no-build-isolation.
 FROM base AS sdist-wheels
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 COPY containers/build.lock containers/lerobot.lock containers/lerobot.sdists containers/locktool.py /tmp/lock/
@@ -51,7 +53,8 @@ RUN /opt/python/bin/python3 -m venv /opt/build \
  && /opt/build/bin/pip install --require-hashes --no-deps --only-binary :all: -r /tmp/lock/build.lock \
  && python /tmp/lock/locktool.py split /tmp/lock/lerobot.lock /tmp/lock/lerobot.sdists \
       --wheels /tmp/lock/wheels.txt --sdists /tmp/lock/sdists.txt \
- && PATH=/opt/build/bin:$PATH /opt/build/bin/pip wheel --no-build-isolation --no-deps --no-binary :all: \
+ && CMAKE_POLICY_VERSION_MINIMUM=3.5 PATH=/opt/build/bin:$PATH \
+    /opt/build/bin/pip wheel --no-build-isolation --no-deps --no-binary :all: \
       --require-hashes -r /tmp/lock/sdists.txt -w /wheels
 
 # ---------------------------------------------------------------- the LeRobot environment (sim and pi05)

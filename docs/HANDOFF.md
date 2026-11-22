@@ -297,10 +297,27 @@ any case waits for the §18 milestone and the user's go-ahead.
 - Monitoring email channel `120237596798409676` (the alert email in `env.sh`) and alert policy
   `11822138694703063206` (the spend guard's soft and hard limit log events).
 
-**Next (fresh session, at high):** Phase 0 stage 2, `ops/gcp/35_build_images.sh` from a clean, pushed commit (CPU
-build VM, about $0.25; images to `gs://swift-library-515509-vla-data/containers/<commit>/`), with the user's
-approval. Not run in the 2026-11-22 session. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with
-the user's go-ahead.
+**Phase 0 stage 2, image build (2026-11-22, approved by the user).** First attempt on `0046252` (build script
+hardened against network drops on the Mac: three-way checks, deletion only after DONE/FAILED is read, the cap, or a
+confirmed-gone VM, deletion confirmed; `VLAR_IN_IMAGE=1` marker with in-image-only skips for repo-only tests;
+`tests/reference/test_vm_worker.py` renamed `test_vm_worker_sim.py` after a base-name clash stopped `pytest tests`
+in the sim environment; image-layout dry run 267 passed / 27 skipped): FAILED about 2 minutes in at `docker build
+sim`, stage `sdist-wheels`: egl-probe's CMakeLists.txt (`cmake_minimum_required(VERSION 2.8.12)`) does not configure
+with the locked CMake 4.4.4. VM and disk deleted and confirmed gone; cost cents; `containers/0046252.../` holds only
+`src.tar.gz`, `build.log`, `FAILED` (1 MB).
+
+Fix (amendment 31, the user's direction): build the sdists as the reference notebook did: `cmake>=3.29,<4.2` in
+`containers/build.in` (locked 4.1.3; `lock.sh` re-run with `PY=.venv-sim/bin/python`, which has certifi: `.venv`'s
+Python cannot verify PyPI's certificate and its failed run empties `lerobot.sdists`), `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+in the `sdist-wheels` stage, `--no-build-isolation` (already); SPEC §2 provenance note and §17 amendment 31; guard
+test `test_sdists_build_as_the_reference_notebook_did`. Local check on the Mac (arm64, CPython 3.13, locked build
+tools by version, sdists hash-checked, no pip cache): all five sdists build (antlr4-python3-runtime, bddl, egl-probe,
+hf-egl-probe, robomimic); egl-probe and hf-egl-probe configure and compile. Without the policy setting both CMake
+4.1.3 and 4.4.4 fail with the VM's error; with it 4.4.4 also configures, so the setting is the fix and the pin
+matches the notebook. egl-probe bundles its EGL/KHR/X11 headers and links only dl and pthread (build-essential).
+
+Second attempt: script 35 re-run with `caffeinate -i -s` on the commit that carries this fix; result below when
+known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
