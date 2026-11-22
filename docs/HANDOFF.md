@@ -41,7 +41,7 @@ The harness build is complete only when all of the following are true:
 
 When all seven are true, stop and tell the user exactly: "Milestone checkpoint: the harness build is complete and Phase 0 on the L4 VM is next." With it, give a short checklist confirming each of the seven items with its commit, the estimated Phase 0 cost and VM hours, and the first commands Phase 0 will run. Then wait for the user's explicit go-ahead before creating any cloud resources or spending any money. Do not announce this milestone early or partially; if any item is incomplete, say which ones remain instead.
 
-Where each item stands now (not complete; do not announce):
+Where each item stands now (all seven hold as of the commit after `c6d49ed`; milestone announced 2026-11-22, waiting for the user's go-ahead before any cloud resource):
 
 | Item | State |
 | --- | --- |
@@ -50,8 +50,8 @@ Where each item stands now (not complete; do not announce):
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; decider inputs and measurement recording (`observe()`, proposal, free signals, spread/drift, chunk-time samples, probes, `record="full"`) done and tested on the Mac with fake models (`6c08bf5`); Parquet dataset records and snapshot sync to the bucket (through the worker) done and tested against a local bucket (the commit after `6c08bf5`); the Cloud Storage path is untested |
 | 4. Queue, spend guard, packaging | done on the Mac against a local stand-in for the bucket (`src/vlar_ops`): queue, spend guard, packaging, runner and worker loop (the commit after `6c08bf5`), the VM worker command `vlar-ops worker` and the dataset manifest and datacard (`vlar-ops dataset manifest`/`verify`; the commit after `1683b56`); the Cloud Storage backend is first exercised by the VM smoke run on the re-run list |
 | 5. Dockerfiles, lockfiles | done on the Mac, the commit after `1e92964` (wording changed by amendment 28): `containers/` (Dockerfile with targets sim/pi05/xvla, hashed linux/x86_64 locks, `check_env.py`, `locktool.py`, `lock.sh`), `ops/gcp/35_build_images.sh` + `build_vm_startup.sh` (CPU build VM), `ops/vm/load_images.sh` (driver check, load, GPU checks), service units; image builds and in-container tests are Phase 0's first step |
-| 6. GCP scripts | written (`ops/gcp/`), never run; `IMAGE_FAMILY` and account values are placeholders in `env.example.sh`; the budget alert script covers 50/80/100% of $50 |
-| 7. VM re-run list, commits, HANDOFF | the list starts with the image build on the CPU VM and the L4 driver check and GPU checks (amendment 28), then covers steps 1-5 (both servers' batch invariance on the L4, the padding-cost and unpadded-latency measurements), §12 rendering (`test_render_used.py`), the worker and manifest tests and a real-server worker smoke run; parity tooling and reference files are committed (`25794f7`) |
+| 6. GCP scripts | done 2026-11-22: scripts ready to run, `ops/gcp/env.sh` and `ops/ops.yaml` filled in (git-ignored; billing account `01982D-EC777A-1F425C`, the Education account; `IMAGE_FAMILY` common-cu129-ubuntu-2404-nvidia-580, driver 580); `05_check_account.sh` (read-only) confirmed billing linked and enabled, GPUS_ALL_REGIONS 1, NVIDIA_L4_GPUS 1, PREEMPTIBLE_NVIDIA_L4_GPUS 1 (unused), compute/storage/logging/monitoring APIs on (iam and billingbudgets enabled by `10_bucket_and_account.sh`); budget excludes credits (coupon account). Nothing created |
+| 7. VM re-run list, commits, HANDOFF | VM re-run list complete (image build and driver check first, then steps 1-5, rendering, worker, manifest, smoke run); parity tooling and reference files committed (`25794f7`); everything committed with the item-6 commit after `c6d49ed`, tree clean |
 
 ## Status
 
@@ -251,6 +251,13 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 
 None open. (The fresh-chunk charge question raised during §18 item 3 was decided as amendment 27.)
 
+**Google Cloud account (user, 2026-11-22).** Project `swift-library-515509-v9`, us-central1, bucket
+`swift-library-515509-vla-data`; billing is a $50 university education coupon on a paid billing account with no
+payment method, credits expiring 2027-08-20: $50 is a hard ceiling, the hard stop stays at $45, and the rest must
+cover storage and the final download before the expiry. GPU quota reported approved (GPUS_ALL_REGIONS 1,
+NVIDIA_L4_GPUS 1, PREEMPTIBLE_NVIDIA_L4_GPUS 1); to be confirmed with `05_check_account.sh` before anything is
+created. The alert email is only in the git-ignored `env.sh`.
+
 **Google Cloud readiness (user's action, reported 2026-11-21).** The user is upgrading from the free trial if
 needed and requesting GPU quota: global GPU quota (`GPUS_ALL_REGIONS`) ≥ 1, preemptible L4
 (`PREEMPTIBLE_NVIDIA_L4_GPUS`) ≥ 1 and on-demand L4 (`NVIDIA_L4_GPUS`) ≥ 1 in us-central1 (the region in
@@ -259,6 +266,12 @@ confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates
 any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
+
+**Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
+is needed before any cloud resource is created or money spent. Then Phase 0 at **xhigh**, in this order, each script
+approved by the user after seeing what it creates and costs: `10_bucket_and_account.sh`, `20_budget_alerts.sh`,
+`40_spend_alert_policy.sh`, `35_build_images.sh` (CPU VM), then `30_create_vm.sh` and the VM setup in ops/README.md
+(`load_images.sh` first). Commands need `export PATH=$HOME/google-cloud-sdk/bin:$PATH` and `source ops/gcp/env.sh`.
 
 Done 2026-11-22: the VM worker entry point and the dataset manifest and datacard (`1e92964`, §18 item 4); the
 container definitions (§18 item 5 as amended by 28-30, the commit after `1e92964`). Next, at **medium**: §18 item 6, the Google

@@ -31,7 +31,8 @@ to resume is in the bucket.
 ```bash
 cp ops/gcp/env.example.sh ops/gcp/env.sh   # fill in; git-ignored
 source ops/gcp/env.sh
-ops/gcp/10_bucket_and_account.sh            # bucket (soft delete off) + VM service account
+ops/gcp/05_check_account.sh                 # read-only: sign-in, billing, APIs, GPU quotas, driver image families
+ops/gcp/10_bucket_and_account.sh            # APIs, bucket (soft delete off) + VM service account
 ops/gcp/20_budget_alerts.sh                 # backup email alerts at 50/80/100% of $50
 ops/gcp/40_spend_alert_policy.sh            # email when the guard logs its soft/hard event
 ops/gcp/35_build_images.sh                  # CPU-only Spot VM: build, test, export the images; then deleted
@@ -84,7 +85,9 @@ tokenizer's cache to `/opt/hf` (both mounted read-only).
 
 ## Weekly
 
-- `vlar-ops spend status`, then compare with the billing report and run `vlar-ops spend reconcile`.
+- `vlar-ops spend status`, then compare with the billing report and run `vlar-ops spend reconcile`. Use the
+  cost **before credits**: on a coupon-funded account the cost after credits is $0 until the coupon runs out.
+  The budget alerts (`20_budget_alerts.sh`) track the gross cost for the same reason.
 
 ## End of project
 

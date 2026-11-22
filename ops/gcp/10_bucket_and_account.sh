@@ -2,6 +2,9 @@
 # Bucket for all project data plus the VM's service account (docs/SPEC.md §12, §13).
 set -euo pipefail
 : "${PROJECT_ID:?source ops/gcp/env.sh first}"
+# The APIs every script uses (free to enable; a new project has few of them on).
+gcloud services enable compute.googleapis.com storage.googleapis.com iam.googleapis.com logging.googleapis.com \
+  monitoring.googleapis.com billingbudgets.googleapis.com --project="${PROJECT_ID}"
 
 gcloud storage buckets create "gs://${BUCKET}" --project="${PROJECT_ID}" --location="${REGION}" \
   --uniform-bucket-level-access --public-access-prevention
