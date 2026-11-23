@@ -322,13 +322,19 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23, 21:20Z): stage B is running again on the L4 in `us-central1-a` with the fixed ops code.**
-`200`, `210` and `300` were queued at 21:06Z from `0a0cd4c`, so `phase0/src/CURRENT` is `0a0cd4c` and the VM
-installs it on boot. The queued `200` was checked to carry the re-measure change. The start failed twice at 21:06Z
-with `ZONE_RESOURCE_POOL_EXHAUSTED` (no L4 capacity in the zone); a failed start bills nothing. The third attempt,
-at 21:17Z, started the VM (`outputs/build-logs/l4-start-retries.log`). **The zone fallback was not needed:** the VM,
-its disk and `ZONE` are unchanged. Watcher log: `outputs/build-logs/stageB-watch-0a0cd4c.log`. The spend guard
-stood at $1.70 at the start.
+**NOW (2026-11-23, ~22:05Z, session stopped at half of context): stage B is running on the L4 unattended,
+and the next task is the ops-digest rule (amendment 49, below; xhigh effort).** The VM runs `0a0cd4c`'s ops code
+(`phase0/src/CURRENT`) on images `03f311c`. At 21:49Z step `200` had passed the geometry rule: batch size 4,
+8 workers, 20 sample rows, every size 1-16 feasible (16 leaves 3108 MiB free); it was then measuring latency,
+upload size and gripper widths, before the write-once calibration write. `210` and `300` (parity: the first dataset
+records) follow, and `300` queues `400` on a pass. The VM stops itself on any failure, gate, needs-input or an
+empty queue. **First thing next session:** `export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh;
+gcloud storage cat gs://$BUCKET/vla-router/phase0/STATE.json` and `.../history.jsonl`. Report where it stopped and
+why, or reattach the watcher: `caffeinate -i -s ops/gcp/32_watch_vm.sh`; this session's watcher ends with it. On a
+stop: don't debug; report. `500` is queued by hand only with the user's OK, by copying the step script so
+`CURRENT` stays `0a0cd4c`; `600` only with explicit approval after the step-6 summary. Spend guard: $2.07 at
+21:31Z, now including the disk. The start at 21:17Z came after a zone stockout (21:06Z, two failed starts,
+`outputs/build-logs/l4-start-retries.log`). The zone fallback below was pre-approved but not needed.
 Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`.
 **Zone fallback (pre-approved by the user, 2026-11-23 ~21:15Z), if the start still fails when the retry loop ends:**
 1. Queue `010,015,020,030,040,050,090` beside `200,210,300`, all from a clean HEAD. This must happen before the VM
@@ -358,9 +364,80 @@ Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`.
   **Keep `phase0/src/CURRENT` at `0a0cd4c` through stage B, `500` and the freeze**: moving it would mix ops digests
   if a preemption rebooted the VM mid-stage. The VM keeps the old `disk-created`. That is harmless, since its disk
   is now recorded and its marker exists. Queue `500` by copying the step script, as planned. The Mac's CLI already
-  runs the new code; the ledger format is unchanged. **Not committed yet** (the user had not asked). After the
-  commit, re-set the startup-script metadata from the committed `startup.sh`: it is not part of the digest, and it
-  takes effect at the next boot.
+  runs the new code; the ledger format is unchanged. Committed and pushed as `b8ad746` (the user approved). The
+  startup-script metadata was re-set from `b8ad746`'s `startup.sh` and checked equal; `CURRENT` stays `0a0cd4c`.
+- **Next task: the ops-digest rule (the user's decisions of 2026-11-23 ~22:00Z; to log as amendment 49, refining
+  46; then commit together with this HANDOFF). Not started: the session stopped at half of context.**
+  - **Rule:** after the freeze, the `vlar_ops` digest is provenance, not a mixing barrier. Records with different
+    ops digests may be combined when all of these hold:
+    - the harness digest and the calibration lineage match;
+    - every ops digest involved is a committed version;
+    - their **data digest** matches the freeze's;
+    - records from the frozen harness (the frozen calibration hash) carry a recorded golden pass for their boot.
+
+    Base and parity records (pre-freeze, calibration hash in the freeze lineage) are accepted through the
+    lineage: they must have the freeze record's ops digest. Without a freeze record, amendment 46 is unchanged:
+    one ops digest.
+  - **Audit (reported to the user):** episodes, the clock, labels and collect are in the harness, and nothing
+    imports `vlar_train`. Data-determining code in `vlar_ops`: `vm_worker.ProductionEpisodes` (the Episode wiring:
+    adapters, X-VLA state mode and client hash, π0.5 call, measurement client, one simulator per task) and
+    `plan.py` (seeds, branch plans, `branch_calls`/`shared_branches`, label entries that `vlar_harness.labels`
+    reads, `complete_points`). Branch call counts come from the harness config (config hash).
+  - **Data digest** (new `vlar_ops/datadigest.py`, imported by none of the covered code). It covers:
+    - the `ProductionEpisodes` class, plus the module-level names it references in `vm_worker.py`
+      (`XVLA_CLIENT_FILE`);
+    - all of `plan.py`;
+    - every `vlar_ops` module those import, directly or transitively, nested imports included (none today);
+    - the config definitions.
+
+    Code is normalized as `ast.unparse` of the tree with docstrings stripped (comments and formatting ignored).
+    Definitions are the merged collection config minus the tunable paths, so the old one-file layout and the new
+    split give the same digest. **Hard constraint:** the base rollouts are made with `0a0cd4c`, so later commits'
+    data digest must equal `0a0cd4c`'s. So do not change `plan.py` (including `load_collection_config`) or
+    `ProductionEpisodes` in any way that changes the syntax tree. Pin `0a0cd4c`'s digest in a test (compute it
+    from `git archive 0a0cd4c src/vlar_ops`).
+    Tests:
+    - comments, docstrings and formatting change nothing;
+    - a tunable changes nothing;
+    - a definition, an unknown new key, the class, `XVLA_CLIENT_FILE`, an imported helper and a transitively
+      imported helper each change the digest;
+    - `serve()` or `spend.py` change nothing.
+  - **Config split:** definitions stay in `configs/collection-v1.yaml` (`plan.load_collection_config()` unchanged).
+    Tunables move to `configs/collection-v1-tunables.yaml`, read by a loader outside `plan.py`: `vm_worker.serve`'s
+    `p_escalate` and the plan CLI. Key classification:
+
+    | key | class | in every job spec today? |
+    | --- | --- | --- |
+    | `schema` | definition (unsure) | no (not needed) |
+    | `rollout_seed_namespaces.{base,explore,dagger,pi05_parity,eval}` | definition (seed derivation) | no (the resulting `rollout_seed` is) |
+    | `exploration.episodes_per_state` | tunable | **no**, and no code reads it (`episode_plan` makes one job per state). Plan: explore plans record it via `episode_plan`'s `extra`; the CLI refuses values other than 1 until implemented |
+    | `exploration.p_escalate` | tunable | **no**: only in the marker's `meta.p_escalate`. Plan: explore plans record it in each job spec via `extra` (`plan.py` unchanged); the worker refuses an explore job whose spec value differs from its own; the manifest checks spec == meta |
+    | `branches.seeds` | definition (labels; `complete_points`). A §12 reduction to 2 changes the data digest | no |
+    | `branches.enabled` | definition (which labels exist; completeness). Dropping b3 (§12) changes the data digest | no |
+    | `branches.tier_one_seeds` | definition (unsure: job order and tiers only) | no (each job's `tier` is) |
+    | `dp_sampling.fraction` | tunable | **no**: no branch-plan command exists yet. Plan: the future command records it and the dp seed in every branch job spec; the manifest refuses branch records without it |
+    | `dp_sampling.seed` | definition (which points a fraction selects) | no |
+    | `order_seed` | definition (unsure; order only, and unused: the CLI takes `--order-seed`, default 0) | no |
+  - **Waiver** (in `vlar_ops`, no rebuild; the user's safeguards). In `vm_worker.serve`, on `FreezeError`, accept
+    only if all of these hold:
+    - the message is exactly the frozen harness's ops-only text ("... in: ops code (vlar_ops). ...");
+    - `verify_freeze` passes again with `provenance.ops_digest` patched to the freeze's;
+    - the running ops code comes from a committed archive: `VLAR_OPS_SOURCE` names
+      `phase0/src/<commit>.tar.gz`, and that archive's `vlar_ops` digest equals the running one;
+    - the freeze's archive (found among `phase0/src/*.tar.gz` by its digest) has an equal data digest.
+
+    Any other problem still refuses. Each record made under the waiver records `meta.ops_waiver`
+    {freeze_ops_digest, ops_digest, data_digest, ops_source, freeze_ops_source}. Every record also gets
+    `meta.boot_id`, and frozen-harness records get `meta.golden_pass` (the boot's pass-marker contents). Tests: the
+    real `write_freeze`/`verify_freeze` (`tests/test_config.py`'s `cfg_dir`/`_complete`) tampered with for each
+    other problem: harness version, source code, config values, calibration file, lineage, missing freeze file.
+    Each is tried alone and together with an ops mismatch.
+  - **Manifest:** `build(..., freeze, ops_archives)`. With a freeze, `ops_digest` leaves `SINGLE` and the
+    per-record rules above apply. Mixed ops digests need `--ops-archives`, a copy of `phase0/src/`. Tunables
+    must be in the job specs (explore: `p_escalate` == meta; branch: the dp fraction). `test_manifest.py`:
+    - a tunable change mixes; a definition change or a factory change refuses;
+    - a missing golden pass, uncommitted ops code, or a pre-freeze record with other ops code refuses;
+    - also add `ops_digest` to the freeze JSON in `test_calibration_hashes_must_be_in_the_freeze_lineage`.
  To queue by hand later, from a clean `harness-v1`:
 ```bash
 export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh
