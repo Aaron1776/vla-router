@@ -418,6 +418,30 @@ bucket by `ops/gcp/31_phase0_queue.sh`; `ops/gcp/32_watch_vm.sh` follows `STATE.
 Tests: `tests/test_phase0_runner.py` (fake gcloud/systemctl/vlar-ops/timeout; order, queueing from a step,
 needs-input stays queued, gate failure, failure and time cap, STOP flag, SIGTERM).
 
+**L4 VM created (2026-11-22, user's go-ahead):** `vlar-l4` (us-central1-a, Spot, 100 GB pd-balanced) with stage A
+queued (host source `94b1966`, images `be7b95a`); it stops itself when stage A ends (`32_watch_vm.sh` follows it).
+Spend guard ledger starts with this VM ($0 before it; the six build VMs, about $1.10 before credits, are outside the
+ledger until the weekly reconcile). Pause rule: if the VM stays stopped for more than a day, delete it and its disk
+(`gcloud compute instances delete vlar-l4 --zone us-central1-a --delete-disks=all`, then
+`vlar-ops spend disk-deleted --name vlar-l4-boot`).
+
+**Not yet written for Phase 0 (found 2026-11-22, needed before stage B):** (1) step 2 tooling: unpadded latency
+medians with the servers at max_batch 1 / sample-rows K (amendment 25), throughput at the fixed geometry vs unpadded
+with deterministic mode on/off (padding cost: if too slow, stop and ask), gripper-threshold calibration, the
+upload-size driver (`PI05Client.upload_bytes` -> `network.median_upload_image_bytes` -> `config.write_upload_size`);
+(2) the parity step: plan file (`plan.episode_plan`, phase `pi05_parity`, namespace 5000000, tasks 0-9 x inits 0-9),
+`vlar-ops queue add`, workers with `--phase pi05_parity --option scene_seed=pi05_parity`, the comparison of the runs
+table with `References/` (`reference_runs.compare`; gate = `within_sampling_error`, McNemar p >= 0.05) that queues the
+base rollouts on a pass and exits 76 on a fail; (3) the base-rollout step (500 episodes, namespace 1000000).
+**Decisions needed from the user before stage B:** (a) the harness config is baked into the images, so step 2's
+calibration (a harness source change) needs either an image rebuild before parity (CPU VM, about 85 min, about $0.40)
+or the calibration file mounted into the containers; (b) the base rollouts' provenance: the dataset manifest refuses
+mixed source digests, but step 6 writes the time limits (and step 7 the freeze) after the base rollouts, so their
+digest would differ from v1.0's although SPEC §11 step 7 reuses them; either keep step 6-7 outputs outside the source
+digest (pinned by the freeze file) or re-run the base rollouts after the freeze (about $4). (c) The gated PaliGemma
+tokenizer: no Hugging Face login on the Mac; the user logs in (`hf auth login`, account with Google's terms
+accepted), then the tokenizer files go to `gs://$BUCKET/vla-router/hf-tokenizer/` (envs/README.md's file list).
+
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
 approved by the user after seeing what it creates and costs: `10_bucket_and_account.sh`, `20_budget_alerts.sh`,
