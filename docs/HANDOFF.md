@@ -322,13 +322,15 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23, 21:05Z): step `200` fixed (`44cb3e5`, pushed); re-queueing is BLOCKED on gcloud sign-in.** The
-user pre-approved the next part: make the VM use the fixed commit's ops code, re-queue `200` ahead of `210` and
-`300`, start the L4, and let stage B continue on its own under the same stop rules. At 21:03Z every gcloud call failed
-with "Reauthentication failed. cannot prompt during non-interactive execution": the Mac's gcloud credentials have
-expired. Signing in is the user's to do (`gcloud auth login` in a terminal). Nothing on the VM changed after 14:48Z.
-The L4 is STOPPED, the queue holds `210` and `300` from `03f311c`, and `phase0/src/CURRENT` is `03f311c`.
-**Once signed in, from a clean `harness-v1` at `44cb3e5` or later:**
+**NOW (2026-11-23, 21:10Z): step `200` fixed (`44cb3e5`); stage B re-queued; the L4 cannot start (zone
+stockout), and a start is being retried.** The user signed gcloud in again at about 21:05Z. At 21:06Z
+`31_phase0_queue.sh ...{200,210,300}-*.sh` ran from `0a0cd4c` (the fix plus HANDOFF): `phase0/src/CURRENT` is
+`0a0cd4c`, and the queue holds `200`, `210` and `300`, with `200` first. It was checked that the queued `200` has
+the re-measure change. `gcloud compute instances start` failed twice (21:06Z) with `ZONE_RESOURCE_POOL_EXHAUSTED`:
+no L4 capacity in `$ZONE` (stockout). A failed start bills nothing, and the VM stays STOPPED. The same start is
+retried every 10 min until about 23:06Z (`outputs/build-logs/l4-start-retries.log`). If capacity never comes, the
+L4 stays stopped. Moving zones means recreating the VM (`30_create_vm.sh` in another zone, which needs the user).
+Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`. To queue by hand later, from a clean `harness-v1`:
 ```bash
 export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh
 ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{200,210,300}-*.sh    # host source and CURRENT -> HEAD; 200 sorts first
