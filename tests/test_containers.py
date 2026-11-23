@@ -282,3 +282,13 @@ def test_xvla_test_dependencies_stay_out_of_the_image():
         run = startup.replace("\\\n", " ")
         assert re.search(r'docker run --rm [^\n]*"vlar-xvla:\$\{COMMIT\}" sh -c\s+"pip install -q --require-hashes '
                          r'--no-deps --only-binary :all: -r containers/xvla-test\.lock && \s*python -m pytest', run)
+
+
+@repo_only("ops/gcp/build_vm_startup.sh")
+def test_every_build_log_starts_with_the_cpu():
+    # Amendment 33: the in-container tests' bit-level results depend on the CPU's code paths; lscpu (model name and
+    # instruction-set flags) goes first in build.log, before anything is installed or built.
+    s = (REPO / "ops" / "gcp" / "build_vm_startup.sh").read_text()
+    log, cpu, first = s.index('exec > >(tee -a "${W}/build.log")'), s.index("lscpu"), s.index("apt-get")
+    assert log < cpu < first
+    assert "torch.backends.cpu.get_cpu_capability()" in s

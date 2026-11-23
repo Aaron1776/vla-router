@@ -12,6 +12,10 @@ exec > >(tee -a "${W}/build.log") 2>&1
 upload_logs() { gcloud storage cp "${W}"/*.log "${PREFIX}/" || true; }
 fail() { echo "FAILED: $*"; upload_logs; echo "$*" | gcloud storage cp - "${PREFIX}/FAILED"; shutdown -h now; exit 1; }
 
+# The CPU first (amendment 33): x86 CPUs take different code paths in PyTorch's CPU math libraries, so the in-container
+# tests' bit-level results depend on it. lscpu prints the model name and the instruction-set flags.
+echo "== build VM CPU"; lscpu || cat /proc/cpuinfo; echo "== end of CPU"
+
 command -v gcloud >/dev/null || fail "gcloud is not on the build VM image"
 apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx zstd || fail "apt install"
 gcloud storage cp "${PREFIX}/src.tar.gz" . && mkdir -p src && tar -xzf src.tar.gz -C src || fail "source archive"
@@ -19,6 +23,10 @@ cd src
 for t in sim pi05 xvla; do
   DOCKER_BUILDKIT=1 docker build -f containers/Dockerfile --target "${t}" --build-arg GIT_COMMIT="${COMMIT}" \
     -t "vlar-${t}:${COMMIT}" . || fail "docker build ${t}"
+done
+for t in sim pi05 xvla; do      # the code path PyTorch's CPU kernels dispatch to here (e.g. AVX2, AVX512)
+  docker run --rm "vlar-${t}:${COMMIT}" python -c \
+    "import torch; print('torch CPU capability (${t}):', torch.backends.cpu.get_cpu_capability())" || true
 done
 
 # Small Hugging Face config files the CPU model tests use (no weights), at the pinned revisions.

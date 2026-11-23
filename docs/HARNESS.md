@@ -732,6 +732,13 @@ the L4, `ops/vm/load_images.sh` does the driver check, loads and verifies the im
   2.16.0, truststore 0.10.5) is installed with hashes into the throwaway container of each X-VLA test run, never into
   the image. Checked on the Mac: the hashes verify and the test passes through httpx2 with the httpx fallback's warning
   as an error.
+- Batch invariance on the build VM's CPU (amendment 33): `tests/reference/invariance.py` (`matches_solo`, `exact`,
+  `all_match_solo`): bit for bit except in an image on the CPU, where a difference within torch's default tolerance
+  and closest to the request's own solo result is a `NotBitIdentical` warning with the measured difference; every
+  failure measures max absolute and relative difference. `tests/reference/test_invariance_checks.py` (9) tests the
+  rules, including an output within tolerance but closer to another request's. On the Mac: π0.5 and X-VLA pass in
+  both modes; outputs swapped in `_run_batch` or inside the batcher fail in the image-CPU mode (max |diff| about 6-8).
+  `build_vm_startup.sh` logs `lscpu` first and `torch.backends.cpu.get_cpu_capability()` per image.
 - `tests/reference/test_libero_assets.py`: LIBERO's resolved assets directory and digest, all ten scenes; missing
   assets, the same files elsewhere and a changed file are each refused. On the Mac 4 passed in 7 s (the ten scenes
   about 5 s).

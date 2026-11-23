@@ -14,6 +14,9 @@ stand-in policy for the mechanics:
 On the L4 VM the same checks run with the real weights at the production geometry, bit for bit: X-VLA with
 VLAR_XVLA_MODEL_PATH, VLAR_XVLA_LORA_PATH and VLAR_TEST_DEVICE=cuda; π0.5 with VLAR_PI05_CHECKPOINT (and the gated
 tokenizer) and VLAR_TEST_DEVICE=cuda.
+Only inside an image on the CPU (the build VM's in-container tests) is bit equality a warning with the measured
+difference, the blocking checks being a tolerance and closeness to the request's own solo result (amendment 33,
+invariance.py). Every failure message gives the max absolute and relative difference.
 """
 
 import threading
@@ -23,6 +26,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from conftest import LIBERO_10, have, requires_lerobot, requires_libero  # noqa: E402
+from invariance import all_match_solo, bits, exact  # noqa: E402
 from pi05_testkit import PI05_CONFIG_READY, make_tiny_pi05, pi05_request  # noqa: E402
 from test_model_servers import (DEVICE, PI05_CKPT, cpu_geometry, make_xvla_service,  # noqa: E402
                                 requires_pi05, requires_xvla, xvla_payload)
@@ -35,8 +39,9 @@ requires_tiny_pi05 = pytest.mark.skipif(
            "(third_party/hf/pi05_libero_finetuned or VLAR_PI05_CONFIG_DIR)")
 
 
-def bits(x) -> bytes:
-    return np.asarray(x, dtype=np.float32).tobytes()
+def others_of(i, solo, label="request"):
+    """The other requests' solo results, for the closeness check."""
+    return [(f"{label} {j}", s) for j, s in enumerate(solo) if j != i]
 
 
 def run_together(fn, n):
@@ -197,8 +202,9 @@ def test_xvla_fixed_geometry_makes_rows_independent_of_their_batch():
             ref = svc._run_batch(kind, [x])[0]
             for batch in ([x, y], [y, x], [z, y, x], [y, x, z]):
                 got = svc._run_batch(kind, batch)[next(i for i, r in enumerate(batch) if r is x)]
-                assert bits(got[key]) == bits(ref[key]), (kind, len(batch))
-                assert all(bits(got["features"][f]) == bits(ref["features"][f]) for f in ref["features"]), kind
+                exact(got[key], ref[key], f"{kind} in a batch of {len(batch)}")
+                for f in ref["features"]:
+                    exact(got["features"][f], ref["features"][f], f"{kind} feature {f} in a batch of {len(batch)}")
     finally:
         svc.close()
 
@@ -208,18 +214,21 @@ def test_xvla_every_position_computes_the_same_bits(xvla_six):
     """The same request at every position of a full batch gives the same action, for each of the six tasks' requests.
     Before rows were post-processed alone, request 5 differed at the last position in its last gripper value."""
     _, _, rows = xvla_six
-    differing = [(i, q) for i, r in enumerate(rows) for q in range(1, len(r)) if bits(r[q]) != bits(r[0])]
-    assert not differing, f"(request, position) pairs that differ from position 0: {differing}"
+    solo = [r[0] for r in rows]
+    all_match_solo([(r[q], r[0], f"request {i} at position {q}", others_of(i, solo))
+                    for i, r in enumerate(rows) for q in range(1, len(r))])
 
 
 @requires_xvla
 def test_xvla_captured_concurrent_batches_replay_to_the_alone_results(xvla, xvla_six):
     svc = xvla
     _, prepared, rows = xvla_six
+    solo = [r[0] for r in rows]
+    cases = []
     for ids in XVLA_CAPTURED_BATCHES:
         out = svc._run_batch("act", [prepared[i] for i in ids])
-        bad = [i for i, o in zip(ids, out) if bits(o["action"]) != bits(rows[i][0])]
-        assert not bad, f"batch {list(ids)}: requests {bad} differ from their alone results"
+        cases += [(o["action"], solo[i], f"batch {list(ids)}: request {i}", others_of(i, solo)) for i, o in zip(ids, out)]
+    all_match_solo(cases)
 
 
 @requires_xvla
@@ -232,15 +241,19 @@ def test_xvla_act_is_batch_invariant(xvla):
     pos = {name: next(i for i, r in enumerate(reqs) if r is a) for name, reqs in batches.items()}
     ref = out["alone"][0]
     assert np.asarray(ref["action"]).shape == (30, 20)
+    b_solo = svc._run_batch("act", [b])[0]
+    cases = []
     for name in batches:
         got = out[name][pos[name]]
-        assert bits(got["action"]) == bits(ref["action"]), name
-        assert all(bits(got["features"][k]) == bits(ref["features"][k]) for k in ref["features"]), name
+        cases.append((got["action"], ref["action"], f"a {name}", [("b", b_solo["action"])]))
+        cases += [(got["features"][k], ref["features"][k], f"a {name}, feature {k}", [("b", b_solo["features"][k])])
+                  for k in ref["features"]]
         assert got["batch"]["encoder_rows"] == got["batch"]["denoise_rows"] == svc.batching.max_batch
-    b_alone = svc._run_batch("act", [b])[0]["action"]
-    for got in (out["with b"][1], out["with c, b"][2], out["second"][0], out["last"][1]):
-        assert bits(got["action"]) == bits(b_alone)
-    assert bits(b_alone) != bits(ref["action"])
+    for name, got in (("with b", out["with b"][1]), ("with c, b", out["with c, b"][2]), ("second", out["second"][0]),
+                      ("last", out["last"][1])):
+        cases.append((got["action"], b_solo["action"], f"b {name}", [("a", ref["action"])]))
+    all_match_solo(cases)
+    assert bits(b_solo["action"]) != bits(ref["action"])
 
 
 @requires_xvla
@@ -256,15 +269,20 @@ def test_xvla_sample_is_batch_invariant_and_features_agree_across_endpoints(xvla
     pos = {name: next(i for i, r in enumerate(reqs) if r is sa) for name, reqs in batches.items()}
     ref = out["alone"][0]
     assert np.asarray(ref["actions"]).shape == (2, 30, 20)
+    b_features = svc._run_batch("sample", [sb])[0]["features"]        # another request's, for the closeness check
+    cases = []
     for name in batches:
         got = out[name][pos[name]]
-        assert bits(got["actions"]) == bits(ref["actions"]), name
-        assert all(bits(got["features"][f]) == bits(ref["features"][f]) for f in ref["features"]), name
+        cases.append((got["actions"], ref["actions"], f"sa {name}"))  # b's samples have another shape: none to compare
+        cases += [(got["features"][f], ref["features"][f], f"sa {name}, feature {f}", [("sb", b_features[f])])
+                  for f in ref["features"]]
     # The encoder geometry is the same for every endpoint, so the pooled features agree bit for bit (§3).
     act = svc._run_batch("act", [svc._prepare_request(pa, "act")])[0]["features"]
     feats = svc._run_batch("features", [svc._prepare_request(pa, "features")])[0]["features"]
     for f in ref["features"]:
-        assert bits(act[f]) == bits(feats[f]) == bits(ref["features"][f])
+        cases += [(act[f], ref["features"][f], f"/act feature {f}", [("sb", b_features[f])]),
+                  (feats[f], ref["features"][f], f"/features feature {f}", [("sb", b_features[f])])]
+    all_match_solo(cases)
 
 
 @requires_xvla
@@ -307,9 +325,11 @@ def test_xvla_simultaneous_requests_keep_their_own_prompts_and_outputs(xvla, xvl
     results, errors = run_together(lambda i: svc.act(reqs[i]), n)
     assert not errors, errors
     assert sum(map(len, batches)) == n and max(map(len, batches)) > 1, batches
-    swapped = [i for i in range(n) if bits(results[i]["action"]) != bits(alone[i])]
-    assert not swapped, (f"requests {swapped} got another request's output; batches (request ids by position; the "
-                         f"padding rows copy the first): {batches}")
+    try:
+        all_match_solo([(results[i]["action"], alone[i], f"request {i}", others_of(i, alone)) for i in range(n)])
+    except AssertionError as e:
+        raise AssertionError(f"{e}\nbatches (request ids by position; the padding rows copy the first): {batches}") \
+            from None
 
 
 @requires_xvla
@@ -343,7 +363,7 @@ def test_xvla_a_batch_of_one_unpadded_is_the_reference_path(xvla):
         padded = svc.act(p)["action"]
     finally:
         one.close()
-    assert bits(batched_one) == bits(unbatched)
+    exact(batched_one, unbatched, "X-VLA batch of one vs the reference path")
     diff = float(np.abs(np.asarray(padded) - np.asarray(unbatched)).max())
     print(f"max |padded to {svc.batching.max_batch} - batch of one| = {diff:.3g}")
     assert diff < 1e-4
@@ -371,15 +391,17 @@ def check_pi05_act_invariance(svc, rng):
     out = {name: svc._run_batch(reqs) for name, reqs in batches.items()}
     ref = out["alone"][0]["actions"]
     assert ref.shape == (50, 7) and np.isfinite(ref).all()
+    b_alone = svc._run_batch([b])[0]["actions"]
+    cases = []
     for name, reqs in batches.items():
         got = out[name][next(i for i, r in enumerate(reqs) if r is a)]
-        assert bits(got["actions"]) == bits(ref), name
+        cases.append((got["actions"], ref, f"a {name}", [("b", b_alone)]))
         assert got["batch"]["rows"] == n and got["batch"]["tokens"] == svc.token_length
-    b_alone = svc._run_batch([b])[0]["actions"]
     for name in ("with b", "second", "with c, b", "last"):
         if name in out:
             got = out[name][next(i for i, r in enumerate(batches[name]) if r is b)]
-            assert bits(got["actions"]) == bits(b_alone), name
+            cases.append((got["actions"], b_alone, f"b {name}", [("a", ref)]))
+    all_match_solo(cases)
     assert bits(b_alone) != bits(ref)
 
 
@@ -396,7 +418,7 @@ def check_pi05_padding_tokens(svc, rng):
     real[0, n - 2] = ids[0, 1] if ids[0, 1] != ids[0, n - 2] else ids[0, 2]
     ref = svc._run_batch([a])[0]["actions"]
     with_ids = lambda new: {"observation": dict(a["observation"], **{TOKENS: new}), "seed": a["seed"]}  # noqa: E731
-    assert bits(svc._run_batch([with_ids(pads)])[0]["actions"]) == bits(ref)
+    exact(svc._run_batch([with_ids(pads)])[0]["actions"], ref, "other ids in the masked padding")
     assert bits(svc._run_batch([with_ids(real)])[0]["actions"]) != bits(ref)
 
 
@@ -420,7 +442,7 @@ def check_pi05_reference_path(svc, rng, max_diff):
         padded = svc.act(req)["actions"]
     finally:
         one.close()
-    assert bits(batched_one) == bits(unbatched)
+    exact(batched_one, unbatched, "π0.5 batch of one vs the reference path")
     diff = float(np.abs(padded - unbatched).max())
     print(f"max |padded to {svc.batching.max_batch} - batch of one| = {diff:.3g}")
     assert diff <= max_diff
@@ -464,8 +486,7 @@ def check_pi05_concurrency(svc, rng, monkeypatch):
     assert not errors, errors
     sizes = batcher.stats.sizes[before:]
     assert sum(sizes) == n and max(sizes) > 1, sizes
-    swapped = [i for i in range(n) if bits(results[i]["actions"]) != bits(alone[i])]
-    assert not swapped, f"requests {swapped} got another request's output"
+    all_match_solo([(results[i]["actions"], alone[i], f"request {i}", others_of(i, alone)) for i in range(n)])
 
 
 class BatchSensitivePolicy:
@@ -515,8 +536,13 @@ def test_pi05_act_is_batch_invariant_in_bfloat16():
                    for t, s, seed in ((4, "long", 1), (8, "short", 2), (3, "medium", 3)))
         assert len({prompt_tokens(r) for r in (a, b, c)}) == 3
         ref = svc._run_batch([a])[0]["actions"]
-        assert bits(svc._run_batch([b, a, c])[1]["actions"]) == bits(ref)
-        assert bits(svc._run_batch([c, b, a])[2]["actions"]) == bits(ref)
+        second, last = svc._run_batch([b, a, c]), svc._run_batch([c, b, a])
+        # Other requests' results from the same batches stand in for their solo runs (slow on the CPU in bfloat16).
+        all_match_solo([
+            (second[1]["actions"], ref, "a second (bfloat16)",
+             [("b", second[0]["actions"]), ("c", second[2]["actions"])], "bfloat16"),
+            (last[2]["actions"], ref, "a last (bfloat16)",
+             [("c", last[0]["actions"]), ("b", last[1]["actions"])], "bfloat16")])
     finally:
         svc.close()
 

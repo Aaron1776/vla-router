@@ -359,8 +359,31 @@ and builds all ten LIBERO-Long scenes at build time (OSMesa, no rendering; about
 `tests/reference/test_libero_assets.py`. (2) X-VLA test dependency: the locked starlette 1.10.0's metadata lists
 httpx2>=2.0.0 (and httpx<0.29 as a deprecated fallback) in its `full` extra; `containers/xvla-test.lock` (httpx2,
 httpcore2, truststore) is installed with hashes only into the throwaway X-VLA test container
-(`build_vm_startup.sh`; the L4 re-run rows say the same). Fifth attempt: on-demand on the commit with these fixes;
-result below when known. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+(`build_vm_startup.sh`; the L4 re-run rows say the same). Fifth attempt: on-demand on `f93c714`, 16:00-17:26 local (about 86 minutes): images built; the build-time checks
+passed in all three (sim and pi05 now include LIBERO's resolved assets directory, digest and the ten scenes); **the
+in-container tests failed on bit-level batch invariance on the CPU**; VM and disk deleted and confirmed gone (also
+checked by hand). Logs in `containers/f93c714.../`. The LIBERO and httpx2 fixes work (sim 281 passed, including
+`test_libero_assets.py`; `test_xvla_act_matches_authors_handler` passes).
+- sim and pi05 (the same three tests in each): `test_pi05_act_is_batch_invariant`,
+  `test_pi05_act_is_batch_invariant_in_bfloat16`, `test_pi05_simultaneous_requests_keep_their_own_prompts_and_outputs`
+  ("requests [0, 1, 2, 4] got another request's output": batched bytes differ from alone).
+- xvla (5): `test_xvla_every_position_computes_the_same_bits`, `..._captured_concurrent_batches_replay_to_the_alone_results`,
+  `test_xvla_act_is_batch_invariant`, `test_xvla_sample_is_batch_invariant_and_features_agree_across_endpoints`,
+  `test_xvla_simultaneous_requests_keep_their_own_prompts_and_outputs`.
+**Unexplained:** the same tests passed in the fourth run (`e1f10ee`: pi05 8 passed; xvla all but the httpx2 test), and
+nothing in `src/` or these test files changed between the two commits, so the outcome depends on the build VM (e2 can
+land on different Intel/AMD CPU platforms with different SIMD kernels; the build log does not record the CPU) or on
+nondeterminism. This is an exact-equality discrepancy (SPEC §16): effort checkpoint raised, waiting for max effort
+before debugging. Open question for the user: whether CPU batch invariance on x86_64 must hold for the image build,
+or these checks belong to the L4 (amendment 24 requires them bit for bit on the L4).
+
+Decision (user, 2026-11-22; amendment 33): exact CPU batch invariance on x86_64 does not block the image build; the
+L4's bit-for-bit checks stay blocking. Size of run 5's differences: the logs show only the first differing values,
+1-5 units in the last place of float32 (tiny), not the maximum; the tests now print max absolute and relative
+difference on any failure. In an image on the CPU the blocking checks are torch's default tolerance (float32 rtol
+1.3e-6, atol 1e-5; bfloat16 rtol 1.6e-2) and closeness to the request's own solo result; bit inequality is a
+warning. Build logs start with `lscpu`. Sixth attempt: on-demand on the commit with this; result below when known.
+If it reports any difference beyond the tolerance or a closeness failure, that is a real bug: stop and tell the user. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
