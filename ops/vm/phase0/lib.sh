@@ -63,8 +63,27 @@ write_batching_env() {   # the servers' geometry from the write-once group
   calfile batching-env > /tmp/vlar-batching.env || fail "no write-once calibration: Phase 0 step 2 first"
   install -m 0644 /tmp/vlar-batching.env /etc/vlar/batching.env && rm -f /tmp/vlar-batching.env
 }
+# Ops code (vlar_ops) from the host source over the image's copy; the harness (vlar_harness) stays the image's v1.0
+# code, so Phase 0 steps 6-7 and the golden-set self-check, written after the images, need no rebuild (HARNESS.md).
+OPS_RUN=(-v "${R}/src/vlar_ops:/opt/vla-router/src/vlar_ops:ro" -e "VLAR_OPS_SOURCE=$(cat "${R}/.src" 2>/dev/null)")
 SIM_RUN=(--rm --gpus all --network host -v /etc/vlar:/etc/vlar:ro -v "${P0D}:${P0D}" -e MUJOCO_GL=egl
-         -e PYOPENGL_PLATFORM=egl)
+         -e PYOPENGL_PLATFORM=egl "${OPS_RUN[@]}")
+# The golden-set self-check (§15) against the running production servers: writes /var/lib/vlar/golden-pass.json,
+# which every worker of a frozen harness requires for this boot. Extra docker options first, then `--` and extra
+# `vlar-ops golden check` options.
+golden_check() {
+  local docker_extra=() check_extra=()
+  while (( $# )) && [[ "$1" != -- ]]; do docker_extra+=("$1"); shift; done
+  [[ "${1:-}" == -- ]] && shift; check_extra=("$@")
+  docker run --rm --gpus all --network host -v /etc/vlar:/etc/vlar:ro -v /var/lib/vlar:/var/lib/vlar \
+    -v "${R}/ops/ops.yaml:/etc/vlar-ops/ops.yaml:ro" -e VLAR_OPS_CONFIG=/etc/vlar-ops/ops.yaml -e MUJOCO_GL=egl \
+    -e PYOPENGL_PLATFORM=egl "${CAL_ENV[@]}" "${OPS_RUN[@]}" "${docker_extra[@]}" "vlar-sim:${C}" \
+    vlar-ops golden check --golden "${CAL_DIR}/golden/golden.json" "${check_extra[@]}"
+}
+calibration_frozen() {
+  docker run --rm -v /etc/vlar:/etc/vlar:ro "${CAL_ENV[@]}" "vlar-sim:${C}" python -c \
+    'import sys; from vlar_harness.config import load_config; sys.exit(0 if load_config().frozen else 1)'
+}
 
 wait_servers() {   # both production servers answer /info (they load the weights first)
   local _; for _ in $(seq 1 60); do
@@ -82,6 +101,9 @@ run_phase() {
   printf 'VLAR_WORKER_ARGS=%s\n' "${args}" > /etc/vlar/worker.env
   systemctl start vlar-xvla vlar-pi05 || fail "model servers did not start"
   wait_servers || { systemctl stop vlar-xvla vlar-pi05; fail "model servers not answering /info after 10 minutes"; }
+  if calibration_frozen; then        # §15: a frozen harness replays its golden set before any worker starts
+    golden_check || { systemctl stop vlar-xvla vlar-pi05; fail "golden-set self-check failed: no worker started (§15)"; }
+  fi
   for round in 1 2 3; do
     vlar-ops queue resume >/dev/null
     for i in $(seq 1 "${n}"); do systemctl start "vlar-worker@${i}"; done

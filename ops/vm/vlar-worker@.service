@@ -13,9 +13,11 @@ Requires=docker.service
 [Service]
 EnvironmentFile=/etc/vlar/images.env
 EnvironmentFile=-/etc/vlar/worker.env
+EnvironmentFile=-/etc/vlar/ops.env
 ExecStart=/usr/bin/docker run --rm --name vlar-worker-%i --gpus all --network host \
   -v /etc/vlar:/etc/vlar:ro -v /opt/vla-router/ops/ops.yaml:/etc/vlar-ops/ops.yaml:ro \
   -v /var/lib/vlar:/var/lib/vlar -e VLAR_OPS_CONFIG=/etc/vlar-ops/ops.yaml \
+  -v /opt/vla-router/src/vlar_ops:/opt/vla-router/src/vlar_ops:ro -e VLAR_OPS_SOURCE \
   -e VLAR_CALIBRATION=/etc/vlar/calibration/calibration.yaml -e MUJOCO_GL=egl -e PYOPENGL_PLATFORM=egl \
   vlar-sim:${VLAR_IMAGE_COMMIT} vlar-ops worker --worker-id w%i $VLAR_WORKER_ARGS
 # docker stop sends SIGTERM: the worker abandons its current job cleanly (lease released, no marker).

@@ -48,10 +48,11 @@ Every result marker's `meta.provenance` and every snapshot's header hold: `harne
 `config_hash` (the harness config's fixed settings with its named options), `config_options`, `calibration_hash`
 (SHA-256 of the Phase 0 calibration file in effect: latencies, batch geometry, worker count, gripper thresholds,
 upload size, time limits; amendments 34, 35), `source_digest` (SHA-256 over the harness package's code and
-configs), `commit` and `harness_dirty` (git), and `image_digests` (container images). Every `runs` row repeats
+configs), `ops_digest` (the same over the ops package that ran the job, mounted from the host source on the VM;
+amendment 46), `commit` and `harness_dirty` (git), and `image_digests` (container images). Every `runs` row repeats
 `harness_version`, `config_hash`, `calibration_hash` and `schema_version`. The manifest refuses to mix harness
-versions, source digests or image digests; several config hashes may appear (named options, e.g. the parity run's
-scene seeds) and are listed with their options. Given the freeze record (`--freeze freeze.json`), every calibration
+versions, source digests, ops digests or image digests; several config hashes may appear (named options, e.g. the
+parity run's scene seeds) and are listed with their options. Given the freeze record (`--freeze freeze.json`), every calibration
 hash must be the frozen file's or one in its lineage (earlier versions with the same write-once values: upload
 size, π0.5 latency, batch geometry). Clocks and the gripper fractions are not stored: re-score the event log under
 any profile, and compute the fractions from `prev_actions` and `prev_gripper_qpos` with the frozen thresholds

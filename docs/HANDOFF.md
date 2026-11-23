@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-23, afternoon)
+# Handoff: state of the harness build (2026-11-23, evening)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,21 +8,25 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## MUST DO before steps 500 or 600 are ever queued (user, 2026-11-23)
+## Done 2026-11-23 (evening): the must-do changes and the partner's HTTP finding, merged into `harness-v1`
 
-Steps 6-7, the golden-set self-check and the Phase 2 training code are on branch **`phase2-work`** (`23de105`,
-pushed, **not merged** into `harness-v1`; HARNESS.md there, "Phase 0 steps 6-7" and "Phase 2 training"). They run as
-ops code (`vlar_ops`) mounted from the host source over the images' copy, so the frozen harness (`vlar_harness`) stays
-the rebuilt images'. Two changes the user requires first (at xhigh):
-1. **Pin the ops code.** Put the `vlar_ops` source digest (like `provenance.source_digest`, over `src/vlar_ops`) in
-   the freeze record and in every record (result markers, snapshots' headers, runs rows via the worker's meta),
-   check it like the harness digest (`verify_freeze`, the worker's startup, the manifest), and log the §15 change
-   (ops code from the host source, pinned by digest) as an amendment in SPEC §17 with the user's approval.
-2. **Step 500 stops for the user.** `500-calibrate.sh` ends with exit 75 ("needs input") right after writing the
-   calibration (time limits, margin, grasp report), instead of queueing `600`; it prints and uploads a calibration
-   summary (per-task limits, m, the π0.5 share within the limits, the grasp check). The freeze (`600`) is queued
-   only with the user's explicit approval after reading that summary.
-Then merge `phase2-work` into `harness-v1` (it is based on `b4c6beb`), run the suites, commit, push.
+- **π0.5 HTTP 422 (amendment 45, the partner's review):** `pi05_server.py` imported FastAPI's `Request` only inside
+  `create_app`; with string annotations every `/act` and `/upload_bytes` call failed validation (422). Fixed at module
+  level (`071a2a7`); X-VLA and the other server modules checked, no other case. `tests/reference/test_server_http.py`:
+  every endpoint of both servers through the production clients; the old import fails the 3 π0.5 tests with 422.
+  The images' test runs install hashed test-only client locks (`containers/lerobot-test.lock`, new;
+  `xvla-test.lock`) and run these tests in all three images. `test_vm_startup.py` and `test_phase0_steps.py` now skip
+  inside an image (the cause of the `b4c6beb` rebuild's 6 failures).
+- **Must-do 1, ops code pinned (amendment 46):** `provenance.ops_digest()` in every record header, `freeze.json`,
+  `verify_freeze` (workers' startup), the manifest; `600-freeze.sh`'s verification container now mounts the host
+  `vlar_ops`. **Must-do 2:** step `500` ends with exit 75 after writing the calibration and uploading
+  `phase0/step6/calibration-summary.{txt,json}`; it never queues `600`. A re-run with the same records and calibration
+  file ends done (exit 0) so an approved `600` queued behind it runs. **Queue `600` only with the user's explicit
+  approval after they read the summary.** (`phase2-work` `1e78ede`, merged.)
+- The L4 was found STOPPED with an empty queue (stage B never queued): nothing to stop.
+- Suites on the merge (Mac): main venv 250 passed, 24 skipped; simulator env, all of `tests` (as the sim image
+  runs it) 406 passed, 21 skipped; X-VLA env (`test_model_servers`, `test_batch_invariance`, `test_server_http`,
+  `-k xvla`, CPU random weights) 16 passed.
 
 ## Working rules the user set
 
@@ -316,6 +320,15 @@ confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates
 any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
+
+**NOW (2026-11-23 evening): the second rebuild, waiting for the user's go-ahead** (cost told to the user: about
+85-90 min of an on-demand e2-standard-8 build VM, about $0.40 before credits, outside the ledger until a reconcile).
+From the pushed merge commit on `harness-v1`, tree clean: `BUILD_PROVISIONING=STANDARD caffeinate -i -s
+ops/gcp/35_build_images.sh`. Expected in-container counts change: sim adds the HTTP and phase2-work tests (the
+repo-only files skip), pi05 adds `test_server_http.py -k pi05` (3), xvla adds `-k xvla` (4). Then stage B exactly as
+below (metadata re-set from this commit's `startup.sh`, queue `010,015,030,040,050,090,200,210,300`), with the images'
+commit in place of `b4c6beb`. Pause rule: the L4 has been STOPPED since 08:16Z on 2026-11-23; delete it and its disk if
+still stopped at 08:16Z on 2026-11-24 (then recreate with `30_create_vm.sh` and queue `020` too).
 
 **REBUILD RESULT (2026-11-23, 08:43Z-10:05Z): FAILED in the in-container tests; stage B NOT queued.** The build VM
 and its disk were deleted and confirmed gone (`gcloud compute instances list`: only the stopped L4). Images built;

@@ -38,7 +38,7 @@ DATASET = "dataset-v1"
 MANIFEST_VERSION = 1
 DATA_PREFIXES = ("records/", "snapshots/", "images/")
 RESULTS = "results/"
-SINGLE = ("harness_version", "source_digest", "image_digests")    # must not differ across the dataset (§15)
+SINGLE = ("harness_version", "source_digest", "ops_digest", "image_digests")   # one value per dataset (§15, am. 46)
 
 
 class ManifestError(RuntimeError):
@@ -141,6 +141,8 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
             continue
         for f in SINGLE:
             seen[f][_canon(prov.get(f))] += 1
+        if not prov.get("ops_digest"):
+            problems.append(f"{mkey}: no ops digest in the provenance (amendment 46)")
         commits[prov.get("commit")] += 1
         dirty += bool(prov.get("harness_dirty"))
         c = configs.setdefault(prov.get("config_hash"), {"config_name": prov.get("config_name"),

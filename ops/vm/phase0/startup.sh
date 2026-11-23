@@ -84,6 +84,7 @@ if [[ ! -e /etc/vlar/calibration/calibration.yaml ]]; then
 fi
 printf 'VLAR_PHASE0_URL=%s\nVLAR_STORAGE_URL=%s\nVLAR_IMAGES_URL=%s\n' "${P0}" "${STORAGE_URL}" "${IMAGES_URL}" \
   > /etc/vlar/phase0.env
+printf 'VLAR_OPS_SOURCE=%s\n' "${SRC}" > /etc/vlar/ops.env     # the host source whose vlar_ops the containers mount
 cp "${R}"/ops/vm/vlar-{spend,phase0,xvla,pi05}.service "${R}/ops/vm/vlar-worker@.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now vlar-spend || fail "spend guard did not start"

@@ -154,6 +154,53 @@ def cmd_plan(a: argparse.Namespace) -> None:
     print(f"{a.out}: plan {plan.plan_id} ({plan.phase}), {len(plan.jobs)} jobs, namespace {ns}")
 
 
+def cmd_finish(a: argparse.Namespace) -> None:
+    from . import finish
+    if a.cmd == "calibrate":
+        res = finish.calibrate(a.root, write=a.write)
+        print(res["report"])
+        if a.out:
+            Path(a.out).write_text(json.dumps({k: v for k, v in res.items() if k != "report"}, indent=1, default=str))
+        print(f"{res['base_runs']} base and {res['parity_runs']} parity runs; "
+              + (f"written to {res['written']}" if a.write else "not written (--write)"))
+    elif a.cmd == "first-targets":
+        print(f"{finish.first_targets(a.root, Path(a.out))} first-target distances -> {a.out}")
+    elif a.cmd == "summary":
+        summary = finish.summary(a.root, json.loads(Path(a.time_limits).read_text()),
+                                 json.loads(Path(a.grasps).read_text()))
+        text = finish.write_summary(summary, Path(a.out))
+        print(text.read_text(), end="")
+    elif a.cmd == "unchanged":
+        same, why = finish.unchanged(json.loads(Path(a.previous).read_text()), a.root)
+        print(why)
+        if not same:
+            sys.exit(1)
+    elif a.cmd == "freeze":
+        print(f"frozen: {finish.freeze(Path(a.golden))}")
+
+
+def cmd_golden(a: argparse.Namespace) -> None:
+    from . import golden
+    if a.cmd == "select":
+        rec = golden.select_from_records(a.root, Path(a.out))
+        print(json.dumps([{k: g[k] for k in ("snapshot_id", "task_id", "expected_steps")} for g in rec["golden"]],
+                         indent=1))
+        return
+    from . import vm_worker
+    try:
+        report = vm_worker.golden_check(_ops_config(a.ops_config), Path(a.golden),
+                                        marker=Path(a.marker) if a.marker else None)
+    except vm_worker.StartupError as e:
+        sys.exit(f"golden check not run: {e}")
+    print(json.dumps(report, indent=1))
+    if not report["passed"]:
+        sys.exit("GOLDEN SET MISMATCH: the harness does not replay its own records; no job may run (§15)")
+    if a.mark_checked:
+        rec, arrays = golden.load(Path(a.golden))
+        rec["checked"] = True
+        golden.save(rec, arrays, Path(a.golden))
+
+
 def cmd_grasps(a: argparse.Namespace) -> None:
     from . import grasps
     rep = grasps.run(Path(a.root), Path(a.out), phase=a.phase, shut=a.shut, open_=a.open)
@@ -253,6 +300,28 @@ def main(argv: list[str] | None = None) -> None:
     pa.add_argument("--references", default="References")
     pa.add_argument("--out", required=True)
     pa.set_defaults(fn=cmd_parity)
+
+    fi = sub.add_parser("finish", help="Phase 0 steps 6-7 from the records (vlar_ops/finish.py)")
+    fi.add_argument("cmd", choices=["calibrate", "first-targets", "summary", "unchanged", "freeze"])
+    fi.add_argument("--root", help="local copy of the bucket's records (calibrate, first-targets, summary, unchanged)")
+    fi.add_argument("--out", help="calibrate: JSON summary; first-targets: the distances file; summary: "
+                                  "calibration-summary.json (the text beside it, .txt)")
+    fi.add_argument("--time-limits", help="summary: calibrate's --out file")
+    fi.add_argument("--grasps", help="summary: the grasp check's report (vlar-ops grasps --out)")
+    fi.add_argument("--previous", help="unchanged: an earlier calibration-summary.json")
+    fi.add_argument("--write", action="store_true", help="calibrate: store the limits in the calibration file")
+    fi.add_argument("--golden", help="freeze: the checked golden set (golden.json)")
+    fi.set_defaults(fn=cmd_finish)
+
+    go = sub.add_parser("golden", help="the golden-set self-check (§15; vlar_ops/golden.py)")
+    go.add_argument("cmd", choices=["select", "check"])
+    go.add_argument("--root", help="select: local copy of the bucket's records")
+    go.add_argument("--out", help="select: golden.json (golden.npz beside it)")
+    go.add_argument("--golden", help="check: golden.json")
+    go.add_argument("--marker", help="check: the pass marker (default /var/lib/vlar/golden-pass.json)")
+    go.add_argument("--mark-checked", action="store_true", help="check: record the pass in golden.json (step 7)")
+    go.add_argument("--ops-config")
+    go.set_defaults(fn=cmd_golden)
 
     gr = sub.add_parser("grasps", help="after the base rollouts: their commanded-closed finger widths against the "
                                        "gripper thresholds; exit 75 if they do not separate cleanly")

@@ -156,6 +156,7 @@ def test_marker_carries_provenance_and_staging_is_cleaned(served):
     assert meta["provenance"]["config_hash"] == CFG.hash
     assert meta["provenance"]["calibration_hash"] == C.file_sha256(served["cal"])
     assert meta["provenance"]["source_digest"] == provenance.source_digest()
+    assert meta["provenance"]["ops_digest"] == provenance.ops_digest() is not None      # amendment 46
     assert meta["servers"]["xvla"]["batching"]["max_batch"] == CFG["servers"]["batching"]["max_batch"]
     snap_keys = [a["key"] for a in marker["result"]["artifacts"] if a["key"].startswith("snapshots/")]
     assert snap_keys
