@@ -102,6 +102,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | Phase 0 step 0: container images built and tested on a CPU build VM, exported to the bucket (amendments 28, 31-33) | done | `be7b95a` |
 | Phase 0 stage A on the L4 (images `be7b95a`): image load, host checks, weights, VM re-run rows, verdict | failed at 090: row pi05-batch-invariance-l4 (padded vs batch of one, max |diff| 1.94); all other rows passed; VM stopped 05:21:59Z; spend $0.73 | `94b1966`, `6690b19` |
 | π0.5 diagnosis (step 095, 2026-11-23): numerical, not a bug (HARNESS.md); host-package freeze (amendment 36); approved rules (joint memory, grasp check) | done, uncommitted; option for π0.5 open; spend $0.86 | |
+| Phase 0 stage B on the L4 (images and host source `03f311c`, 2026-11-23): rebuild, image load, re-run rows, verdict, step 2 | 010-090 done, every re-run row passed (π0.5 batch invariance included); **200 failed** (UnboundLocalError in `vlar_ops/step2.py`:390, not debugged); VM stopped 14:48Z; spend $1.70 | `03f311c` |
 | Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
 | Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | stage B ready to queue after commit, rebuild and the user's approval | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
@@ -321,13 +322,23 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23, 14:25Z): stage B is running on the L4 from images and host source `03f311c`** (the user
-pre-approved the rebuild, re-setting the L4 and queueing stage B on a DONE, and stopping on any failure, gate or
-needs-input). Images: `gs://$BUCKET/containers/03f311c4cd18a392285709987426bdfc42413fcd/`; host source
-`phase0/src/CURRENT` = `03f311c`. Watch: `ops/gcp/32_watch_vm.sh` (the Mac's log: `outputs/build-logs/stageB-watch-03f311c.log`).
-When the VM stops on its own, read `STATE.json`'s reason. `400` ends with an empty queue, so the VM stops itself.
-`500` is queued by hand afterwards: copy the step script straight into `phase0/queue/`, as `300` does for `400`, so
-`CURRENT` stays `03f311c`. `600` is queued only with the user's explicit approval after they read the step-6 summary.
+**NOW (2026-11-23, 14:52Z): stage B STOPPED: step `200` (step 2 measurement) FAILED (exit 1); the L4 is
+STOPPED (TERMINATED), not debugged, as the user asked.** The geometry rule found no feasible batch size: at every
+size (1, 2, 4, 8, 16) the memory probe recorded "full batches failed (a server may have run out of memory)", but
+the log shows an `UnboundLocalError: cannot access local variable 'load' where it is not associated with a value`
+raised in `src/vlar_ops/step2.py`, line 390 (`run`), once for each size, via `cli.py` `cmd_step2`. That is a host-side
+ops code error, not the GPU: the size-16 probe peaked at 13056 of 23034 MiB. `choose_geometry` then raised
+`TooSlow` and the step exited 1, not 75. **Nothing was written to the calibration file** (`vla-router/calibration/`
+is empty), so the write-once group is untouched. Partial results are in `phase0/step2/03f311c.../`: `memory-{2,4,8,16}.{json,smi}`
+and `obs/`. Logs were copied to `outputs/build-logs/stageB-03f311c/`. The queue still holds `210` and `300`; `200`
+is in `phase0/failed/`. After a fix (it needs the user, and a fix in `vlar_ops` needs no image rebuild, since the ops
+code is mounted from the host source), re-queue from the fixed commit with `31_phase0_queue.sh ...{200,210,300}-*.sh`.
+`200` sorts first. **Spend guard $1.70** ($0.84 of it today, 13:03Z-14:48Z); the build VM's about $0.65 is outside the
+ledger. Nothing else bills by the hour: the build VM is gone and the L4 is stopped. Its disk bills about $0.33/day.
+**Pause rule:** delete the L4 and its disk if it is still stopped at 14:48Z on 2026-11-24.
+When stage B resumes: `400` ends with an empty queue, so the VM stops itself. `500` is queued by hand afterwards;
+copy the step script straight into `phase0/queue/`, as `300` does for `400`. `600` is queued only with the user's
+explicit approval after they read the step-6 summary. Images: `gs://$BUCKET/containers/03f311c4cd18a392285709987426bdfc42413fcd/`.
 
 Run log (UTC; spend = the L4 spend guard's total from `history.jsonl`; the build VM is outside the ledger):
 - 10:41Z: merge `03f311c` pushed to `harness-v1`. Rebuild started on-demand (`BUILD_PROVISIONING=STANDARD caffeinate
@@ -354,7 +365,9 @@ Run log (UTC; spend = the L4 spend guard's total from `history.jsonl`; the build
   sim-numpy-percentile.
 - 14:20:41Z: `containers/be7b95a.../` deleted (11 objects, 10.2 GiB) and confirmed gone. The bucket has no versioning
   and soft delete is off, so nothing is retained. `containers/` now holds only `03f311c.../`.
-- 14:00:48Z onwards: `200` (step 2 measurement, cap 3 h) running.
+- 14:00:48Z: `200` (step 2 measurement, cap 3 h) started. **14:48:25Z: `200` failed (exit 1, 2855 s, spend $1.70)**;
+  the reason was "geometry rule failed (exit 1)". The VM stopped itself (TERMINATED at 14:48:38Z); the watcher
+  exited. Details are in the NOW paragraph above.
 
 Pause rule: if the L4 is STOPPED for a day, delete it and its disk (then recreate it with `30_create_vm.sh` and
 queue `020` too).
