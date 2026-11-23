@@ -21,6 +21,14 @@ runs automatically; each script is run by hand from a machine logged in with `gc
 | Bucket | $0.020/GB-month (Standard, regional) | Scanned every 30 min while the VM runs. |
 | Anything else | weekly reconcile | Set the ledger to the billing report's figure: `vlar-ops spend reconcile --actual-usd X`. |
 
+**From the Mac** (SPEC §17, amendment 47): `.venv-ops/bin/vlar-ops spend status|disk-created|disk-deleted|reconcile
+--ops-config ops/ops.yaml`. This uses application-default credentials, so run `gcloud auth application-default
+login` once. To create the venv, run `python3.13 -m venv .venv-ops` and then
+`.venv-ops/bin/pip install --uploaded-prior-to 2026-11-07 -e '.[gcs]'`. To record a disk late, pass gcloud's
+creation time: `--since "$(gcloud compute disks describe <disk> --zone <zone> --format='value(creationTimestamp)')"`.
+To close one late, pass `--until <ISO time>`. `disk-created` exits 0 only after reading its record back from the
+ledger (amendment 48).
+
 The disk is the cost that grows while nothing is happening. **If work pauses for more than a day,
 delete the L4 VM and its disk** (`gcloud compute instances delete … --delete-disks=all`, then
 `vlar-ops spend disk-deleted --name <vm>-boot`) and recreate it from the bucket to resume

@@ -239,3 +239,93 @@ def test_cloud_storage_uses_generation_preconditions():
     st._bucket.blob("vla-router/ops/ledger.json").upload_from_string(b"other")
     assert not st.put_if("ops/ledger.json", b"mine", v)
     assert st.get_versioned("ops/ledger.json") == (b"other", "2")
+
+
+# ---------------------------------------------------------------- disk records confirmed by reading back (amendment 48)
+
+RACY_STORAGE = r'''
+class LosesTheNextWrite(LocalStorage):
+    """The pre-amendment-39 race (2026-11-23's lost disk record): right after a ledger write succeeds, a writer that
+    read the ledger before it puts its stale copy back with a blind write."""
+    armed = True
+
+    def put_if(self, key, data, version):
+        before = self.get_bytes(key)
+        ok = super().put_if(key, data, version)
+        if ok and self.armed and key == spend.LEDGER_KEY:
+            type(self).armed = False
+            self.put_bytes(key, before if before is not None else json.dumps(spend.new_ledger()).encode())
+        return ok
+'''
+exec(RACY_STORAGE)
+
+
+def ops_config(tmp_path, store):
+    cfg = tmp_path / "ops.yaml"
+    cfg.write_text(f"storage_url: {store}\nlocal_root: {tmp_path / 'local'}\n")
+    return str(cfg)
+
+
+def test_a_lost_disk_record_is_not_confirmed(tmp_path):
+    LosesTheNextWrite.armed = True
+    st = LosesTheNextWrite(tmp_path)
+    entry = spend.record_disk(st, 100, 0.10, 1_795_405_905.9, "vm-boot")       # reported written...
+    assert spend.load_ledger(st)["disks"] == []                                         # ...and then lost
+    with pytest.raises(spend.DiskRecordNotConfirmed, match="not in the ledger read back"):
+        spend.confirm_disk(st, entry)
+    entry = spend.record_disk(st, 100, 0.10, 1_795_405_905.9, "vm-boot")       # the next write is kept
+    spend.confirm_disk(st, entry)
+
+
+def test_disk_created_exits_nonzero_unless_the_ledger_holds_the_record(tmp_path, monkeypatch, capsys):
+    from vlar_ops import cli
+    store = tmp_path / "store"
+    LosesTheNextWrite.armed = True
+    monkeypatch.setattr(cli, "open_storage", lambda url: LosesTheNextWrite(url))
+    args = ["spend", "disk-created", "--name", "vm-boot", "--gb", "100", "--usd-per-gb-month", "0.1",
+            "--ops-config", ops_config(tmp_path, store)]
+    with pytest.raises(SystemExit, match="disk record NOT confirmed"):
+        cli.main(args)
+    cli.main(args)
+    assert "(confirmed in the ledger)" in capsys.readouterr().out
+    assert [d["name"] for d in spend.load_ledger(LocalStorage(store))["disks"]] == ["vm-boot"]
+
+
+def test_a_disk_recorded_late_counts_from_its_creation_time(tmp_path, capsys):
+    """`--since` with gcloud's creationTimestamp: the record counts from then; `--until` closes it at its deletion."""
+    from vlar_ops import cli
+    store = tmp_path / "store"
+    cfg = ops_config(tmp_path, store)
+    cli.main(["spend", "disk-created", "--name", "vm-boot", "--gb", "100", "--usd-per-gb-month", "0.1",
+              "--since", "2026-11-22T19:51:45.921-08:00", "--ops-config", cfg])
+    assert "since 2026-11-23T03:51:45Z (confirmed in the ledger)" in capsys.readouterr().out
+    led = spend.load_ledger(LocalStorage(store))
+    assert led["disks"][0]["since"] == pytest.approx(1_795_405_905.921)
+    later = led["disks"][0]["since"] + 12 * 3600
+    assert spend.estimate(led, later)["disk_usd"] == pytest.approx(100 * 0.1 * 12 / spend.HOURS_PER_MONTH)
+    cli.main(["spend", "disk-deleted", "--name", "vm-boot", "--until", "2026-11-23T15:51:45.921Z",
+              "--ops-config", cfg])
+    led = spend.load_ledger(LocalStorage(store))
+    assert led["disks"][0]["until"] == pytest.approx(later)
+    assert spend.estimate(led, later + 1e6)["disk_usd"] == pytest.approx(100 * 0.1 * 12 / spend.HOURS_PER_MONTH)
+    with pytest.raises(SystemExit, match="in the future"):
+        cli.main(["spend", "disk-created", "--name", "x", "--gb", "1", "--usd-per-gb-month", "0.1",
+                  "--since", "2099-01-01T00:00:00Z", "--ops-config", cfg])
+    with pytest.raises(SystemExit, match="give the time zone"):
+        cli.main(["spend", "disk-created", "--name", "x", "--gb", "1", "--usd-per-gb-month", "0.1",
+                  "--since", "2026-11-22T19:51:45", "--ops-config", cfg])
+
+
+def test_two_open_records_with_one_name_need_since_to_close_one(tmp_path):
+    """A VM recreated under the same name before the old disk's record was closed: closing by name alone would close
+    the live disk's record too."""
+    st = LocalStorage(tmp_path)
+    spend.record_disk(st, 100, 0.1, 1000.0, "vm-boot")
+    spend.record_disk(st, 100, 0.1, 5000.0, "vm-boot")
+    with pytest.raises(ValueError, match="2 open disks named 'vm-boot'.*pass --since"):
+        spend.close_disk(st, "vm-boot", 6000.0)
+    assert spend.close_disk(st, "vm-boot", 6000.0, since=1000.4)["since"] == 1000.0
+    assert [d["until"] for d in spend.load_ledger(st)["disks"]] == [6000.0, None]
+    spend.close_disk(st, "vm-boot", 7000.0)                       # now unambiguous
+    with pytest.raises(ValueError, match="no open disk"):
+        spend.close_disk(st, "vm-boot", 8000.0)

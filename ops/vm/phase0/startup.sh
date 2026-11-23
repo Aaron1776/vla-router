@@ -89,10 +89,16 @@ cp "${R}"/ops/vm/vlar-{spend,phase0,xvla,pi05}.service "${R}/ops/vm/vlar-worker@
 systemctl daemon-reload
 systemctl enable --now vlar-spend || fail "spend guard did not start"
 export VLAR_OPS_CONFIG="${R}/ops/ops.yaml"
-if [[ ! -e "${L}/.disk-recorded" ]]; then   # once per disk: it bills every hour it exists, running or not
+# Once per disk (it bills every hour it exists, running or not). The marker is written only after `disk-created` has
+# read its record back from the ledger (exit 0); otherwise the next boot records the disk again (amendment 48: the
+# first record was lost to the pre-amendment-39 race after being reported, and the marker blocked every retry).
+record_boot_disk() {
+  [[ -e "${L}/.disk-recorded" ]] && return 0
   "${R}/.venv/bin/vlar-ops" spend disk-created --name "${NAME}-boot" --gb "${DISK_GB}" \
-    --usd-per-gb-month "${DISK_RATE}" && touch "${L}/.disk-recorded" || fail "disk not recorded in the ledger"
-fi
+    --usd-per-gb-month "${DISK_RATE}" || return 1
+  touch "${L}/.disk-recorded"
+}
+record_boot_disk || fail "disk not recorded in the ledger"
 "${R}/.venv/bin/vlar-ops" spend status || true
 if [[ "${RUNNER}" == off ]]; then echo "vlar-runner=off: runner not started"; exit 0; fi
 systemctl start vlar-phase0 || fail "phase 0 runner did not start"

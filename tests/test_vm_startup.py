@@ -151,3 +151,69 @@ def test_a_failed_boot_is_recorded_for_the_spend_ledger(tmp_path):
     rec = json.loads((tmp_path / "body").read_text())
     assert rec["boot_id"] == "abc-123" and rec["reason"] == "pip install"
     assert rec["failed_at"] - rec["boot_at"] == pytest.approx(600.25, abs=0.01) and rec["failed_at"] >= t0
+
+
+def boot_disk_function() -> str:
+    text = STARTUP.read_text()
+    m = re.search(r"^record_boot_disk\(\) \{\n.*?^\}\n", text, re.S | re.M)
+    assert m and 'record_boot_disk || fail "disk not recorded in the ledger"' in text
+    assert text.index("systemctl enable --now vlar-spend") < text.index("record_boot_disk || fail")
+    return m.group(0)
+
+
+VLAR_OPS_SHIM = r'''#!{python}
+# The real `vlar-ops` CLI over a local ledger; with RACE=1 the first ledger write is lost right after it succeeds,
+# as the L4's disk record was on 2026-11-23 (tests/test_spend_ledger.py).
+import json, os, sys
+sys.path.insert(0, {src!r})
+from vlar_ops import cli, spend
+from vlar_ops.storage import LocalStorage
+with open(os.environ["CALLS"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+{racy}
+LosesTheNextWrite.armed = os.environ.get("RACE") == "1"
+cli.open_storage = lambda url: LosesTheNextWrite(url)
+cli.main(sys.argv[1:])
+'''
+
+
+@pytest.mark.parametrize("race", [False, True])
+def test_the_disk_marker_is_written_only_after_the_ledger_confirms_the_record(tmp_path, race):
+    """Amendment 48: `record_boot_disk` touches `.disk-recorded` only after `spend disk-created` has read its record
+    back. With the record lost after the write (the 2026-11-23 race), no marker: the boot fails, and the next boot
+    records the disk again. With a marker, the disk is not recorded twice."""
+    import sys
+    from test_spend_ledger import RACY_STORAGE
+    r, local, store = tmp_path / "repo", tmp_path / "local", tmp_path / "store"
+    (r / ".venv" / "bin").mkdir(parents=True)
+    local.mkdir()
+    shim = r / ".venv" / "bin" / "vlar-ops"
+    shim.write_text(VLAR_OPS_SHIM.format(python=sys.executable, src=str(REPO / "src"), racy=RACY_STORAGE))
+    shim.chmod(0o755)
+    cfg = tmp_path / "ops.yaml"
+    cfg.write_text(f"storage_url: {store}\nlocal_root: {local}\n")
+    script = (f'L="{local}"; R="{r}"; NAME=vm; DISK_GB=100; DISK_RATE=0.1\n' + boot_disk_function()
+              + "record_boot_disk; echo rc=$?\n")
+    env = {"PATH": "/usr/bin:/bin", "VLAR_OPS_CONFIG": str(cfg), "CALLS": str(tmp_path / "calls"),
+           "RACE": "1" if race else "0"}
+
+    def boot():
+        return subprocess.run([BASH, "-c", script], env=env, capture_output=True, text=True)
+
+    def disks():
+        p = store / "ops" / "ledger.json"
+        return json.loads(p.read_text())["disks"] if p.exists() else []
+
+    import json
+    out = boot()
+    marker = local / ".disk-recorded"
+    if race:
+        assert "rc=1" in out.stdout and "disk record NOT confirmed" in out.stderr, out.stderr
+        assert not marker.exists() and disks() == []
+        env["RACE"] = "0"
+        out = boot()                                   # the next boot records it
+    assert "rc=0" in out.stdout and "(confirmed in the ledger)" in out.stdout, out.stderr
+    assert marker.exists() and [d["name"] for d in disks()] == ["vm-boot"]
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert boot().stdout.strip() == "rc=0"             # marker present: no second record
+    assert (tmp_path / "calls").read_text().splitlines() == calls and len(disks()) == 1

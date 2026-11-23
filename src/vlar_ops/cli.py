@@ -50,6 +50,27 @@ def cmd_queue(a: argparse.Namespace) -> None:
     print(json.dumps(q.counts(a.phase)))
 
 
+def _when(text: str, now: float) -> float:
+    """A time for the ledger: Unix seconds, or ISO 8601 with a time zone (e.g. gcloud's creationTimestamp); never
+    in the future."""
+    import datetime
+    try:
+        t = float(text)
+    except ValueError:
+        d = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            sys.exit(f"{text}: give the time zone")
+        t = d.timestamp()
+    if t > now + 60:
+        sys.exit(f"{text} is in the future")
+    return t
+
+
+def _iso(t: float) -> str:
+    import datetime
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def cmd_spend(a: argparse.Namespace) -> None:
     cfg = _ops_config(a.ops_config)
     storage = open_storage(cfg["storage_url"])
@@ -72,11 +93,21 @@ def cmd_spend(a: argparse.Namespace) -> None:
     elif a.action == "disk-created":
         if a.gb is None or a.usd_per_gb_month is None:
             sys.exit("--gb and --usd-per-gb-month are required")
-        spend.record_disk(storage, a.gb, a.usd_per_gb_month, now, a.name)
-        print(f"recorded disk {a.name}")
+        since = _when(a.since, now) if a.since else now
+        entry = spend.record_disk(storage, a.gb, a.usd_per_gb_month, since, a.name)
+        try:
+            spend.confirm_disk(storage, entry)       # read back: exit 0 only for a record the ledger holds
+        except spend.DiskRecordNotConfirmed as e:
+            sys.exit(f"disk record NOT confirmed: {e}")
+        print(f"recorded disk {a.name}: {a.gb:g} GB at ${a.usd_per_gb_month:g}/GB-month since {_iso(since)} "
+              f"(confirmed in the ledger)")
     elif a.action == "disk-deleted":
-        spend.close_disk(storage, a.name, now)
-        print(f"closed disk {a.name}")
+        until = _when(a.until, now) if a.until else now
+        try:
+            closed = spend.close_disk(storage, a.name, until, _when(a.since, now) if a.since else None)
+        except ValueError as e:
+            sys.exit(str(e))
+        print(f"closed disk {a.name}: since {_iso(closed['since'])}, until {_iso(until)}")
     elif a.action == "daemon":
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # preemption: final tick, then exit
         root = Path(cfg["local_root"])
@@ -253,6 +284,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--name", default="boot")
     s.add_argument("--gb", type=float)
     s.add_argument("--usd-per-gb-month", type=float)
+    s.add_argument("--since", help="disk-created: when the disk was created (default now); disk-deleted: which open "
+                                   "record of --name to close. Unix seconds or ISO 8601 with a time zone")
+    s.add_argument("--until", help="disk-deleted: when the disk was deleted (default now)")
     s.add_argument("--ops-config")
     s.set_defaults(fn=cmd_spend)
 

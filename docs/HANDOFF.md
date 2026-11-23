@@ -341,9 +341,26 @@ Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`.
 4. If Spot is unavailable in every zone: take `010`-`090` out of the queue again, leave the old VM stopped, and give
    the user the on-demand estimate. On-demand is never used without asking.
 
-**Spend ledger gap (found 2026-11-23, not debugged):** `ops/ledger.json` has no disk entries. Every `history.jsonl`
-entry shows `disk_usd` 0.0, so the L4's 100 GB pd-balanced disk (about $0.33/day since 2026-11-22) is not in the
-guard's total. Settle it at the next reconcile. A new VM's startup records its own disk (`spend disk-created`).
+**Spend-guard fixes (2026-11-23, 21:20-21:45Z, SPEC §17 amendments 47-48), done while stage B ran:**
+- **Spend CLI from the Mac** (amendment 47): `.venv-ops` (git-ignored; google-cloud-storage 3.17.1) with the user's
+  application-default credentials. `status`, `disk-created`, `reconcile` and `disk-deleted` were checked against
+  the bucket under a scratch prefix, which was deleted afterwards. Usage is in `ops/README.md`, "From the Mac".
+  `disk-created --since` and `disk-deleted --until` take real times. Two open records with one name need `--since`.
+- **The uncounted disk** (amendment 48): the cause was the pre-amendment-39 race at the first boot (03:52Z). The
+  record was written and reported ("recorded disk $VM_NAME-boot" in `phase0/logs/startup.log`) and the marker
+  touched; then the guard daemon's concurrent whole-object rewrite dropped the record, and the marker blocked every
+  later boot. The user's guess was right. **Recorded at 21:31Z** from the Mac through `disk-created --since`
+  gcloud's `creationTimestamp` (2026-11-22T19:51:45.921-08:00). The guard total went $1.83 -> **$2.07** ($0.24 of
+  disk), and the daemon's later ticks kept the record. `disk-created` now reads its record back and exits 1 if it is
+  missing. `startup.sh`'s `record_boot_disk` touches `.disk-recorded` only after that, with tests and mutation
+  checks.
+- **Deployment, deliberately partial:** these changes alter `vlar_ops`, and so the ops digest (amendment 46).
+  **Keep `phase0/src/CURRENT` at `0a0cd4c` through stage B, `500` and the freeze**: moving it would mix ops digests
+  if a preemption rebooted the VM mid-stage. The VM keeps the old `disk-created`. That is harmless, since its disk
+  is now recorded and its marker exists. Queue `500` by copying the step script, as planned. The Mac's CLI already
+  runs the new code; the ledger format is unchanged. **Not committed yet** (the user had not asked). After the
+  commit, re-set the startup-script metadata from the committed `startup.sh`: it is not part of the digest, and it
+  takes effect at the next boot.
  To queue by hand later, from a clean `harness-v1`:
 ```bash
 export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh

@@ -284,19 +284,43 @@ class SpendGuard:
 
 # ---------------------------------------------------------------- CLI-side ledger edits (any machine, any time)
 
-def record_disk(storage: Storage, gb: float, usd_per_gb_month: float, since: float, name: str) -> None:
-    update_ledger(storage, lambda ledger: ledger["disks"].append(
-        {"name": name, "gb": gb, "usd_per_gb_month": usd_per_gb_month, "since": since, "until": None}))
+class DiskRecordNotConfirmed(RuntimeError):
+    """A disk record written to the ledger is not in the ledger read back afterwards."""
 
 
-def close_disk(storage: Storage, name: str, until: float) -> None:
+def record_disk(storage: Storage, gb: float, usd_per_gb_month: float, since: float, name: str) -> dict[str, Any]:
+    """Append an open disk record (a conditional write, amendment 39) and return it as written."""
+    entry = {"name": name, "gb": gb, "usd_per_gb_month": usd_per_gb_month, "since": since, "until": None}
+    update_ledger(storage, lambda ledger: ledger["disks"].append(dict(entry)))
+    return entry
+
+
+def confirm_disk(storage: Storage, entry: dict[str, Any]) -> None:
+    """The record, exactly as written, must be in a fresh read of the ledger. The boot's `.disk-recorded` marker is
+    written only after this (amendment 48). On 2026-11-23 the L4's first record was lost to the pre-amendment-39
+    race after `disk-created` had reported it, and the marker then kept every later boot from recording the disk
+    again."""
+    if not any(d == entry for d in load_ledger(storage)["disks"]):
+        raise DiskRecordNotConfirmed(f"disk {entry['name']!r} (since {entry['since']}) is not in the ledger read back "
+                                     f"after the write")
+
+
+def close_disk(storage: Storage, name: str, until: float, since: Optional[float] = None) -> dict[str, Any]:
+    """Close the open record of disk `name` (with `since`, the one that started then, to within a second). Two open
+    records with one name (a VM recreated under the same name before the old disk's record was closed) need `since`:
+    closing both would leave the live disk uncounted."""
     def edit(ledger):
-        open_disks = [d for d in ledger["disks"] if d["name"] == name and d.get("until") is None]
+        open_disks = [d for d in ledger["disks"] if d["name"] == name and d.get("until") is None
+                      and (since is None or abs(d["since"] - since) < 1.0)]
         if not open_disks:
-            raise ValueError(f"no open disk named {name!r} in the ledger")
-        for d in open_disks:
-            d["until"] = until
-    update_ledger(storage, edit)
+            raise ValueError(f"no open disk named {name!r}" + ("" if since is None else f" since {since}")
+                             + " in the ledger")
+        if len(open_disks) > 1:
+            raise ValueError(f"{len(open_disks)} open disks named {name!r} (since "
+                             f"{', '.join(str(d['since']) for d in open_disks)}): pass --since to pick one")
+        open_disks[0]["until"] = until
+        return dict(open_disks[0])
+    return update_ledger(storage, edit)[1]
 
 
 def reconcile(storage: Storage, actual_usd: float, at: float, note: str = "") -> dict[str, float]:
