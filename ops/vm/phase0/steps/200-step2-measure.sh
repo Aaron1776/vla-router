@@ -44,7 +44,9 @@ a, b = (json.load(open(f))["sizes"] for f in sys.argv[1:3])
 print(" ".join(sorted((s for s in a if s in b and "error" not in a[s] and "error" not in b[s]), key=int)))' \
   "${S}/bench-xvla.json" "${S}/bench-pi05.json")"
 for B in ${SIZES}; do
-  [[ -s "${S}/memory-${B}.json" ]] && continue
+  # A re-run keeps a size's completed measurement and measures again a size whose result is an error (a failure of
+  # the measurement itself, e.g. 2026-11-23's `load` crash, must not rule the size out for good).
+  [[ -s "${S}/memory-${B}.json" ]] && ! grep -q '"error"' "${S}/memory-${B}.json" && continue
   W=$(( 2 * B < 2 ? 2 : (2 * B > 12 ? 12 : 2 * B) )); err=""
   stop_joint; rm -f "${S}/memory-${B}.smi"
   docker run -d --name vlar-xvla-mem --gpus all --network host -v /opt/weights:/weights:ro "vlar-xvla:${C}" \
@@ -70,7 +72,7 @@ for B in ${SIZES}; do
       "${SIM[@]}" load --obs "${S}/obs" --size "${B}" --seconds 120 --out "${S}/load-${B}.json" \
         || err="full batches failed at size ${B} (a server may have run out of memory)"
       kill "${SMI}"; wait "${SMI}" 2>/dev/null
-      n="$(docker ps -q --filter name=vlar-render- | wc -l)"
+      n=$(( $(docker ps -q --filter name=vlar-render- | wc -l) ))
       (( n == W )) || err="${err:+${err}; }only ${n} of ${W} renderers still running at the end"
       up vlar-xvla-mem && up vlar-pi05-mem || err="${err:+${err}; }a server exited during the measurement"
     fi

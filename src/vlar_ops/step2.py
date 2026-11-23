@@ -398,10 +398,8 @@ def run(cmd: str, a) -> int:
     elif cmd == "gripper":
         res = gripper()
     elif cmd == "updates":
-        d = Path(a.dir)
-        load = lambda n: json.loads((d / f"{n}.json").read_text())   # noqa: E731
-        res = calibration_updates(load("geometry"), load("latency"), load("upload"), load("gripper"),
-                                  _network_choices())
+        res = calibration_updates(*(_read_json(Path(a.dir) / f"{n}.json")
+                                    for n in ("geometry", "latency", "upload", "gripper")), _network_choices())
     else:
         raise ValueError(cmd)
     if cmd != "capture":
@@ -411,6 +409,10 @@ def run(cmd: str, a) -> int:
         print(f"STOP: {res['too_slow']} (amendment 24: bring the numbers to the user)")
         return NEEDS_USER_EXIT
     return 0
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text())
 
 
 def _network_choices() -> list[str]:

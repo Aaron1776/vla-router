@@ -851,6 +851,24 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
   `/features` + π0.5, full batches) is within 10% of the best; stop if deterministic mode costs more than 1.25x the
   non-deterministic run there. Workers = 2 x `max_batch`, at most 12. Padding cost by fill is reported, not gated.
   The benches' per-model peaks are reported only. Tests: `tests/test_step2.py`, `tests/reference/test_step2_sim.py`.
+  A re-run of step `200` keeps a size's completed measurement and measures again a size whose `memory-B.json` holds
+  an error.
+- **Step `200` end to end on the Mac** (`tests/reference/test_step200_e2e.py`, 2026-11-23, sim env). Background: on
+  the L4, step `200` failed at every size because `vlar-ops step2 load` raised `UnboundLocalError` (`step2.run`
+  assigned a local `load` in its `updates` branch, so the name was local in the whole function). The step script
+  reported it as "full batches failed ... (a server may have run out of memory)". Why no test caught it: the tests
+  called `step2.load()` and the other functions directly, only `choose` went through the command, and nothing ran
+  the step script. The new tests run the step script and its library unchanged, except that the machine paths are
+  moved under the test's directory and the load lasts 2 s, not 120. Every `vlar-ops step2` command runs for real,
+  and capture, upload and gripper run on LIBERO. The stand-ins (`tests/reference/step200_fakes.py`) are only what the
+  Mac lacks: docker, a fake `nvidia-smi` whose samples follow the running containers, the production server apps
+  (`create_app`) over fake model services, the GPU benches, renderers (the real `render` command over a stand-in
+  simulator), `gcloud` and `sleep`. The three tests are:
+  - the whole step, a re-run included;
+  - failed measurements (a renderer that never starts, one that dies, a server that dies under load, too little
+    headroom), then a re-run that measures them again;
+  - the two exit-75 stops.
+  On the old `step2.py`, all three fail with the L4's error.
 - **Gripper thresholds** (`vlar-ops step2 gripper`, approved 2026-11-23): π0.5's delta mode, no arm motion, gripper
   open then closed on nothing for 30 steps each, tasks 0, 3, 6 at initial state 0; shut = widest closed width + 10% of
   the open-shut range, open = narrowest open width - 10%. Not write-once: only offline values and live `observe()`
