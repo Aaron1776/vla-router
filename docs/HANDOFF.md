@@ -406,8 +406,17 @@ automatically (McNemar p >= 0.05 in `reference_runs.compare`, i.e. `within_sampl
 rollouts without waiting; otherwise stop, don't debug); whenever the VM runs out of queued work or needs the user, it
 syncs everything to the bucket and stops itself (stopped, not deleted), and the user is told when and why; report
 which steps are safe unattended and the spend guard's running total at each major step. The pause rule stands: a
-pause of more than a day means deleting the VM and its disk. The user also asked to delete the failed build attempts'
-folders under `containers/` in the bucket (keep only `be7b95a...`): pending a gcloud re-login on the Mac.
+pause of more than a day means deleting the VM and its disk. The failed build attempts' folders under `containers/` in the
+bucket were deleted at the user's request (only `be7b95a...` kept); their logs are kept locally in the git-ignored
+`outputs/build-logs/<commit>/` (run 5's are the only record of its CPU differences).
+
+**Phase 0 step runner (2026-11-22, ops/README.md "Phase 0 on the L4").** `ops/vm/phase0/runner.sh` as
+`vlar-phase0.service`, started on every boot by the startup script `ops/vm/phase0/startup.sh` (installs the host side
+from `phase0/src/CURRENT` in the bucket, spend guard first, disk recorded in the ledger once); steps queued in the
+bucket by `ops/gcp/31_phase0_queue.sh`; `ops/gcp/32_watch_vm.sh` follows `STATE.json` from the Mac. Stage A steps
+(`ops/vm/phase0/steps/010-090`): image load, host checks, weights and tokenizer, the VM re-run rows, the verdict.
+Tests: `tests/test_phase0_runner.py` (fake gcloud/systemctl/vlar-ops/timeout; order, queueing from a step,
+needs-input stays queued, gate failure, failure and time cap, STOP flag, SIGTERM).
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script

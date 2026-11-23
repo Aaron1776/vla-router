@@ -85,6 +85,31 @@ checks that the NVIDIA driver supports CUDA 13.0 (580.65.06 or later), loads the
 daemon-reload`); they are started by hand, never at boot. Weights go to `/opt/weights` and the PaliGemma
 tokenizer's cache to `/opt/hf` (both mounted read-only).
 
+## Phase 0 on the L4: the step runner (unattended)
+
+Long jobs never run in an SSH session from the Mac. The VM's startup script (`ops/vm/phase0/startup.sh`, set by
+`30_create_vm.sh`) installs the host side from the bucket on every boot, starts the spend guard first, records the
+disk in the ledger once, and starts `vlar-phase0.service` (`ops/vm/phase0/runner.sh`). The runner takes step scripts
+from `gs://$BUCKET/vla-router/phase0/queue/` in name order, one at a time, each under its `# cap-seconds:` limit, and
+mirrors `logs/`, `done/`, `failed/`, `history.jsonl` (each step with the spend guard's running total) and
+`STATE.json` to `gs://$BUCKET/vla-router/phase0/`. When the queue is empty, a step fails, a gate fails (exit 76) or a
+step needs the user (exit 75; it stays queued), the runner stops the servers and workers, syncs everything, writes
+the reason to `STATE.json` and stops the VM (STOPPED, disk kept). Steps may queue further steps.
+
+```bash
+source ops/gcp/env.sh
+ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/0*.sh      # from a clean commit: host source + steps into the queue
+IMAGES_COMMIT=<full commit> ops/gcp/30_create_vm.sh        # first time; afterwards: gcloud compute instances start
+ops/gcp/32_watch_vm.sh                                     # prints state changes; returns once the VM has stopped
+```
+
+Steps (`ops/vm/phase0/steps/`): `010` load the images (waits for the driver), `015` host unit tests and the
+reference check, `020` weights at the pinned revisions (SHA-256 to `logs/weights.SHA256SUMS`) and the gated
+tokenizer from `gs://$BUCKET/vla-router/hf-tokenizer/` (copied there from a logged-in machine, envs/README.md),
+`030`/`040`/`050` the VM re-run rows (simulator; X-VLA; π0.5, which needs the tokenizer), each row's result in
+`logs/results/`, and `090` the verdict (any failed row stops the VM; rows not run need the user). Metadata
+`vlar-runner=off` (`VLAR_RUNNER=off 30_create_vm.sh`) boots without the runner for manual work.
+
 ## Every start (including after a preemption)
 
 1. Check the current Spot price and update `spend.vm_hourly_usd` if it moved.

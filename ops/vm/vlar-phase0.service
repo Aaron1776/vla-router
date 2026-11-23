@@ -1,0 +1,19 @@
+# Phase 0 step runner (ops/vm/phase0/runner.sh). Started by ops/vm/phase0/startup.sh on every boot, after the spend
+# guard; it runs the steps queued in the bucket and stops the VM when it runs out of work or needs the user.
+[Unit]
+Description=vla-router Phase 0 step runner
+After=network-online.target docker.service vlar-spend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vla-router
+EnvironmentFile=/etc/vlar/phase0.env
+Environment=VLAR_OPS_CONFIG=/opt/vla-router/ops/ops.yaml
+Environment=PATH=/opt/vla-router/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+ExecStart=/opt/vla-router/ops/vm/phase0/runner.sh
+StandardOutput=append:/var/lib/vlar/phase0/logs/runner.log
+StandardError=append:/var/lib/vlar/phase0/logs/runner.log
+KillMode=mixed
+TimeoutStopSec=60
+Restart=no
