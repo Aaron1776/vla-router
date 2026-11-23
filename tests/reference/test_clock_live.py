@@ -363,7 +363,7 @@ def test_branches_reproduce_and_differ_by_seed_index(sim, other_sim):
 
 @requires_lerobot
 def test_labels_from_real_branch_runs(sim):
-    from vlar_ops import plan
+    from vlar_ops import branchplan as plan
 
     seeds, limit_steps = 2, 150
     with RandomSuccess(sim):
@@ -376,7 +376,8 @@ def test_labels_from_real_branch_runs(sim):
         point = prefix[-1]
         ref = plan.DecisionPointRef("t/dp06", "base/t0/i4", "base", TASK, INIT, 6, point["budget_remaining"])
         _, entries = plan.branch_plan("test", [ref], branches=CFG["branches"], step_limit=limit_steps, interval=10,
-                                      seeds=seeds, enabled=list(C.BRANCHES), tier_one_seeds=2, order_seed=1)
+                                      seeds=seeds, enabled=list(C.BRANCHES), tier_one_seeds=2, order_seed=1,
+                                      dp_sampling={"fraction": 1.0, "seed": 0})
         entry = entries["t/dp06"]
         own, results = {}, {}
         for b, canon in entry["shares"].items():
@@ -426,7 +427,7 @@ def test_dagger_parent_under_router_rescored_for_cascader_full(sim, other_sim, c
     `cascader_full` decider, recomputed from the event log, equals the engine's own live `cascader_full` clock and
     not what the router saw; labels from its snapshots are computed under every profile, with the points already
     past the limit under `cascader_full` excluded; its own outcome is refused under any profile but `router`."""
-    from vlar_ops import plan
+    from vlar_ops import branchplan as plan
 
     steps, schedule = 300, (lambda d: d in SCHEDULE)
     # The limit: halfway between the router's and the full cascader's clocks at decision point 12 of the same run
@@ -487,7 +488,7 @@ def test_dagger_parent_under_router_rescored_for_cascader_full(sim, other_sim, c
                                         s.event_log[-1]["budget_remaining"])
             _, entries = plan.branch_plan("test", [ref], branches=CFG["branches"], step_limit=steps, interval=10,
                                           seeds=1, enabled=["b1_continue", "b2_one_call"], tier_one_seeds=1,
-                                          order_seed=1)
+                                          order_seed=1, dp_sampling={"fraction": 1.0, "seed": 0})
             entry = entries[ref.snapshot_id]
             assert entry["parent_seeds"] == {}                             # a DAgger parent gives no seeds
             own = {}

@@ -15,7 +15,7 @@ from vlar_harness import config as C
 from vlar_harness import labels as L
 from vlar_harness import network as net
 from vlar_harness.config import PROFILES, load_config
-from vlar_ops import plan
+from vlar_ops import branchplan as plan
 
 CFG = load_config()
 CH = clk.Charges.from_config(CFG)
@@ -102,7 +102,8 @@ def setup_point(**start):
     prefix = prefix_at(**start)
     ref = plan.DecisionPointRef("ep/dp02", "ep", "base", 0, 0, 2, 20)
     _, entries = plan.branch_plan("labels", [ref], branches=CFG["branches"], step_limit=120, interval=10, seeds=3,
-                                  enabled=list(C.BRANCHES), tier_one_seeds=2, order_seed=1)
+                                  enabled=list(C.BRANCHES), tier_one_seeds=2, order_seed=1,
+                                  dp_sampling={"fraction": 1.0, "seed": 0})
     entry = entries["ep/dp02"]
     parent = Log(prefix)
     parent.queue = 10

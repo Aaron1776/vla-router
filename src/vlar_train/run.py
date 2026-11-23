@@ -76,7 +76,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap = argparse.ArgumentParser(prog="python -m vlar_train")
     ap.add_argument("--records", help="local copy of the bucket (records/runs, events, points)")
     ap.add_argument("--label-map", help="the branch planner's label map (JSON)")
-    ap.add_argument("--seeds", type=int, default=3, help="branch seeds per label (collection config branches.seeds)")
     ap.add_argument("--synthetic", action="store_true", help="dry run on synthetic points")
     ap.add_argument("--out", required=True)
     ap.add_argument("--folds", default="0-9")
@@ -90,7 +89,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if not (a.records and a.label_map):
             ap.error("give --records and --label-map (or --synthetic)")
         from .data import from_records
-        ps = from_records(a.records, a.label_map, seeds=a.seeds)
+        ps = from_records(a.records, a.label_map)   # seeds from each label entry (amendment 49)
     s = run_cv(ps, folds=_range(a.folds), deciders=a.deciders.split(","), out=Path(a.out),
                cfg=TrainConfig(epochs=a.epochs))
     for d in a.deciders.split(","):

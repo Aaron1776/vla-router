@@ -1,8 +1,9 @@
 """Training points from the records (SPEC §6, §7; HANDOFF "Decider training on the Mac").
 
 Inputs: a local copy of `records/{runs,events,points}` (`gcloud storage cp -r .../records/<table> ...`), the branch
-planner's label map (`vlar_ops.plan.branch_plan`: snapshot id -> the point, each branch's call count, the canonical
-branch it shares, the seeds the parent provides) and the frozen calibration (per-task time limits, gripper
+planner's label map (`vlar_ops.branchplan.branch_plan`: snapshot id -> the point, each branch's call count, the
+canonical branch it shares, the seeds the parent provides, and the planner's settings, whose seed count is used here:
+never the collection config's, amendment 49) and the frozen calibration (per-task time limits, gripper
 thresholds, clock charges). Snapshots and images are not needed: a point's prefix is its parent run's event log up
 to and including the point's `decision_point` event, and `vlar_harness.labels.point_labels` checks that it fits.
 
@@ -104,7 +105,7 @@ def point_columns(row: Mapping[str, Any], *, thresholds: tuple[float, float]) ->
 
 def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[Mapping],
           label_map: Mapping[str, Mapping], *, limits_s: Mapping[int, float], thresholds: tuple[float, float],
-          charges, seeds: int, profiles: Sequence[str] = DECIDERS) -> PointSet:
+          charges, profiles: Sequence[str] = DECIDERS) -> PointSet:
     from vlar_harness import labels as L
     run = {r["run_id"]: r for r in runs}
     logs = group_events(events)
@@ -121,8 +122,11 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         parent = run[p["run_id"]]
         t = int(parent["task_id"])
         entry = label_map[p["snapshot_id"]]
+        if not (entry.get("settings") or {}).get("seeds"):
+            raise DataError(f"label entry {p['snapshot_id']} records no planner settings (amendment 49)")
         parent_log = logs[p["run_id"]]
-        pl = L.point_labels(prefix_of(parent_log, p["index"]), entry, own.get(p["snapshot_id"], {}), seeds=seeds,
+        pl = L.point_labels(prefix_of(parent_log, p["index"]), entry, own.get(p["snapshot_id"], {}),
+                            seeds=int(entry["settings"]["seeds"]),
                             charges=charges, limit_s=float(limits_s[t]),
                             parent_log=parent_log if entry.get("parent_seeds") else None, profiles=tuple(profiles))
         for k, v in point_columns(p, thresholds=thresholds).items():
@@ -141,7 +145,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
                     {k: np.array(v, dtype=bool) for k, v in exc.items()})
 
 
-def from_records(root: Path | str, label_map_path: Path | str, *, seeds: int, cfg=None) -> PointSet:
+def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> PointSet:
     from vlar_harness import clock as clk
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
@@ -155,7 +159,7 @@ def from_records(root: Path | str, label_map_path: Path | str, *, seeds: int, cf
                  read_table(root, "points").to_pylist(), label_map,
                  limits_s={int(k): float(v) for k, v in tl["per_task_s"].items()},
                  thresholds=(float(g["shut_width_m"]), float(g["open_width_m"])),
-                 charges=clk.Charges.from_config(cfg), seeds=seeds)
+                 charges=clk.Charges.from_config(cfg))
 
 
 def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: float = 3.0,

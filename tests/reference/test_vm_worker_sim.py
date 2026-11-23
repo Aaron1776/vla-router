@@ -75,7 +75,7 @@ def served(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("vmworker")
     ops = {"local_root": str(tmp / "root"), "storage_url": str(tmp / "bucket")}
     plan = episode_plan("explore", tasks=[TASK], inits=[INIT], namespace=2_000_000, mode="routed", profile="none",
-                        record="full", order_seed=7)
+                        record="full", order_seed=7, extra=lambda t, i: {"p_escalate": 0.5, "episodes_per_state": 1})
     q = JobQueue(tmp / "root" / "queue.sqlite", LocalStorage(tmp / "bucket"), tmp / "root" / "local")
     q.add_plan(plan)
     q.add_plan(episode_plan("dagger", tasks=[TASK], inits=[INIT], namespace=3_000_000, mode="routed",

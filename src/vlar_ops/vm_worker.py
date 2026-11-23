@@ -2,7 +2,8 @@
 
 Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch across them. Each process:
 1. loads the harness config with the named options given (`--option name=choice`), and refuses a frozen harness
-   whose code or config differ from its freeze record (provenance.verify_freeze). A frozen harness must also have
+   whose code or config differ from its freeze record (provenance.verify_freeze), except ops code that differs
+   only where it cannot change a record (`vlar_ops.waiver`, amendment 49). A frozen harness must also have
    passed the golden-set self-check (§15, `vlar_ops.golden`) on this boot: `run_phase` runs it before any worker
    and writes the pass marker this checks. It also refuses to run without the calibration file
    (VLAR_CALIBRATION) and its complete write-once group (upload size, π0.5 latency, batch geometry: Phase 0 step 2,
@@ -17,12 +18,16 @@ Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch a
    claimed; a SIGTERM or Ctrl-C abandons the current job cleanly (lease released, no marker). A job the worker's
    options cannot run is given back and the worker stops (exit status 3).
 Every result marker carries the provenance header (harness version, config hash and options, calibration hash,
-source digest, git commit, image digests), the worker id, p_escalate and the servers' settings, so the dataset manifest can check
-that nothing from different harness versions is mixed (§15). Staged files are deleted after each job.
+source digest, ops digest, git commit, image digests), the worker id, p_escalate, the servers' settings and the boot id;
+a frozen harness's markers also carry this boot's golden-set pass, and those made under the ops waiver its record
+(`ops_waiver`), so the dataset manifest can check that nothing from different harness versions is mixed (§15). An
+exploration job must record this worker's p_escalate in its spec (amendment 49); others are given back. Staged files
+are deleted after each job.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -30,7 +35,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from .plan import load_collection_config
 from .queue import JobQueue
 from .spend import StopFlag
 from .storage import open_storage
@@ -175,6 +179,17 @@ def _safe(worker_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in worker_id)
 
 
+def tunables_refusal(job, p_escalate: float) -> Optional[str]:
+    """Why this worker must not run `job` because of a tunable its spec records (amendment 49), or None."""
+    if job.kind == "episode" and job.phase == "explore":
+        want = job.spec.get("p_escalate")
+        if want is None:
+            return "exploration job without p_escalate in its spec (amendment 49): re-plan it"
+        if float(want) != float(p_escalate):
+            return f"job's p_escalate is {want}, this worker's is {p_escalate}"
+    return None
+
+
 def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, str] = {},
           phases: Optional[Sequence[str]] = None, max_jobs: Optional[int] = None,
           clients: Optional[Mapping[str, Any]] = None, make_sim: Optional[Callable[[int], Any]] = None,
@@ -182,7 +197,8 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     """Run one worker until the queue has nothing it may claim, the stop flag is up, or it refuses a job.
 
     `clients` ({"xvla": ..., "pi05": ...}) and `make_sim` replace the production ones in tests; `p_escalate`
-    defaults to the collection config's (exploration runs)."""
+    defaults to the collection tunables' (exploration runs), and an exploration job whose spec records another
+    value is given back."""
     os.environ.setdefault("MUJOCO_GL", "egl" if sys.platform.startswith("linux") else "cgl")
     from vlar_harness import provenance, reference
     from vlar_harness.collect import Runner
@@ -192,13 +208,23 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     if not cfg.write_once_complete:
         raise StartupError("no calibration file with the complete write-once group (VLAR_CALIBRATION; Phase 0 "
                            f"step 2, amendment 35): missing {list(cfg.write_once_missing)}")
-    provenance.verify_freeze(cfg)
+    waiver = None
+    try:
+        provenance.verify_freeze(cfg)
+    except provenance.FreezeError as e:
+        from . import waiver as W
+        try:
+            waiver = W.check(cfg, e, open_storage(ops_cfg["storage_url"]), ops_source=os.environ.get("VLAR_OPS_SOURCE"))
+        except W.WaiverRefused as r:
+            raise provenance.FreezeError(f"{e} The ops-only waiver (amendment 49) does not apply: {r}") from e
+    from . import golden
+    golden_pass = None
     if cfg.frozen:
-        from . import golden
         marker = Path(ops_cfg.get("golden_marker", golden.MARKER))
         if not golden.passed_this_boot(marker, cfg.calibration_hash):
             raise StartupError(f"frozen harness without this boot's golden-set pass ({marker}): run "
                                "`vlar-ops golden check` first (§15)")
+        golden_pass = json.loads(marker.read_text())
     reference.verify_lerobot(cfg["reference"]["lerobot_files"])
 
     root = Path(ops_cfg["local_root"])
@@ -212,7 +238,8 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
                    "pi05": PI05Client(srv["pi05"]["host"], int(srv["pi05"]["port"]))}
     infos = check_servers(cfg, clients, wait_s=server_wait_s)
     if p_escalate is None:
-        p_escalate = float(load_collection_config()["exploration"]["p_escalate"])
+        from .tunables import explore_fields
+        p_escalate = explore_fields()["p_escalate"]
 
     header = provenance.record_header(cfg)
     storage = open_storage(ops_cfg["storage_url"])
@@ -221,12 +248,16 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     runner = Runner(cfg, episodes, storage.get_bytes, root / "staging" / _safe(worker_id), p_escalate=p_escalate,
                     header=header)
     meta = {"worker_id": worker_id, "provenance": header, "p_escalate": p_escalate,
-            "ops_source": os.environ.get("VLAR_OPS_SOURCE"),
+            "ops_source": os.environ.get("VLAR_OPS_SOURCE"), "boot_id": golden.boot_id(),
             "servers": {n: {k: v for k, v in i.items() if k not in ("batch_sizes", "peak_memory_gb")}
                         for n, i in infos.items()}}
+    if golden_pass is not None:
+        meta["golden_pass"] = golden_pass
+    if waiver is not None:
+        meta["ops_waiver"] = waiver
     try:
         return run_worker(queue, storage, runner, worker_id, stop=stop.is_set, max_jobs=max_jobs, phases=phases,
-                          refuse=runner.refuse, meta=meta,
+                          refuse=lambda job: runner.refuse(job) or tunables_refusal(job, p_escalate), meta=meta,
                           cleanup=lambda job: shutil.rmtree(runner.job_dir(job), ignore_errors=True))
     finally:
         episodes.close()

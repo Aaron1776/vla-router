@@ -9,13 +9,22 @@
 - checks every Parquet part against dataset v1's schema, and every `runs` row's schema version, harness version,
   config hash, phase and job id against its job's marker;
 - checks nothing from different harness versions is mixed (§15): one harness version, one source digest and one
-  set of image digests across all markers. Several config hashes are allowed (named options, e.g. the π0.5 parity
+  set of image digests across all markers; without a freeze record also one ops digest (amendment 46). Several config hashes are allowed (named options, e.g. the π0.5 parity
   run's scene seeds) and listed with their options; several git commits are allowed (code outside the harness
   package changes the commit, not the harness) and listed; markers from a harness with uncommitted changes are
   listed as a warning;
 - checks every marker carries a calibration hash (amendment 35) and every run row repeats its marker's; given the
   freeze record (`freeze`), every calibration hash must be the frozen file's or in its lineage, so parity and base
-  records count as v1.0; without one, the hashes are listed and a warning says they were not checked.
+  records count as v1.0; without one, the hashes are listed and a warning says they were not checked;
+- with a freeze record, the ops digest is provenance, not a barrier (amendment 49): the harness must be the frozen
+  one; pre-freeze records (calibration in the lineage, not the final file) must have the freeze's ops digest;
+  records of the frozen harness must carry this boot's golden-set pass; a record with other ops code must carry
+  its worker's `ops_waiver`; once any ops digest differs from the freeze's, every ops digest involved must be a
+  committed archive in `ops_archives` (a copy of phase0/src/), their common data digest must equal the freeze
+  archive's, and within each record kind (base, explore, branch) the job-spec generator digests must agree
+  (`vlar_ops.datadigest`);
+- checks the tunables are in the job specs (amendment 49): an exploration job's p_escalate equals its worker's,
+  and a branch job records its planner settings (seeds, enabled branches, sampling fraction and seed).
 Only when every check passes does it write DATACARD.md (vlar_ops/datacard-v1.md) and MANIFEST.json at the root.
 `verify(root)` checks a tree against its MANIFEST.json, e.g. after download and unpacking: every listed file
 present with its size and SHA-256, and no other file.
@@ -65,7 +74,7 @@ def _canon(v: Any) -> str:
 
 
 def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path | str] = None,
-          freeze: Optional[Path | str] = None,
+          freeze: Optional[Path | str] = None, ops_archives: Optional[Path | str] = None,
           now: Optional[datetime] = None) -> dict[str, Any]:
     """Check the dataset under `root`; if it passes, write DATACARD.md and MANIFEST.json and return the manifest.
     `quick` checks sizes only (the SHA-256 recorded at upload are trusted). `move_unlisted` moves data files no
@@ -128,21 +137,25 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
         files.append({"path": mkey, "sha256": sha256_file(root / mkey), "size": (root / mkey).stat().st_size})
 
     # Provenance: nothing from different harness versions mixed (§15).
-    seen: dict[str, Counter] = {f: Counter() for f in SINGLE}
+    frozen = json.loads(Path(freeze).read_text()) if freeze else None
+    barrier = SINGLE if frozen is None else tuple(f for f in SINGLE if f != "ops_digest")
+    seen: dict[str, Counter] = {f: Counter() for f in barrier}
+    ops_digests: Counter = Counter()
     commits: Counter = Counter()
     configs: dict[str, dict[str, Any]] = {}
     calibrations: Counter = Counter()
-    frozen = json.loads(Path(freeze).read_text()) if freeze else None
     dirty = 0
     for mkey, m in markers.items():
         prov = (m.get("meta") or {}).get("provenance")
         if not prov:
             problems.append(f"{mkey}: no provenance in the marker")
             continue
-        for f in SINGLE:
+        for f in barrier:
             seen[f][_canon(prov.get(f))] += 1
+        ops_digests[prov.get("ops_digest")] += 1
         if not prov.get("ops_digest"):
             problems.append(f"{mkey}: no ops digest in the provenance (amendment 46)")
+        problems += _tunable_problems(mkey, m)
         commits[prov.get("commit")] += 1
         dirty += bool(prov.get("harness_dirty"))
         c = configs.setdefault(prov.get("config_hash"), {"config_name": prov.get("config_name"),
@@ -154,12 +167,20 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
             problems.append(f"{mkey}: no calibration hash in the provenance (amendment 35)")
         elif frozen is not None and cal != frozen["calibration_hash"] and cal not in frozen["calibration_lineage"]:
             problems.append(f"{mkey}: calibration {cal[:12]} is not the frozen file's nor in its lineage")
+        elif frozen is not None:
+            problems += _freeze_problems(mkey, m, prov, frozen)
     if frozen is None and calibrations:
         warnings.append("calibration hashes not checked against a freeze record (--freeze): "
                         + ", ".join(f"{str(h)[:12]} ({n} jobs)" for h, n in calibrations.most_common()))
     for f, counts in seen.items():
         if len(counts) > 1:
             problems.append(f"mixed {f}: " + ", ".join(f"{v} ({n} jobs)" for v, n in counts.most_common()))
+    data_digests = None
+    if frozen is not None and not frozen.get("ops_digest"):
+        problems.append("the freeze record has no ops digest (amendment 46)")
+    elif frozen is not None and any(d and d != frozen["ops_digest"] for d in ops_digests):
+        data_digests, found = _data_digest_problems(markers, frozen, ops_archives)
+        problems += found
     if dirty:
         warnings.append(f"{dirty} job(s) ran a harness with uncommitted changes (harness_dirty)")
 
@@ -208,14 +229,18 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
         raise ManifestError(problems)
 
     shutil.copyfile(DATACARD_SOURCE, root / DATACARD)
-    single = {f: json.loads(next(iter(seen[f]))) if seen[f] else None for f in SINGLE}
+    single = {f: json.loads(next(iter(seen[f]))) if seen[f] else None for f in barrier}
+    if frozen is not None:
+        single["ops_digest"] = None
+        single["ops_digests"] = dict(ops_digests)
     files.sort(key=lambda f: f["path"])
     manifest = {
         "manifest_version": MANIFEST_VERSION, "dataset": DATASET, "schema_version": SCHEMA_VERSION,
         **single, "git_commits": sorted((c for c in commits if c), key=str),
         "configs": configs, "calibrations": dict(calibrations),
-        "freeze": None if frozen is None else {k: frozen[k] for k in ("harness_version", "calibration_hash",
-                                                                      "calibration_lineage")},
+        "freeze": None if frozen is None else {k: frozen.get(k) for k in ("harness_version", "calibration_hash",
+                                                                          "calibration_lineage", "ops_digest")},
+        "data_digests": data_digests,
         "phases": {p: dict(sorted(c.items())) for p, c in sorted(phases.items())},
         "tables": tables, "warnings": warnings,
         "datacard": {"path": DATACARD, "sha256": sha256_file(root / DATACARD), "size": (root / DATACARD).stat().st_size},
@@ -226,6 +251,91 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
     }
     (root / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n")
     return manifest
+
+
+def _tunable_problems(mkey: str, m: dict) -> list[str]:
+    """Tunables are recorded in the job specs they affect (amendment 49)."""
+    from .branchplan import BRANCH_ORDER
+    job, meta = m["job"], m.get("meta") or {}
+    spec = job.get("spec") or {}
+    if job.get("kind") == "episode" and job.get("phase") == "explore":
+        if spec.get("p_escalate") is None:
+            return [f"{mkey}: exploration job without p_escalate in its spec"]
+        if meta.get("p_escalate") is None or float(spec["p_escalate"]) != float(meta["p_escalate"]):
+            return [f"{mkey}: spec p_escalate {spec['p_escalate']} but its worker ran {meta.get('p_escalate')}"]
+    if job.get("kind") in BRANCH_ORDER:
+        s = spec.get("settings") or {}
+        dp = s.get("dp_sampling") or {}
+        if not s.get("seeds") or not s.get("enabled") or dp.get("fraction") is None or dp.get("seed") is None:
+            return [f"{mkey}: branch job without its planner settings (seeds, enabled, dp sampling) in its spec"]
+    return []
+
+
+def _freeze_problems(mkey: str, m: dict, prov: dict, frozen: dict) -> list[str]:
+    """Per-record rules once a freeze exists (amendment 49)."""
+    meta, out = m.get("meta") or {}, []
+    for f in ("harness_version", "source_digest"):
+        if prov.get(f) != frozen.get(f):
+            out.append(f"{mkey}: {f} is not the freeze's")
+    ops = prov.get("ops_digest")
+    if prov.get("calibration_hash") != frozen["calibration_hash"]:
+        if ops != frozen.get("ops_digest"):
+            out.append(f"{mkey}: a pre-freeze record (calibration in the lineage) with other ops code than the freeze's")
+        return out
+    g = meta.get("golden_pass") or {}
+    if not (g.get("passed") is True and g.get("boot_id") and g.get("boot_id") == meta.get("boot_id")
+            and g.get("calibration_hash") == frozen["calibration_hash"]):
+        out.append(f"{mkey}: frozen-harness record without a golden-set pass for its boot")
+    if ops and ops != frozen.get("ops_digest"):
+        w = meta.get("ops_waiver") or {}
+        if w.get("ops_digest") != ops or w.get("freeze_ops_digest") != frozen.get("ops_digest"):
+            out.append(f"{mkey}: other ops code than the freeze's without its worker's ops_waiver record")
+    return out
+
+
+def _data_digest_problems(markers: dict, frozen: dict, ops_archives) -> tuple[dict, list[str]]:
+    """Every ops digest involved is a committed archive; common data digests equal the freeze's; generator digests
+    agree within each record kind (amendment 49)."""
+    from . import datadigest as DD
+    if ops_archives is None:
+        return {}, ["records with other ops code than the freeze's: pass --ops-archives (a copy of phase0/src/)"]
+    by_ops: dict[str, dict] = {}
+    for p in sorted(Path(ops_archives).glob("*.tar.gz")):
+        try:
+            files = DD.files_from_archive(p.read_bytes())
+        except (DD.DigestError, OSError, ValueError):
+            continue
+        by_ops.setdefault(DD.ops_digest_of(files), {"archive": p.name, **DD.digests(files)})
+    problems: list[str] = []
+    def ops_of(m: dict) -> Optional[str]:
+        return ((m.get("meta") or {}).get("provenance") or {}).get("ops_digest")
+    involved = {frozen["ops_digest"]} | {ops_of(m) for m in markers.values()}
+    for d in sorted(x for x in involved if x):
+        if d not in by_ops:
+            problems.append(f"ops digest {d[:12]} is not a committed archive in {ops_archives}")
+    if problems:
+        return {}, problems
+    freeze_common = by_ops[frozen["ops_digest"]]["common"]
+    kinds: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    for mkey, m in markers.items():
+        d = ops_of(m)
+        if not d:
+            continue
+        if by_ops[d]["common"] != freeze_common:
+            problems.append(f"{mkey}: data digest of {by_ops[d]['archive']} differs from the freeze's")
+        kind = DD.kind_of(m["job"])
+        if kind is None:
+            if d != frozen["ops_digest"]:
+                problems.append(f"{mkey}: no job-spec generator digest for phase {m['job'].get('phase')!r}")
+            continue
+        kinds[kind][by_ops[d][kind]].add(d)
+    for kind, gens in kinds.items():
+        if len(gens) > 1:
+            problems.append(f"mixed {kind} job-spec generators: " + ", ".join(
+                f"{str(g)[:12]} ({', '.join(by_ops[d]['archive'] for d in sorted(ds))})" for g, ds in gens.items()))
+    used = {d for d in involved if d}
+    return {by_ops[d]["archive"]: {k: v for k, v in by_ops[d].items() if k != "archive"} | {"ops_digest": d}
+            for d in sorted(used)}, problems
 
 
 def verify(root: Path | str, *, quick: bool = False) -> list[str]:

@@ -1,0 +1,19 @@
+# Data-collection tunables (docs/SPEC.md §7, §12; amendment 49): they choose which work is done. Each is recorded in
+# every job spec or branch-plan entry it affects (vlar_ops.tunables, vlar_ops.branchplan) and read from there, so
+# changing one leaves the data digest unchanged. The definitions are in collection-v1.yaml.
+
+exploration:
+  episodes_per_state: 1       # [ASSUMPTION] 500 episodes; only 1 is implemented (the plan CLI refuses others)
+  p_escalate: 0.1             # [ASSUMPTION] per decision, while budget remains; in every exploration job spec
+
+branches:
+  seeds: 3                    # §12 reduction step 5 lowers this to 2
+  enabled: [b1_continue, b2_one_call, b3_three_calls, b4_max]   # §12 reduction step 2 drops b3
+  # Graceful-stop tiers (§12): 1 = first two seeds of b1, b2, b4; 2 = their later seeds; 3 = b3.
+  tier_one_seeds: 2
+
+dp_sampling:
+  fraction: null              # set from the pilot's measured throughput (§12)
+  seed: 20261120              # recorded with every plan
+
+order_seed: 7                 # shuffles episode and decision-point order inside each plan

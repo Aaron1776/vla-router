@@ -139,7 +139,8 @@ def cmd_dataset(a: argparse.Namespace) -> None:
     from . import manifest
     if a.action == "manifest":
         try:
-            m = manifest.build(a.root, quick=a.quick, move_unlisted=a.move_unlisted, freeze=a.freeze)
+            m = manifest.build(a.root, quick=a.quick, move_unlisted=a.move_unlisted, freeze=a.freeze,
+                               ops_archives=a.ops_archives)
         except manifest.ManifestError as e:
             sys.exit(f"no manifest written: {e}")
         print(json.dumps({k: m[k] for k in ("dataset", "harness_version", "configs", "phases", "tables", "totals",
@@ -172,15 +173,19 @@ def cmd_package(a: argparse.Namespace) -> None:
 
 
 def cmd_plan(a: argparse.Namespace) -> None:
-    """Write an episode plan (one job per task and initial state) with the phase's rollout-seed namespace."""
+    """Write an episode plan (one job per task and initial state) with the phase's rollout-seed namespace. An
+    exploration plan records the exploration tunables in every job spec (amendment 49)."""
     from .plan import episode_plan, load_collection_config
+    from .tunables import explore_fields
 
     def span(text: str) -> list[int]:
         lo, _, hi = text.partition("-")
         return list(range(int(lo), int(hi or lo) + 1))
     ns = int(load_collection_config()["rollout_seed_namespaces"][a.namespace or a.phase])
+    fields = explore_fields() if a.phase == "explore" else None
     plan = episode_plan(a.phase, tasks=span(a.tasks), inits=span(a.inits), namespace=ns, mode=a.mode,
-                        profile=a.profile, record=a.record, order_seed=a.order_seed, scene=a.scene)
+                        profile=a.profile, record=a.record, order_seed=a.order_seed, scene=a.scene,
+                        extra=(lambda t, i: dict(fields)) if fields else None)
     plan.write(Path(a.out))
     print(f"{a.out}: plan {plan.plan_id} ({plan.phase}), {len(plan.jobs)} jobs, namespace {ns}")
 
@@ -307,6 +312,8 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--move-unlisted", help="manifest: move data files no result marker lists into this directory")
     d.add_argument("--freeze", help="manifest: the v1.0 freeze record (freeze.json); every record's calibration hash "
                                     "must be the frozen file's or in its lineage")
+    d.add_argument("--ops-archives", help="manifest: a copy of phase0/src/ (<commit>.tar.gz); needed when a record's "
+                                          "ops digest is not the freeze's (amendment 49)")
     d.set_defaults(fn=cmd_dataset)
 
     r = sub.add_parser("reference")

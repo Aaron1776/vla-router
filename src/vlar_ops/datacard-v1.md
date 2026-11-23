@@ -32,7 +32,7 @@ with probability `p_escalate` per decision point while budget remains, §7), `pi
 - Branch run id `<snapshot_id>/<branch>/s<seed_index>`, branch one of `b1_continue` (X-VLA executes its stored
   queue, then continues locally), `b2_one_call` (one π0.5 call of 10 steps, then X-VLA), `b3_three_calls` (three
   consecutive π0.5 calls, truncated to the remaining budget), `b4_max` (π0.5 until the budget is spent or the episode
-  ends). Branches with equal π0.5 call counts at a point are run once and shared (`vlar_ops.plan.branch_plan`).
+  ends). Branches with equal π0.5 call counts at a point are run once and shared (`vlar_ops.branchplan.branch_plan`).
 - Job id: `vlar_ops.plan.job_id(subject, kind, seed_index)`; the marker holds the full job.
 - Scene seed (the environment seed): 142 + initial-state index in every project run; 1000 + index only in the π0.5
   parity run (harness option `scene_seed`).
