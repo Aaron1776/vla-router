@@ -85,7 +85,7 @@ def test_every_pip_install_is_hash_checked():
         assert "--require-hashes" in cmd and "--no-deps" in cmd, cmd
 
 
-@pytest.mark.parametrize("lock", ["lerobot.lock", "xvla.lock", "build.lock", "xvla-test.lock"])
+@pytest.mark.parametrize("lock", ["lerobot.lock", "xvla.lock", "build.lock", "xvla-test.lock", "lerobot-test.lock"])
 def test_every_lock_entry_carries_hashes_and_targets_the_vm(lock):
     text = (C / lock).read_text()
     assert "linux/x86_64" in text and "CPython 3.13" in text
@@ -270,18 +270,28 @@ def test_sim_and_pi05_builds_check_assets_and_scenes_without_a_gpu():
                          joined), role
 
 
-def test_xvla_test_dependencies_stay_out_of_the_image():
-    # starlette 1.10.0's test client needs httpx2 (its `full` extra); it is installed with hashes only into the
-    # throwaway container of the X-VLA test run, never into the exported image (which keeps exactly xvla.lock).
-    test_lock, server = pins("xvla-test.lock"), pins("xvla.lock")
-    assert pins("xvla.lock")["starlette"] == "1.10.0" and "httpx2" in test_lock
-    assert not set(test_lock) & set(server)
-    assert "xvla-test" not in DOCKERFILE
-    startup = (REPO / "ops" / "gcp" / "build_vm_startup.sh").read_text() if (REPO / "ops").exists() else None
-    if startup is not None or not IN_IMAGE:
-        run = startup.replace("\\\n", " ")
-        assert re.search(r'docker run --rm [^\n]*"vlar-xvla:\$\{COMMIT\}" sh -c\s+"pip install -q --require-hashes '
-                         r'--no-deps --only-binary :all: -r containers/xvla-test\.lock && \s*python -m pytest', run)
+@pytest.mark.parametrize("env", ["xvla", "lerobot"])
+def test_test_client_dependencies_stay_out_of_the_images(env):
+    # starlette 1.10.0's test client needs httpx2 (its `full` extra; httpx is a deprecated fallback); it is installed
+    # with hashes only into the throwaway containers of the images' test runs, never into an exported image (which
+    # keeps exactly its lock).
+    test_lock, image = pins(f"{env}-test.lock"), pins(f"{env}.lock")
+    assert image["starlette"] == "1.10.0" and "httpx2" in test_lock
+    assert not set(test_lock) & set(image)
+    assert f"{env}-test" not in DOCKERFILE
+
+
+@repo_only("ops/gcp/build_vm_startup.sh")
+def test_the_image_test_runs_install_their_test_lock_and_run_the_http_tests():
+    # The servers' HTTP tests (every endpoint, tests/reference/test_server_http.py) run in the images of both servers;
+    # the sim image's run is the whole suite, so it installs the LeRobot test lock too.
+    run = (REPO / "ops" / "gcp" / "build_vm_startup.sh").read_text().replace("\\\n", " ")
+    assert 'TL="pip install -q --require-hashes --no-deps --only-binary :all: -r"' in run
+    for image, lock, tests in (("sim", "lerobot", r"tests"),
+                               ("pi05", "lerobot", r"[^\n]*tests/reference/test_server_http\.py -k pi05"),
+                               ("xvla", "xvla", r"[^\n]*tests/reference/test_server_http\.py -k xvla")):
+        assert re.search(rf'docker run --rm [^\n]*"vlar-{image}:\$\{{COMMIT\}}" sh -c\s+"\$\{{TL\}} '
+                         rf'containers/{lock}-test\.lock && \s*python -m pytest -q -rs {tests}"', run), image
 
 
 @repo_only("ops/gcp/build_vm_startup.sh")

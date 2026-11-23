@@ -43,14 +43,20 @@ d(m['pi05']['checkpoint'], revision=m['pi05']['revision'], local_dir='/hf-cfg/pi
 status=0
 cpu=(-e MUJOCO_GL=osmesa -e PYOPENGL_PLATFORM=osmesa -e VLAR_TEST_DEVICE=cpu -v "${W}/hf:/hf-cfg:ro"
      -e VLAR_XVLA_CONFIG_DIR=/hf-cfg/X-VLA-Pt -e VLAR_PI05_CONFIG_DIR=/hf-cfg/pi05_libero_finetuned)
-docker run --rm "${cpu[@]}" "vlar-sim:${COMMIT}" python -m pytest -q -rs tests > "${W}/test-sim.log" 2>&1 || status=1
-docker run --rm "${cpu[@]}" "vlar-pi05:${COMMIT}" python -m pytest -q -rs \
-  tests/reference/test_batch_invariance.py -k pi05 > "${W}/test-pi05.log" 2>&1 || status=1
-# X-VLA's tests need starlette's test client (httpx2, containers/xvla-test.lock), installed with hashes into this
-# throwaway container only: the exported image keeps exactly xvla.lock.
+# The servers' HTTP tests (tests/reference/test_server_http.py) and X-VLA's handler test need starlette's test client
+# (httpx2: containers/lerobot-test.lock, containers/xvla-test.lock), installed with hashes into these throwaway
+# containers only: the exported images keep exactly lerobot.lock and xvla.lock.
+TL="pip install -q --require-hashes --no-deps --only-binary :all: -r"
+docker run --rm "${cpu[@]}" "vlar-sim:${COMMIT}" sh -c \
+  "${TL} containers/lerobot-test.lock && python -m pytest -q -rs tests" > "${W}/test-sim.log" 2>&1 || status=1
+docker run --rm "${cpu[@]}" "vlar-pi05:${COMMIT}" sh -c \
+  "${TL} containers/lerobot-test.lock && \
+   python -m pytest -q -rs tests/reference/test_batch_invariance.py tests/reference/test_server_http.py -k pi05" \
+  > "${W}/test-pi05.log" 2>&1 || status=1
 docker run --rm "${cpu[@]}" "vlar-xvla:${COMMIT}" sh -c \
-  "pip install -q --require-hashes --no-deps --only-binary :all: -r containers/xvla-test.lock && \
-   python -m pytest -q -rs tests/reference/test_model_servers.py tests/reference/test_batch_invariance.py -k xvla" \
+  "${TL} containers/xvla-test.lock && \
+   python -m pytest -q -rs tests/reference/test_model_servers.py tests/reference/test_batch_invariance.py \
+     tests/reference/test_server_http.py -k xvla" \
   > "${W}/test-xvla.log" 2>&1 || status=1
 tail -n 3 "${W}"/test-*.log
 (( status == 0 )) || fail "in-container tests (see test-*.log)"

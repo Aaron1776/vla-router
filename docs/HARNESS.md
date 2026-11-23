@@ -764,6 +764,13 @@ the L4, `ops/vm/load_images.sh` does the driver check, loads and verifies the im
   2.16.0, truststore 0.10.5) is installed with hashes into the throwaway container of each X-VLA test run, never into
   the image. Checked on the Mac: the hashes verify and the test passes through httpx2 with the httpx fallback's warning
   as an error.
+- The servers' HTTP tests (`tests/reference/test_server_http.py`, amendment 45: every endpoint of both servers through
+  the production clients) use the same test client in the LeRobot images: `containers/lerobot-test.lock` (from
+  `lerobot-test.in` with `lerobot.lock` as constraints; the same three packages and versions) goes into the throwaway
+  containers of the sim and pi05 test runs (`ops/gcp/build_vm_startup.sh`), never into the images. `.venv-sim` got
+  FastAPI at `lerobot.lock`'s versions (fastapi 0.162.0, starlette 1.10.0, pydantic 2.14.3, uvicorn 0.54.0, with
+  httpx2 2.16.0; installed 2026-11-23 with pip's `--uploaded-prior-to 2026-11-07`, additive only): `pi05_server`
+  now imports FastAPI at module level, as the pi05 image always could.
 - Batch invariance on the build VM's CPU (amendment 33): `tests/reference/invariance.py` (`matches_solo`, `exact`,
   `all_match_solo`): bit for bit except in an image on the CPU, where a difference within torch's default tolerance
   and closest to the request's own solo result is a `NotBitIdentical` warning with the measured difference; every

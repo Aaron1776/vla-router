@@ -48,6 +48,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+# Module level, not in create_app: with `from __future__ import annotations` the handlers' `request: Request` is a
+# string that FastAPI resolves in this module's globals; imported only inside create_app it is not found, FastAPI
+# takes `request` for a required field and every /act and /upload_bytes call fails with 422 (tests/reference/
+# test_server_http.py).
+from fastapi import Request
 
 from .batching import Batcher, pad_rows
 from .common import Timer, deterministic_torch, peak_memory_gb, seeded_noise, torch_flags
@@ -286,7 +291,7 @@ class PI05Service:
 
 def create_app(service: PI05Service):
     import json_numpy
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI
     from fastapi.responses import JSONResponse, Response
 
     app = FastAPI()

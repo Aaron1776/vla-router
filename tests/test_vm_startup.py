@@ -1,6 +1,7 @@
 """ops/vm/phase0/startup.sh, the L4 VM's boot script: the host-package freeze (amendment 36) against fake systemctl,
 snap, pgrep, sleep, dpkg-query and sha256sum, and its place in the boot order."""
 
+import os
 import re
 import shutil
 import subprocess
@@ -12,6 +13,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 STARTUP = REPO / "ops" / "vm" / "phase0" / "startup.sh"
 BASH = shutil.which("bash")
+# ops/ is not in the images (VLAR_IN_IMAGE=1, containers/Dockerfile); outside one, a missing script still fails.
+pytestmark = pytest.mark.skipif(os.environ.get("VLAR_IN_IMAGE") == "1" and not STARTUP.exists(),
+                                reason="repo-only files (ops/), not in the image")
 
 FAKE = {
     "systemctl": r"""#!/bin/bash
