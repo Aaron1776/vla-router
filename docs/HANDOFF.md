@@ -418,6 +418,46 @@ bucket by `ops/gcp/31_phase0_queue.sh`; `ops/gcp/32_watch_vm.sh` follows `STATE.
 Tests: `tests/test_phase0_runner.py` (fake gcloud/systemctl/vlar-ops/timeout; order, queueing from a step,
 needs-input stays queued, gate failure, failure and time cap, STOP flag, SIGTERM).
 
+**NEXT (start here; xhigh): stage B, under amendment 34 (SPEC §17, approved 2026-11-22).** Calibration lives in
+its own file (hashed, in the bucket, mounted read-only, its hash in every record, pinned by the v1.0 freeze); code
+and fixed settings stay in the images and the source digest; no rebuild after the measurements; base rollouts count
+as v1.0; live calibration-dependent values refuse to run until the calibration file is frozen. The verification
+(amendment 34's second paragraph) found four exceptions; **ask the user to confirm this proposed handling first**:
+(1) network timeouts depend on upload size and π0.5 latency: make those set-once keys written in step 2 before the
+first π0.5-calling run (the writer refuses to change a key once set), every record carries the calibration hash at
+run time, and the freeze pins the final hash plus the lineage of earlier hashes whose every value is unchanged in it;
+the manifest accepts records whose hash is in that lineage (so parity and base records count as v1.0);
+(2) drop `sim_time_s` from the runs table (scoring is offline); (3) stop computing `grip_closed_*_frac` at collection
+and compute them offline from `prev_gripper_qpos`/`prev_actions` (live `observe()` keeps computing them, refusing
+until frozen); (4) the batch geometry stays a fixed setting, decided in step 2 before parity (amendment 24: if padding
+is too slow, stop and ask); changing it means a rebuild.
+One image rebuild is unavoidable before step 2: the calibration-file mechanism, the refusals and (2)-(3) are harness
+code. Then re-queue the re-run rows (030-090) on the new images before the freeze (about 1.5 h, about $0.70): stage A
+certifies `be7b95a`'s code and the L4 platform, not the new code. Stage B work list:
+- Calibration file: `VLAR_CALIBRATION` (on the VM `/etc/vlar/calibration.yaml`, inside the existing read-only
+  `/etc/vlar` mount of every unit and test row) merged over the base config's placeholders; written on the VM host
+  (`config.write_calibration` moved off the package dir) and synced to `gs://$BUCKET/vla-router/calibration/`;
+  `calibration_hash` in `provenance.record_header` (runs, markers, snapshots); the freeze pins it (amendment 34).
+  Refusals: `Episode.start(time_limit=True)` and `Episode.observe()` unless the calibration is frozen.
+- Step 2 tools (vlar_ops, run in the images): unpadded latency medians (servers at `--max-batch 1`, X-VLA
+  `--sample-rows 5`: `/act`, `/features`, `/sample` K=5, π0.5 inference); throughput at the fixed geometry vs unpadded
+  1/2/4/8, deterministic on/off (padding cost; too slow -> exit 75); worker count; gripper thresholds (procedure still
+  to design: e.g. scripted fully-open / closed-on-nothing finger widths in the sim); upload size (π0.5-alone
+  decision points -> `PI05Client.upload_bytes` -> `network.median_upload_image_bytes`).
+- Parity step: plan (`plan.episode_plan`, phase `pi05_parity`, namespace 5000000, tasks 0-9 x inits 0-9), `vlar-ops
+  queue add`, servers + workers `--phase pi05_parity --option scene_seed=pi05_parity` (worker count from step 2),
+  then `reference_runs.compare` on the runs table: pass (`within_sampling_error`, McNemar p >= 0.05) queues the base
+  step into the bucket queue; fail exits 76 (stop, no debugging). Base step: 500 episodes, namespace 1000000, routed
+  X-VLA-only, record full. Then step 6 (`calibration --write`, time limits into the calibration file), step 7 (golden
+  set, freeze).
+**Tokenizer (2026-11-22):** the user logged in to Hugging Face; revision `35e4f46` (the then-latest; the reference
+run's is unrecorded) with SHA-256 in SPEC §2, cached at `gs://$BUCKET/vla-router/hf-tokenizer/` (flattened, with
+`refs/main`); stage A's step 050 fetches it. Note for downloads: the new `hf` CLI needs one `--include` per pattern and
+`hf_xet` for these files. **Stage A** was running at handoff (step 030; spend guard $0.15); its first boot stopped at
+010 because the VM image has no Docker (fixed in `6690b19`: docker.io + `nvidia-ctk runtime configure`). Check
+`gs://$BUCKET/vla-router/phase0/STATE.json` and `history.jsonl` for where it ended; a stopped VM stays within the pause
+rule for one day.
+
 **L4 VM created (2026-11-22, user's go-ahead):** `vlar-l4` (us-central1-a, Spot, 100 GB pd-balanced) with stage A
 queued (host source `94b1966`, images `be7b95a`); it stops itself when stage A ends (`32_watch_vm.sh` follows it).
 Spend guard ledger starts with this VM ($0 before it; the six build VMs, about $1.10 before credits, are outside the
