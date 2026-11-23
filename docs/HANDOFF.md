@@ -322,14 +322,13 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23, 21:10Z): step `200` fixed (`44cb3e5`); stage B re-queued; the L4 cannot start (zone
-stockout), and a start is being retried.** The user signed gcloud in again at about 21:05Z. At 21:06Z
-`31_phase0_queue.sh ...{200,210,300}-*.sh` ran from `0a0cd4c` (the fix plus HANDOFF): `phase0/src/CURRENT` is
-`0a0cd4c`, and the queue holds `200`, `210` and `300`, with `200` first. It was checked that the queued `200` has
-the re-measure change. `gcloud compute instances start` failed twice (21:06Z) with `ZONE_RESOURCE_POOL_EXHAUSTED`:
-no L4 capacity in `$ZONE` (stockout). A failed start bills nothing, and the VM stays STOPPED. The same start is
-retried every 10 min until about 23:06Z (`outputs/build-logs/l4-start-retries.log`). If capacity never comes, the
-L4 stays stopped. Moving zones means recreating the VM (`30_create_vm.sh` in another zone, which needs the user).
+**NOW (2026-11-23, 21:20Z): stage B is running again on the L4 in `us-central1-a` with the fixed ops code.**
+`200`, `210` and `300` were queued at 21:06Z from `0a0cd4c`, so `phase0/src/CURRENT` is `0a0cd4c` and the VM
+installs it on boot. The queued `200` was checked to carry the re-measure change. The start failed twice at 21:06Z
+with `ZONE_RESOURCE_POOL_EXHAUSTED` (no L4 capacity in the zone); a failed start bills nothing. The third attempt,
+at 21:17Z, started the VM (`outputs/build-logs/l4-start-retries.log`). **The zone fallback was not needed:** the VM,
+its disk and `ZONE` are unchanged. Watcher log: `outputs/build-logs/stageB-watch-0a0cd4c.log`. The spend guard
+stood at $1.70 at the start.
 Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`.
 **Zone fallback (pre-approved by the user, 2026-11-23 ~21:15Z), if the start still fails when the retry loop ends:**
 1. Queue `010,015,020,030,040,050,090` beside `200,210,300`, all from a clean HEAD. This must happen before the VM
