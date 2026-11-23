@@ -330,7 +330,22 @@ the re-measure change. `gcloud compute instances start` failed twice (21:06Z) wi
 no L4 capacity in `$ZONE` (stockout). A failed start bills nothing, and the VM stays STOPPED. The same start is
 retried every 10 min until about 23:06Z (`outputs/build-logs/l4-start-retries.log`). If capacity never comes, the
 L4 stays stopped. Moving zones means recreating the VM (`30_create_vm.sh` in another zone, which needs the user).
-Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`. To queue by hand later, from a clean `harness-v1`:
+Once the VM is up: `caffeinate -i -s ops/gcp/32_watch_vm.sh`.
+**Zone fallback (pre-approved by the user, 2026-11-23 ~21:15Z), if the start still fails when the retry loop ends:**
+1. Queue `010,015,020,030,040,050,090` beside `200,210,300`, all from a clean HEAD. This must happen before the VM
+   exists, because its runner starts at boot. `090` needs every row on the new disk, and `020` fetches the weights
+   and the tokenizer from the bucket.
+2. `ZONE=us-central1-{b,c,f} IMAGES_COMMIT=03f311c4cd18a392285709987426bdfc42413fcd ops/gcp/30_create_vm.sh`: Spot,
+   one zone after another. The VM name stays the same; names are unique per zone.
+3. Once the new VM is RUNNING, delete the old VM and its disk in `us-central1-a`. Set `ZONE` in the git-ignored
+   `ops/gcp/env.sh` to the new zone, then watch.
+4. If Spot is unavailable in every zone: take `010`-`090` out of the queue again, leave the old VM stopped, and give
+   the user the on-demand estimate. On-demand is never used without asking.
+
+**Spend ledger gap (found 2026-11-23, not debugged):** `ops/ledger.json` has no disk entries. Every `history.jsonl`
+entry shows `disk_usd` 0.0, so the L4's 100 GB pd-balanced disk (about $0.33/day since 2026-11-22) is not in the
+guard's total. Settle it at the next reconcile. A new VM's startup records its own disk (`spend disk-created`).
+ To queue by hand later, from a clean `harness-v1`:
 ```bash
 export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh
 ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{200,210,300}-*.sh    # host source and CURRENT -> HEAD; 200 sorts first
