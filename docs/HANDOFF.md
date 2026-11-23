@@ -322,23 +322,46 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23, 14:52Z): stage B STOPPED: step `200` (step 2 measurement) FAILED (exit 1); the L4 is
-STOPPED (TERMINATED), not debugged, as the user asked.** The geometry rule found no feasible batch size: at every
-size (1, 2, 4, 8, 16) the memory probe recorded "full batches failed (a server may have run out of memory)", but
-the log shows an `UnboundLocalError: cannot access local variable 'load' where it is not associated with a value`
-raised in `src/vlar_ops/step2.py`, line 390 (`run`), once for each size, via `cli.py` `cmd_step2`. That is a host-side
-ops code error, not the GPU: the size-16 probe peaked at 13056 of 23034 MiB. `choose_geometry` then raised
-`TooSlow` and the step exited 1, not 75. **Nothing was written to the calibration file** (`vla-router/calibration/`
-is empty), so the write-once group is untouched. Partial results are in `phase0/step2/03f311c.../`: `memory-{2,4,8,16}.{json,smi}`
-and `obs/`. Logs were copied to `outputs/build-logs/stageB-03f311c/`. The queue still holds `210` and `300`; `200`
-is in `phase0/failed/`. After a fix (it needs the user, and a fix in `vlar_ops` needs no image rebuild, since the ops
-code is mounted from the host source), re-queue from the fixed commit with `31_phase0_queue.sh ...{200,210,300}-*.sh`.
-`200` sorts first. **Spend guard $1.70** ($0.84 of it today, 13:03Z-14:48Z); the build VM's about $0.65 is outside the
-ledger. Nothing else bills by the hour: the build VM is gone and the L4 is stopped. Its disk bills about $0.33/day.
+**NOW (2026-11-23, 21:05Z): step `200` fixed (`44cb3e5`, pushed); re-queueing is BLOCKED on gcloud sign-in.** The
+user pre-approved the next part: make the VM use the fixed commit's ops code, re-queue `200` ahead of `210` and
+`300`, start the L4, and let stage B continue on its own under the same stop rules. At 21:03Z every gcloud call failed
+with "Reauthentication failed. cannot prompt during non-interactive execution": the Mac's gcloud credentials have
+expired. Signing in is the user's to do (`gcloud auth login` in a terminal). Nothing on the VM changed after 14:48Z.
+The L4 is STOPPED, the queue holds `210` and `300` from `03f311c`, and `phase0/src/CURRENT` is `03f311c`.
+**Once signed in, from a clean `harness-v1` at `44cb3e5` or later:**
+```bash
+export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh
+ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{200,210,300}-*.sh    # host source and CURRENT -> HEAD; 200 sorts first
+gcloud compute instances start $VM_NAME --zone $ZONE
+caffeinate -i -s ops/gcp/32_watch_vm.sh
+```
+The VM installs `CURRENT` on boot, and step `200`'s `vlar-ops` runs mount that host `vlar_ops` over the image's copy
+(`OPS_RUN`), so the fix needs no image rebuild. The images stay `03f311c` (`vlar-images-url` unchanged;
+`startup-script` unchanged since `03f311c`). On the VM, `200` reuses `obs/` and both benches from 14:00Z. It measures
+every size again, because each `memory-B.json` there holds the `load` error (the script change in `44cb3e5`). Then
+it runs the geometry rule, latency, upload, gripper and the write-once calibration write.
+**Spend guard $1.70**; the build VM's about $0.65 is outside the ledger. The L4's disk bills about $0.33/day.
 **Pause rule:** delete the L4 and its disk if it is still stopped at 14:48Z on 2026-11-24.
 When stage B resumes: `400` ends with an empty queue, so the VM stops itself. `500` is queued by hand afterwards;
 copy the step script straight into `phase0/queue/`, as `300` does for `400`. `600` is queued only with the user's
 explicit approval after they read the step-6 summary. Images: `gs://$BUCKET/containers/03f311c4cd18a392285709987426bdfc42413fcd/`.
+
+**Step `200` fix (2026-11-23 evening, `44cb3e5`).**
+- **Cause:** `step2.run` assigned a local `load` lambda in its `updates` branch, which made `load` local in the
+  whole function. So `vlar-ops step2 load` raised `UnboundLocalError` at every size on the L4.
+- **Why no test caught it:** the tests called the functions directly, only `choose` went through the command, and
+  nothing ran the step script, which reported the crash as a possible out-of-memory.
+- **New tests:** `tests/reference/test_step200_e2e.py` runs the real step script end to end on the Mac against
+  stand-ins (HARNESS.md, "Step `200` end to end on the Mac"). It has three tests, and all three fail on the old
+  `step2.py` with the L4's error.
+- **Step script:** a re-run now measures again a size whose `memory-B.json` holds an error.
+- **Suites:** main venv 250 passed, 27 skipped; simulator env 409 passed, 21 skipped; X-VLA env 16 passed.
+
+The stop at 14:52Z, for the record: stage B STOPPED at step `200` (FAILED, exit 1). The geometry rule found no
+feasible batch size: at every size the memory probe recorded "full batches failed (a server may have run out of
+memory)", while the log showed `UnboundLocalError` in `src/vlar_ops/step2.py`, line 390, once per size. The size-16
+probe peaked at 13056 of 23034 MiB. **Nothing was written to the calibration file** (`vla-router/calibration/` is
+empty). Partial results are in `phase0/step2/03f311c.../`; logs are in `outputs/build-logs/stageB-03f311c/`.
 
 Run log (UTC; spend = the L4 spend guard's total from `history.jsonl`; the build VM is outside the ledger):
 - 10:41Z: merge `03f311c` pushed to `harness-v1`. Rebuild started on-demand (`BUILD_PROVISIONING=STANDARD caffeinate
