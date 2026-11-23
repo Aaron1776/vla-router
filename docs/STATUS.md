@@ -1,7 +1,8 @@
 # Project status
 
-Last updated: 2026-11-21, describing the code on branch `harness-v1` after effort step 5 (the commit after
-`c1fcd78`).
+Last updated: 2026-11-22, describing branch `harness-v1` at `be7b95a`: the harness build is complete (the §18
+milestone), the container images are built and tested, and Phase 0 on the L4 GPU VM is starting (go-ahead given
+2026-11-22).
 
 This page is for someone who has seen nothing of the project so far: what it is, where things are, how far the
 work has got, what comes next and how to run it. It is a summary; where it and [SPEC.md](SPEC.md) disagree, the spec
@@ -101,13 +102,16 @@ results count for parity and determinism, because rendering and floating-point r
 | after `6c08bf5` | Dataset records (SPEC §13: Parquet tables, snapshots, PNG images, keyed by episode and decision point), the job runner for base, exploration and branch jobs, and the worker loop that uploads a job's files before marking it done; tested end to end through the queue into a local stand-in for the bucket |
 | after `1683b56` | The VM worker command (`vlar-ops worker`: real model clients, checks that both servers run the fixed batch geometry with deterministic settings, the spend guard's stop flag, clean abandon on shutdown, provenance in every result) and the dataset manifest and datacard (`vlar-ops dataset manifest` / `verify`: every file checked, nothing from different harness versions mixed, every field and the label computation documented) |
 | after `1e92964` | Container definitions (SPEC §15, amendments 28-30): one Dockerfile for the simulator, π0.5 and X-VLA images, all on the reference notebook's Python 3.13.16; hashed lockfiles pinning the notebook's versions (torch 2.11.0 for CUDA 13.0, LeRobot 0.6.1, transformers 5.5.4 and 4.51.3, robosuite 1.4.0, MuJoCo 3.8.1); a script that builds and tests the images on a CPU-only VM and stores them in the bucket; the L4-side loader with the NVIDIA driver check; service units for the servers and workers |
+| `0046252`-`be7b95a` | Phase 0 step 0, the image build (amendments 31-33): the five source packages built as the reference notebook did (CMake below 4.2 with its policy minimum); package versions compared by PEP 440 equality; LIBERO's scene assets placed where the reference run read them; on a CPU, batch invariance checked to torch's tolerance with bit inequality only a warning (on the L4 it stays bit for bit and blocking). Sixth attempt: all three images built, every in-container test passed, images stored in the bucket |
 
-Test results after step 5 (Mac): unit tests 112 passed, 7 skipped; simulator tests 57 passed, 17 skipped; X-VLA server
-and batch-invariance tests 12 passed (CPU, random weights). The skipped tests need model weights, both servers running
-or another environment, so the weight- and server-dependent ones run on the VM.
+Test results on the Mac (after the container definitions): unit tests 158 passed, 13 skipped; simulator tests 125
+passed, 17 skipped. In the images on the CPU build VM (`be7b95a`): simulator 293 passed, 33 skipped; π0.5 8 passed,
+1 skipped; X-VLA 12 passed, every batch-invariance check bit-exact on that CPU. The skipped tests need model weights,
+both servers running or the GPU, so they run on the L4 VM.
 
-Not started: the VM worker entry point (real model clients, spend guard), the dataset's manifest and datacard, the
-container images, and everything on the VM. DAgger and evaluation jobs wait for learned deciders (Phases 2-3).
+Not started: everything on the L4 VM (Phase 0 steps 1-7: GPU checks, latency measurements, the re-run of every
+equality and determinism test, π0.5 parity, X-VLA base rollouts, time limits, freeze). DAgger and evaluation jobs
+wait for learned deciders (Phases 2-3).
 
 The §18 milestone (all seven must hold before the harness build counts as complete):
 
@@ -117,22 +121,26 @@ The §18 milestone (all seven must hold before the harness build counts as compl
 | 2. Both servers implement every endpoint, with batching and per-call seeds | done on the Mac: every endpoint batched at a fixed geometry of rows and tokens, with per-call seeds |
 | 3. Measurement recording and the snapshot store | done on the Mac: measurement recording (`6c08bf5`), snapshot store, snapshots synced to the bucket by the worker (after `6c08bf5`); the real cloud storage path is untested |
 | 4. Job queue, spend guard and packaging implemented and tested | done on the Mac against a local stand-in for cloud storage: queue, spend guard, packaging, the runner and worker loop (after `6c08bf5`), the VM worker command with its server checks, and the dataset manifest and datacard (after `1683b56`); the real cloud storage path is first exercised by the VM smoke run |
-| 5. Dockerfiles and lockfiles complete and checked on the Mac; images built and tested first in Phase 0 (wording changed by amendment 28) | done on the Mac (after `1e92964`): one Dockerfile with three targets, hashed linux/x86_64 lockfiles at the reference notebook's versions, a CPU-only build VM script that exports the images to the bucket, image loading with the driver check on the L4; the builds and in-container tests run at the start of Phase 0 |
+| 5. Dockerfiles and lockfiles complete and checked on the Mac; images built and tested first in Phase 0 (wording changed by amendment 28) | done on the Mac (after `1e92964`): one Dockerfile with three targets, hashed linux/x86_64 lockfiles at the reference notebook's versions, a CPU-only build VM script that exports the images to the bucket, image loading with the driver check on the L4. Images built and tested on 2026-11-22 (`be7b95a`, Phase 0 step 0) |
 | 6. Ready-to-run Google Cloud setup scripts (Spot VM, bucket, budget alerts) | done 2026-11-22; Phase 0 stage 1 run the same day: APIs, bucket, VM service account, the $50 budget (whole-project period, before credits) and email alerts created; no VM yet |
-| 7. VM re-run list complete, everything committed, HANDOFF.md current | partial: the list covers steps 1-5, §12 rendering and measurement recording; the containers still to add; parity tooling and reference files committed |
+| 7. VM re-run list complete, everything committed, HANDOFF.md current | done 2026-11-22: the list covers steps 1-5, §12 rendering, measurement recording, the worker and the containers; parity tooling and reference files committed |
 
-By phase: Phase 0 is in progress (the build, on the Mac; none of its VM steps have started). Phases 1 to 3 and the
-evaluation have not started.
+By phase: the harness build is complete (the §18 milestone, all seven items, announced 2026-11-22). Phase 0 is in
+progress. On Google Cloud the bucket, budget and alerts exist, and Phase 0's first step is done: the three container
+images were built and tested on a CPU-only build VM and stored in the bucket (commit `be7b95a`, 2026-11-22; six build
+attempts, about $1.10 in all). Miguel gave the go-ahead for the L4
+GPU VM and Phase 0 on 2026-11-22: long jobs run on the VM under systemd, and the VM syncs everything to the bucket and
+stops itself whenever it runs out of queued work or needs a decision. Phases 1 to 3 and the evaluation have not
+started.
 
 ## What's next, in order
 
-1. The VM worker entry point (real model clients, the spend guard's stop flag), the dataset manifest and datacard.
-2. The three container images with lockfiles.
-3. Complete the VM re-run list and announce the §18 milestone, then wait for an explicit go-ahead.
-4. Only then: create the Google Cloud bucket, budget alerts and Spot VM, and run Phase 0 on the VM: measure latencies,
-   batching, gripper thresholds and upload size; re-run every equality and determinism test; π0.5 parity (100
-   episodes); X-VLA base rollouts (500 episodes); compute the time limits; choose five "golden" snapshots replayed at
-   every start-up; freeze the harness as v1.0.
+1. Create the L4 GPU VM (`ops/gcp/30_create_vm.sh`; go-ahead given 2026-11-22) and load the images there (driver
+   check, GPU checks).
+2. Run Phase 0 on the VM: measure latencies, batching, gripper thresholds and upload size; re-run every equality and
+   determinism test (bit for bit on the GPU, including batch invariance); π0.5 parity (100 episodes); X-VLA base
+   rollouts (500 episodes); compute the time limits; choose five "golden" snapshots replayed at every start-up;
+   freeze the harness as v1.0.
 
 How the work is run. Each work session (so far, a Claude Code session) starts by reading HANDOFF.md and ends by
 updating it. The hardest steps (listed in SPEC §16) are done at the AI model's highest reasoning effort: the session
@@ -143,7 +151,7 @@ guard stops all work at $45.
 
 ## Key decisions so far
 
-The full list, with dates, is SPEC §17 (26 entries). The most important:
+The full list, with dates, is SPEC §17 (33 entries). The most important:
 - **Two seeds per episode.** The scene seed fixes the scene (some LIBERO fixtures move by up to 19 mm with it) and
   is 142 + k for initial state k in every run except π0.5's parity check (1000 + k, its own reference's value). A
   separate rollout seed drives all other randomness (model noise, the network, random exploration), different for
@@ -173,11 +181,8 @@ The full list, with dates, is SPEC §17 (26 entries). The most important:
 
 ## Open questions and blockers
 
-- **Cloud GPU quota (pending).** Google Cloud needs a GPU quota of at least 1 globally, 1 preemptible L4 and 1
-  on-demand L4 in us-central1, possibly after upgrading from the free trial. Requested by Miguel; not confirmed yet.
-  It blocks only the VM work, which waits for the §18 milestone anyway.
-- **Account values.** The cloud scripts read project, billing, bucket, image family and alert email from a
-  git-ignored `ops/gcp/env.sh` copied from `ops/gcp/env.example.sh`; they are not filled in yet.
+- **Cloud GPU quota and account values (resolved 2026-11-22).** The quota (1 global GPU, 1 L4, 1 preemptible L4 in
+  us-central1) is confirmed, and the git-ignored `ops/gcp/env.sh` is filled in.
 - **Gated model files.** π0.5 needs the PaliGemma tokenizer, which requires accepting Google's terms on a Hugging
   Face account; the VM needs that account's access.
 - **Placeholders until Phase 0.** Model latencies, batching settings, gripper thresholds, the upload size (a Mac
@@ -185,8 +190,8 @@ The full list, with dates, is SPEC §17 (26 entries). The most important:
 
 ## Running the tests
 
-The three local Python environments are not in git and there is no one-command setup yet; the container images and
-lockfiles (§18 item 5) will provide it.
+The three local Python environments are not in git; on Linux the container images (built from the hashed lockfiles
+in `containers/`) are the one-command setup. Locally:
 - Unit tests need only Python 3.10+ with PyYAML and pytest: `python3 -m venv .venv`, then
   `.venv/bin/pip install -e '.[dev]'` and `.venv/bin/python -m pytest`.
 - Simulator tests: `.venv-sim/bin/python -m pytest tests/reference` (about 6 minutes). The environment holds LIBERO

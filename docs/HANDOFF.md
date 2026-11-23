@@ -75,7 +75,8 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | Dataset records (`dataset.py`: Parquet `runs`/`steps`/`events`/`points`, snapshots, PNG images, markers listing every file), the job runner (`collect.py`: base, explore, branch jobs) and the worker loop (`vlar_ops/worker.py`: uploads and checks every file before the marker); pyarrow 25.0.0 in `.venv-sim` (HARNESS.md "Dataset records, job runner and worker") | done on Mac against a local bucket; VM re-run pending | the commit after `6c08bf5` |
 | VM worker entry point (`vlar_ops/vm_worker.py`, `vlar-ops worker`: production factory with `XVLAClient`/`PI05Client`, one `LiberoSim` per task, server geometry and deterministic checks, the spend guard's `StopFlag`, clean abandon on SIGTERM, refuse-and-stop for jobs the worker's options cannot run, provenance in markers and snapshots, `ops/vm/vlar-worker@.service`); dataset manifest and datacard (`vlar_ops/manifest.py`, `vlar_ops/datacard-v1.md`, `vlar-ops dataset manifest`/`verify`) (HARNESS.md "VM worker entry point, dataset manifest and datacard") | done on Mac; VM smoke run pending | the commit after `1683b56` |
 | Container definitions (amendments 28-30; HARNESS.md "Container images and lockfiles"): Dockerfile, hashed locks at the notebook's versions, CPU build VM, L4 loader with driver check, service units, `tests/test_containers.py` | done on the Mac | the commit after `1e92964` |
-| VM bring-up; Phase 0 runs (image build, latency and upload measurement, parity, base rollouts, calibration, freeze) | not started | |
+| Phase 0 step 0: container images built and tested on a CPU build VM, exported to the bucket (amendments 28, 31-33) | done | `be7b95a` |
+| VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started; the L4 waits for the user's go-ahead | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
 **Tests after the container definitions (Mac, 2026-11-22).** Main venv 158 passed, 13 skipped (`tests/test_containers.py` 19); simulator env 125 passed, 17 skipped; `uv pip install --dry-run` of every lock for cp313 linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4.
@@ -382,8 +383,31 @@ L4's bit-for-bit checks stay blocking. Size of run 5's differences: the logs sho
 1-5 units in the last place of float32 (tiny), not the maximum; the tests now print max absolute and relative
 difference on any failure. In an image on the CPU the blocking checks are torch's default tolerance (float32 rtol
 1.3e-6, atol 1e-5; bfloat16 rtol 1.6e-2) and closeness to the request's own solo result; bit inequality is a
-warning. Build logs start with `lscpu`. Sixth attempt: on-demand on the commit with this; result below when known.
-If it reports any difference beyond the tolerance or a closeness failure, that is a real bug: stop and tell the user. Then `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead.
+warning. Build logs start with `lscpu`.
+
+**Sixth attempt: built and tested (DONE).** On-demand on `be7b95a`, 18:20-19:46 local (about 85 minutes); VM and
+disk deleted and confirmed gone (also checked by hand). Build VM CPU: AMD EPYC 7B12 (Rome), 8 vCPUs, AVX2 and FMA, no
+AVX-512; PyTorch's CPU capability AVX2 in all three images. Tests: sim 293 passed, 33 skipped; pi05 8 passed,
+1 skipped; xvla 12 passed; **no NotBitIdentical warnings: every batch-invariance check was bit-exact on this CPU**,
+as in run 4. Run 5's CPU was not recorded, so the maximum size of its differences is still unmeasured (only its
+first differing values, 1-5 ulp, are known); a later build on another CPU records them as warnings.
+Images in `gs://swift-library-515509-vla-data/containers/be7b95a5d944d351428b5d79978864dc62ad4d1a/`: vlar-sim 3994 MB,
+vlar-pi05 3963 MB, vlar-xvla 2998 MB (about 11 GB, about $0.22/month in Standard storage), image-digests.json
+(sim sha256:3dfe75be..., pi05 sha256:fceeb4b8..., xvla sha256:94508c13...), SHA256SUMS, logs. The earlier attempts'
+prefixes hold only sources and logs (a few MB). Six build attempts in all cost roughly $1.10 before credits.
+
+**Next: `30_create_vm.sh` (the L4, $0.46/h + $0.33/day disk) only with the user's go-ahead**, then the VM setup in
+ops/README.md starting with `ops/vm/load_images.sh` for commit `be7b95a` (driver check, load, GPU checks), then the
+VM re-run list (HARNESS.md) at **xhigh** (max only for parity debugging). The L4's batch-invariance checks are bit
+for bit and blocking (amendment 24); its X-VLA test rows install `containers/xvla-test.lock` in a throwaway container.
+**Go-ahead given (user, 2026-11-22) for `30_create_vm.sh` and Phase 0 on the L4, at xhigh**, with these rules: every
+long job runs on the VM under systemd (never tied to an SSH session from the Mac); π0.5 parity gates the base rollouts
+automatically (McNemar p >= 0.05 in `reference_runs.compare`, i.e. `within_sampling_error`: queue the X-VLA base
+rollouts without waiting; otherwise stop, don't debug); whenever the VM runs out of queued work or needs the user, it
+syncs everything to the bucket and stops itself (stopped, not deleted), and the user is told when and why; report
+which steps are safe unattended and the spend guard's running total at each major step. The pause rule stands: a
+pause of more than a day means deleting the VM and its disk. The user also asked to delete the failed build attempts'
+folders under `containers/` in the bucket (keep only `be7b95a...`): pending a gcloud re-login on the Mac.
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script
