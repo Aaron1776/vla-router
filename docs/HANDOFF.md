@@ -317,6 +317,18 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
+**REBUILD RESULT (2026-11-23, 08:43Z-10:05Z): FAILED in the in-container tests; stage B NOT queued.** The build VM
+and its disk were deleted and confirmed gone (`gcloud compute instances list`: only the stopped L4). Images built;
+tests: pi05 8 passed, 1 skipped; xvla 12 passed; **sim 6 failed**, 337 passed, 48 skipped. All 6 failures are
+`tests/test_vm_startup.py` (new in `b4c6beb`), which reads `ops/vm/phase0/startup.sh`; `ops/` is not copied into the
+images, and the repo's other repo-only tests skip there (`VLAR_IN_IMAGE`). Likely fix (not verified, not debugged, as
+the user asked): mark the file repo-only like `tests/test_containers.py`'s `repo_only`, and check `phase2-work`'s new
+repo-only tests (`test_phase0_steps.py`, `test_no_identifiers.py`) the same way; then a second rebuild (about 85 min,
+about $0.40) needs the user's go-ahead, since it was to be the only one. Logs: `gs://$BUCKET/containers/b4c6beb51cd1ea04fe002fb4be95a0ca3d60dd99/`
+and locally `outputs/build-logs/b4c6beb/` (git-ignored). Spend guard still **$0.86** (L4); this build VM (about 80
+on-demand minutes, roughly $0.35) is outside the ledger until a reconcile. L4 still STOPPED since 08:16Z: pause rule,
+delete it and its disk if still stopped at 08:16Z on 2026-11-24.
+
 **STATE AT THE STOP (2026-11-23 ~09:05Z, user at 88% of the 5-hour limit).**
 - `harness-v1` = `b4c6beb` + this HANDOFF commit, pushed. Images: the one rebuild of `b4c6beb` was **running** at the
   stop (on-demand CPU build VM `vlar-build` created 08:43Z; `35_build_images.sh` polls from the Mac and deletes the VM
