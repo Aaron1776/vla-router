@@ -2,9 +2,9 @@
 
 Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch across them. Each process:
 1. loads the harness config with the named options given (`--option name=choice`), and refuses a frozen harness
-   whose code or config differ from its freeze record (provenance.verify_freeze). A frozen harness must also pass
-   the golden-set self-check (§15) before any job; that check is written with the freeze (Phase 0 step 7), so
-   until then a frozen config is refused here. It also refuses to run without the calibration file
+   whose code or config differ from its freeze record (provenance.verify_freeze). A frozen harness must also have
+   passed the golden-set self-check (§15, `vlar_ops.golden`) on this boot: `run_phase` runs it before any worker
+   and writes the pass marker this checks. It also refuses to run without the calibration file
    (VLAR_CALIBRATION) and its complete write-once group (upload size, π0.5 latency, batch geometry: Phase 0 step 2,
    amendment 35), so no record is ever made under placeholder values that would change outcomes;
 2. checks the pinned reference files it runs: the authors' X-VLA client and LeRobot's LIBERO and π0.5 files;
@@ -136,6 +136,41 @@ def parse_options(pairs: Sequence[str]) -> dict[str, str]:
     return out
 
 
+def golden_check(ops_cfg: Mapping[str, Any], golden_json: Path, *, marker: Optional[Path] = None,
+                 clients: Optional[Mapping[str, Any]] = None, make_sim: Optional[Callable[[int], Any]] = None,
+                 server_wait_s: float = 600.0) -> dict:
+    """`vlar-ops golden check`: replay the golden set through the production servers (checked as for a worker),
+    snapshots read from the bucket; writes the pass (or fail) marker for this boot."""
+    os.environ.setdefault("MUJOCO_GL", "egl" if sys.platform.startswith("linux") else "cgl")
+    from vlar_harness import snapshot as snap
+    from vlar_harness.config import load_config
+    from vlar_harness.dataset import snapshot_key
+
+    from . import golden
+    cfg = load_config()
+    if clients is None:
+        from vlar_harness.servers.clients import PI05Client, XVLAClient
+        srv = cfg["servers"]
+        clients = {"xvla": XVLAClient(srv["xvla"]["host"], int(srv["xvla"]["port"])),
+                   "pi05": PI05Client(srv["pi05"]["host"], int(srv["pi05"]["port"]))}
+    check_servers(cfg, clients, wait_s=server_wait_s)
+    storage = open_storage(ops_cfg["storage_url"])
+    record, arrays = golden.load(golden_json)
+    episodes = ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
+
+    def read(sid):
+        data = storage.get_bytes(snapshot_key(sid))
+        if data is None:
+            raise golden.GoldenMismatch(f"snapshot {sid} is not in the bucket")
+        return snap.from_bytes(data)
+    try:
+        report = golden.check(record, arrays, episodes, read)
+    finally:
+        episodes.close()
+    golden.write_marker(Path(marker or ops_cfg.get("golden_marker", golden.MARKER)), report, cfg.calibration_hash)
+    return report
+
+
 def _safe(worker_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in worker_id)
 
@@ -159,8 +194,11 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
                            f"step 2, amendment 35): missing {list(cfg.write_once_missing)}")
     provenance.verify_freeze(cfg)
     if cfg.frozen:
-        raise StartupError("frozen harness: the golden-set self-check (§15) must pass before any job, and it is "
-                           "not written yet")
+        from . import golden
+        marker = Path(ops_cfg.get("golden_marker", golden.MARKER))
+        if not golden.passed_this_boot(marker, cfg.calibration_hash):
+            raise StartupError(f"frozen harness without this boot's golden-set pass ({marker}): run "
+                               "`vlar-ops golden check` first (§15)")
     reference.verify_lerobot(cfg["reference"]["lerobot_files"])
 
     root = Path(ops_cfg["local_root"])
@@ -183,6 +221,7 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     runner = Runner(cfg, episodes, storage.get_bytes, root / "staging" / _safe(worker_id), p_escalate=p_escalate,
                     header=header)
     meta = {"worker_id": worker_id, "provenance": header, "p_escalate": p_escalate,
+            "ops_source": os.environ.get("VLAR_OPS_SOURCE"),
             "servers": {n: {k: v for k, v in i.items() if k not in ("batch_sizes", "peak_memory_gb")}
                         for n, i in infos.items()}}
     try:

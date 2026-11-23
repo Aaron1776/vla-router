@@ -1,0 +1,127 @@
+"""Phase 2 training (`vlar_train`) on synthetic points: folds by whole task, each decider's inputs, the λ rule,
+training with early stopping and a checkpoint per epoch, excluded points dropped per profile, the full
+cross-validation loop, and the plumbing from records (prefix, event logs, point columns)."""
+
+import json
+import math
+
+import pytest
+
+np = pytest.importorskip("numpy")
+torch = pytest.importorskip("torch")
+
+from vlar_train import data as D  # noqa: E402
+from vlar_train import folds as F  # noqa: E402
+from vlar_train import lam as LAM  # noqa: E402
+from vlar_train.deciders import COLUMNS, DECIDERS, FORBIDDEN_FOR_ROUTER, inputs, width  # noqa: E402
+from vlar_train.run import run_cv  # noqa: E402
+from vlar_train.train import TrainConfig, seed_for, train  # noqa: E402
+
+FAST = TrainConfig(epochs=12, patience=4, batch=64, hidden=(64, 32))
+
+
+@pytest.fixture(scope="module")
+def ps():
+    return D.synthetic(n_per_task=40, feature_dim=16)
+
+
+def test_folds_split_by_whole_task():
+    seen_test, seen_val = set(), set()
+    for i in range(10):
+        f = F.fold(i)
+        assert f["test"] == i and f["val"] == (i + 1) % 10 and len(f["train"]) == 8
+        assert not ({f["test"], f["val"]} & set(f["train"]))
+        seen_test.add(f["test"])
+        seen_val.add(f["val"])
+        m = F.masks(np.arange(10).repeat(3), i)
+        assert (m["train"].astype(int) + m["val"] + m["test"] == 1).all()
+    assert seen_test == seen_val == set(range(10))
+    with pytest.raises(ValueError):
+        F.fold(10)
+
+
+def test_each_decider_sees_its_own_inputs(ps):
+    w = {d: width(ps.cols, d) for d in DECIDERS}
+    assert w["router"] < w["cascader_nospread"] < w["cascader_chunkspread"] < w["cascader_full"]
+    assert w["cascader_chunkspread"] - w["cascader_nospread"] == 4 and w["cascader_full"] - w["cascader_nospread"] == 7
+    assert not any(c.startswith(FORBIDDEN_FOR_ROUTER) for c in COLUMNS["router"])
+    assert "task" not in " ".join(c for cs in COLUMNS.values() for c in cs)          # no task input (§6)
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    assert x.shape == (len(ps), w["router"]) and x.dtype == np.float32
+    assert np.allclose(x[:, -1], ps.remaining_s["router"] / 100)                    # its own profile's time
+    assert not np.allclose(inputs(ps.cols, ps.remaining_s["cascader_full"], "router")[:, -1], x[:, -1])
+
+
+def test_lambda_rule():
+    # scores 0.1 .. 0.5; escalating helps (+1) at the three highest scores, hurts (-1) at the lowest
+    p0 = np.zeros(5)
+    p1 = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+    y0, y1 = np.zeros(5), np.array([-1.0, 0.0, 1.0, 1.0, 1.0]) + 0.0
+    ok = np.ones(5, bool)
+    best = LAM.choose(p0, p1, y0, y1, ok)
+    assert best["best_gain"] == pytest.approx(3 / 5) and best["gain"] == pytest.approx(3 / 5)
+    assert best["rate"] == pytest.approx(3 / 5) and 0.2 <= best["lambda"] < 0.3
+    low = LAM.choose(p0, p1, y0, y1, ok, share=0.6)                  # 2/3 of the gain is enough: fewer escalations
+    assert low["rate"] == pytest.approx(2 / 5)
+    capped = LAM.choose(p0, p1, y0, y1, ok, max_rate=0.2)            # at most one escalation in five
+    assert capped["rate"] <= 0.2 and capped["gain"] == pytest.approx(1 / 5)
+    none = LAM.choose(p0, p1, y0, y0 - 1, ok)
+    assert none["lambda"] == math.inf and none["rate"] == 0
+    blocked = LAM.choose(p0, p1, y0, y1, np.array([True, True, False, False, False]))  # no budget where it helps
+    assert blocked["lambda"] == math.inf
+
+
+def test_training_learns_stops_early_and_checkpoints_every_epoch(ps, tmp_path):
+    m = F.masks(ps.task, 0)
+    x = inputs(ps.cols, ps.remaining_s["cascader_full"], "cascader_full")
+    y, ym = ps.targets("cascader_full")
+    tr, va = m["train"], m["val"]
+    t = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(0, "cascader_full"), cfg=FAST,
+              ckpt_dir=tmp_path / "ck")
+    assert t.best_epoch == int(np.argmin(t.val_loss))
+    assert len(list((tmp_path / "ck").glob("epoch*.pt"))) == len(t.val_loss)
+    assert json.loads((tmp_path / "ck" / "best.json").read_text())["best_epoch"] == t.best_epoch
+    base = float(np.mean([-(yy * np.log(p) + (1 - yy) * np.log(1 - p))
+                          for p, yy in [(np.clip(y[tr][:, b].mean(), 1e-6, 1 - 1e-6), y[va][:, b]) for b in range(4)]]))
+    assert t.val_loss[t.best_epoch] < base                    # better than predicting the training mean
+    again = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(0, "cascader_full"), cfg=FAST)
+    assert np.array_equal(again.predict(x[va]), t.predict(x[va]))      # from scratch, seeded: reproducible
+    other = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(1, "cascader_full"), cfg=FAST)
+    assert not np.array_equal(other.predict(x[va]), t.predict(x[va]))  # another fold: another initialisation
+
+
+def test_cross_validation_drops_excluded_points_and_records_everything(ps, tmp_path):
+    s = run_cv(ps, folds=[0, 3], deciders=["router", "cascader_full"], out=tmp_path, cfg=FAST)
+    assert len(s["results"]) == 4
+    r = next(x for x in s["results"] if x["fold"] == 0 and x["decider"] == "router")
+    m = F.masks(ps.task, 0)
+    assert r["points"]["train"] == int((m["train"] & ~ps.excluded["router"]).sum())
+    assert r["points"]["excluded"] == int(ps.excluded["router"].sum()) > 0
+    full = next(x for x in s["results"] if x["fold"] == 0 and x["decider"] == "cascader_full")
+    assert full["points"]["excluded"] == 0
+    assert (tmp_path / "fold3" / "cascader_full" / "result.json").exists()
+    assert (tmp_path / "fold3" / "cascader_full" / "test_predictions.npz").exists()
+    assert set(s["router"]) == {"median_best_epoch", "median_lambda"}
+
+
+def test_records_plumbing():
+    log = [{"t": "start"}, {"t": "decision_point", "index": 0}, {"t": "segment"}, {"t": "decision_point", "index": 1},
+           {"t": "segment"}]
+    assert D.prefix_of(log, 1) == log[:4]
+    with pytest.raises(D.DataError, match="index 7"):
+        D.prefix_of(log, 7)
+    rows = [{"run_id": "r", "seq": k, "event": json.dumps(e)} for k, e in enumerate(log)][::-1]
+    assert D.group_events(rows)["r"] == log
+    with pytest.raises(D.DataError, match="incomplete"):
+        D.group_events([r for r in rows if r["seq"] != 2])           # a gap in the middle
+    row = {"features_main": [0.0] * 1024, "features_wrist": [0.0] * 1024, "robot_state": [0.0] * 11,
+           "proposal": [0.0] * 70, "budget_remaining_steps": 130, "step": 260, "chunk_pos": 10,
+           "prev_segment_pi05": False, "track_pos_err": None, "track_rot_err": None, "tracking_valid": False,
+           "prev_actions": [0, 0, 0, 0, 0, 0, 1.0] * 2, "prev_gripper_qpos": [0.0, 0.0, 0.02, -0.02],
+           **{f"chunk_spread_{k}": 0.1 for k in D.SPREAD}, **{f"fresh_spread_{k}": None for k in D.SPREAD},
+           **{f"drift_{k}": 0.2 for k in D.DRIFT}}
+    c = D.point_columns(row, thresholds=(0.01, 0.07))
+    assert c["budget_frac"][0] == 1.3 and c["steps_frac"][0] == 0.5 and c["chunk_pos_frac"][0] == 0.5
+    assert c["grip_shut_frac"][0] == 0.5 and c["grip_partial_frac"][0] == 0.5      # one shut, one holding (4 cm)
+    assert c["tracking_valid"][0] == 0 and c["track_pos_err"][0] == 0                # pi0.5's segment: zero and flagged
+    assert c["fresh_spread_pos_std_mean"][0] == 0                                    # not measured -> 0
