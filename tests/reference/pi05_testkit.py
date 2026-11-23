@@ -221,3 +221,29 @@ def raw_obs(rng: np.random.Generator, state: str = "medium", px: int = 360) -> d
 
 def pi05_request(rng: np.random.Generator, task_id: int, state: str, seed: int, px: int = 360) -> dict:
     return {"obs": raw_obs(rng, state, px), "task": LIBERO_10[task_id], "seed": seed}
+
+
+def real_pi05_requests(act, tasks=range(10), points: int = 2, seed_base: int = 3000):
+    """Real LIBERO-10 decision points for the π0.5 checks (amendment 37): for each task, the observation at reset
+    (scene seed 1000 + task, LeRobot's own LIBERO env as lerobot-eval builds it) and every 10 steps after it, the
+    arm following the first 10 actions `act(request)` returns (the batch of one's own trajectory). Yields
+    (task, point, request, act(request)); each request carries its own seed."""
+    from lerobot.envs.configs import LiberoEnv as LiberoEnvConfig
+    from lerobot.envs.utils import NEW_ROLLOUT_OPTION
+    for k in tasks:
+        vec = LiberoEnvConfig(task="libero_10", task_ids=[k]).create_envs(n_envs=1, use_async_envs=False)["libero_10"][k]
+        try:
+            obs, _ = vec.reset(seed=[1000 + k], options={NEW_ROLLOUT_OPTION: True})
+            task = list(vec.call("task_description"))[0]
+            for d in range(points):
+                req = {"obs": obs, "task": task, "seed": seed_base + 100 * k + d}
+                actions = act(req)
+                yield k, d, req, actions
+                if d + 1 == points:
+                    break
+                for a in actions[:10]:
+                    obs, _, term, trunc, _ = vec.step(np.asarray(a, dtype=np.float32)[None])
+                    if bool(np.asarray(term).any()) or bool(np.asarray(trunc).any()):
+                        break
+        finally:
+            vec.close()

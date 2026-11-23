@@ -13,14 +13,55 @@ STORAGE_URL="$(md attributes/vlar-storage-url)"; IMAGES_URL="$(md attributes/vla
 DISK_GB="$(md attributes/vlar-disk-gb)"; DISK_RATE="$(md attributes/vlar-disk-usd-per-gb-month)"
 RUNNER="$(md attributes/vlar-runner || echo on)"; NAME="$(md name)"
 P0="${STORAGE_URL}/phase0"
+record_failed_boot() {   # the spend ledger counts this boot even if the guard never started (amendment 42)
+  local proc="${VLAR_PROC:-/proc}"
+  [[ -n "${STORAGE_URL}" ]] || return 0
+  python3 - "$*" "${proc}" <<'PY' | gcloud storage cp - "${STORAGE_URL}/ops/failed-boots/$(cat "${proc}/sys/kernel/random/boot_id").json" || true
+import json, sys, time
+reason, proc = sys.argv[1:3]
+up = float(open(f"{proc}/uptime").read().split()[0]); now = time.time()
+print(json.dumps({"boot_id": open(f"{proc}/sys/kernel/random/boot_id").read().strip(), "boot_at": now - up,
+                  "failed_at": now, "reason": reason}))
+PY
+}
 fail() {   # never leave the VM running idle: record why in the bucket, then stop
   echo "startup FAILED: $*"
+  record_failed_boot "$*"
   printf '{"state": "failed", "step": "startup", "reason": "startup: %s", "at": "%s", "spend": null}\n' "$*" \
     "$(date -u +%FT%TZ)" | gcloud storage cp - "${P0}/STATE.json" || true
   gcloud storage cp "${L}/phase0/logs/startup.log" "${P0}/logs/startup.log" || true
   shutdown -h now; exit 1
 }
 [[ -n "${STORAGE_URL}" && -n "${IMAGES_URL}" ]] || fail "metadata vlar-storage-url / vlar-images-url missing"
+
+# Host packages never change during Phase 0 (amendment 36): stage A's runner was restarted from outside mid-step, most
+# likely by unattended-upgrades with needrestart. First thing on every boot: the apt timers stopped, disabled and
+# masked with unattended-upgrades, the periodic apt settings at 0, snap refreshes held; an apt/dpkg run that began
+# before this script is waited for (killing dpkg mid-install is worse); the boot stops if a timer is still active.
+# The installed packages' digest is logged at every boot: the same digest means no host package changed.
+freeze_host_packages() {
+  local conf="${VLAR_APT_CONF_D:-/etc/apt/apt.conf.d}" u i
+  for u in apt-daily.timer apt-daily-upgrade.timer; do systemctl disable --now "${u}" >/dev/null 2>&1; done
+  systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service \
+    unattended-upgrades.service >/dev/null 2>&1
+  printf '%s\n' 'APT::Periodic::Enable "0";' 'APT::Periodic::Update-Package-Lists "0";' \
+    'APT::Periodic::Download-Upgradeable-Packages "0";' 'APT::Periodic::Unattended-Upgrade "0";' \
+    'APT::Periodic::AutocleanInterval "0";' > "${conf}/99vlar-no-automatic-updates" || return 1
+  if command -v snap >/dev/null 2>&1; then
+    snap refresh --hold >/dev/null 2>&1 || echo "warning: snap refresh --hold failed"
+  fi
+  for i in $(seq 1 60); do      # up to 10 minutes
+    pgrep -f 'apt\.systemd\.daily|/usr/bin/unattended-upgrade|/usr/bin/dpkg |/usr/bin/apt-get ' >/dev/null 2>&1 || break
+    (( i == 1 )) && echo "waiting for an apt/dpkg run that began before the freeze"
+    sleep 10
+  done
+  for u in apt-daily.timer apt-daily-upgrade.timer; do
+    systemctl is-active --quiet "${u}" && { echo "${u} is still active"; return 1; }
+  done
+  echo "host packages frozen; installed packages' digest $(dpkg-query -W -f '${Package} ${Version}\n' 2>/dev/null \
+    | sha256sum | cut -c1-16)"
+}
+freeze_host_packages || fail "host packages not frozen (amendment 36)"
 
 SRC="$(gcloud storage cat "${P0}/src/CURRENT")" || fail "no ${P0}/src/CURRENT (run ops/gcp/31_phase0_queue.sh)"
 if [[ "$(cat "${R}/.src" 2>/dev/null)" != "${SRC}" ]]; then

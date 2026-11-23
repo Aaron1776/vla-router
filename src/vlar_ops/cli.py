@@ -56,13 +56,15 @@ def cmd_spend(a: argparse.Namespace) -> None:
     scfg = spend.SpendConfig.from_mapping(cfg.get("spend", {}))
     now = time.time()
     if a.action == "status":
-        g = spend.SpendGuard(storage, scfg, spend.PrintNotifier())
-        led = g.load()
+        led = spend.load_ledger(storage)
+        failed = spend.pending_failed_boots(storage, led, scfg)     # failed boots not yet folded in by the daemon
+        led["sessions"] += failed
         est = spend.estimate(led, now)
         print(json.dumps({**{k: round(v, 2) for k, v in est.items()},
                           "soft_limit_usd": scfg.soft_limit_usd, "hard_limit_usd": scfg.hard_limit_usd,
                           "vm_hours": round(sum(s["vm_seconds"] for s in led["sessions"]) / 3600, 2),
-                          "sessions": len(led["sessions"]), "alerts": led["alerts"]}, indent=1))
+                          "sessions": len(led["sessions"]), "failed_boots_pending": len(failed),
+                          "alerts": led["alerts"]}, indent=1))
     elif a.action == "reconcile":
         if a.actual_usd is None:
             sys.exit("--actual-usd is required")
@@ -152,6 +154,19 @@ def cmd_plan(a: argparse.Namespace) -> None:
     print(f"{a.out}: plan {plan.plan_id} ({plan.phase}), {len(plan.jobs)} jobs, namespace {ns}")
 
 
+def cmd_grasps(a: argparse.Namespace) -> None:
+    from . import grasps
+    rep = grasps.run(Path(a.root), Path(a.out), phase=a.phase, shut=a.shut, open_=a.open)
+    s = rep["settled"]
+    print(f"{rep['runs']} {rep['phase']} runs; settled commanded-closed steps: {s.get('n', 0)}, shut "
+          f"{s.get('shut_frac', 0):.1%}, partly open {s.get('partial_frac', 0):.1%}, open {s.get('open_frac', 0):.1%}; "
+          f"near the shut threshold {s.get('near_shut_frac', 0):.1%}, near the open threshold "
+          f"{s.get('near_open_frac', 0):.1%} (report: {a.out})")
+    if rep["flag"]:
+        print("FLAG (the thresholds do not separate the real grasps cleanly): " + "; ".join(rep["reasons"]))
+        sys.exit(75)
+
+
 def cmd_parity(a: argparse.Namespace) -> None:
     from vlar_harness.config import load_config
     from . import parity
@@ -239,12 +254,29 @@ def main(argv: list[str] | None = None) -> None:
     pa.add_argument("--out", required=True)
     pa.set_defaults(fn=cmd_parity)
 
+    gr = sub.add_parser("grasps", help="after the base rollouts: their commanded-closed finger widths against the "
+                                       "gripper thresholds; exit 75 if they do not separate cleanly")
+    gr.add_argument("--root", required=True, help="local copy of the bucket (records/runs, records/steps)")
+    gr.add_argument("--out", required=True)
+    gr.add_argument("--phase", default="base")
+    gr.add_argument("--shut", type=float, help="shut_width_m (default: the calibration file's)")
+    gr.add_argument("--open", type=float, help="open_width_m (default: the calibration file's)")
+    gr.set_defaults(fn=cmd_grasps)
+
     s2 = sub.add_parser("step2", help="Phase 0 step 2 measurements on the L4 (vlar_ops/step2.py)")
-    s2.add_argument("cmd", choices=["capture", "choose", "latency", "upload", "gripper", "updates"])
+    s2.add_argument("cmd", choices=["capture", "choose", "latency", "upload", "gripper", "updates", "render", "load",
+                                    "memory"])
     s2.add_argument("--out", required=True)
-    s2.add_argument("--obs", help="latency: the capture directory")
+    s2.add_argument("--obs", help="latency, load: the capture directory")
     s2.add_argument("--xvla", help="choose: X-VLA bench JSON")
     s2.add_argument("--pi05", help="choose: π0.5 bench JSON")
+    s2.add_argument("--memory-dir", help="choose: the directory holding memory-<size>.json (joint measurements)")
+    s2.add_argument("--task", type=int, default=0, help="render: LIBERO-10 task")
+    s2.add_argument("--seconds", type=float, default=60.0, help="render, load: duration")
+    s2.add_argument("--size", type=int, help="load, memory: the candidate batch size")
+    s2.add_argument("--smi", help="memory: the nvidia-smi samples")
+    s2.add_argument("--workers", type=int, help="memory: renderers running during the measurement")
+    s2.add_argument("--error", help="memory: why the measurement could not complete")
     s2.add_argument("--dir", help="updates: the directory holding geometry/latency/upload/gripper.json")
     s2.set_defaults(fn=cmd_step2)
 

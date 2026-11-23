@@ -38,7 +38,7 @@ def test_resume_after_preemption(tmp_path, q):
     plan = small_plan()
     q.add_plan(plan)
     first = q.claim("w1")
-    q.complete(first, {"ok": 1})
+    q.complete(first, {"ok": 1}, worker_id="w1")
     q.claim("w1")                                       # in flight when the VM dies
     q.close()
     # Fresh VM: new local disk, same bucket, plan re-added from the bucket's copy.
@@ -54,7 +54,7 @@ def test_results_reach_the_bucket_after_an_upload_failure(tmp_path, q, monkeypat
     job = q.claim("w1")
     real_put = q.storage.put_file
     monkeypatch.setattr(q.storage, "put_file", lambda *a: (_ for _ in ()).throw(OSError("network")))
-    assert q.complete(job, {"ok": 1}) is False
+    assert q.complete(job, {"ok": 1}, worker_id="w1") is False
     assert q.counts()["done_local"] == 1
     monkeypatch.setattr(q.storage, "put_file", real_put)
     assert q.sync() == 1 and q.counts()["done"] == 1
@@ -102,19 +102,20 @@ class Collect:
         self.events.append(event)
 
 
+NO_BOOT = lambda: (None, None)            # noqa: E731  (no /proc boot information: sessions start at the guard)
 CFG = spend.SpendConfig(soft_limit_usd=40, hard_limit_usd=45, vm_hourly_usd=0.5, boot_allowance_s=0,
                         storage_usd_per_gb_month=0.02, tick_s=60, storage_scan_every_s=1e12, drain_grace_s=600)
 
 
 def test_ledger_accrues_and_survives_restarts(tmp_path):
     st, clock = LocalStorage(tmp_path), Clock()
-    g = spend.SpendGuard(st, CFG, Collect(), now=clock)
+    g = spend.SpendGuard(st, CFG, Collect(), now=clock, boot=NO_BOOT)
     g.start()
     clock.t += 10 * 3600
     assert g.tick() == "ok"
     assert spend.estimate(g.load(), clock.t)["vm_usd"] == pytest.approx(5.0)
     clock.t += 5 * 24 * 3600                             # stopped VM: no VM time accrues
-    g2 = spend.SpendGuard(st, CFG, Collect(), now=clock)
+    g2 = spend.SpendGuard(st, CFG, Collect(), now=clock, boot=NO_BOOT)
     g2.start()
     clock.t += 3600
     g2.tick()
@@ -125,16 +126,16 @@ def test_disk_bills_while_stopped(tmp_path):
     st, clock = LocalStorage(tmp_path), Clock()
     spend.record_disk(st, 200, 0.10, clock.t, "boot")
     clock.t += spend.HOURS_PER_MONTH * 3600
-    assert spend.estimate(spend.SpendGuard(st, CFG, Collect()).load(), clock.t)["disk_usd"] == pytest.approx(20.0)
+    assert spend.estimate(spend.load_ledger(st), clock.t)["disk_usd"] == pytest.approx(20.0)
     spend.close_disk(st, "boot", clock.t)
     clock.t += 1e7
-    assert spend.estimate(spend.SpendGuard(st, CFG, Collect()).load(), clock.t)["disk_usd"] == pytest.approx(20.0)
+    assert spend.estimate(spend.load_ledger(st), clock.t)["disk_usd"] == pytest.approx(20.0)
 
 
 def test_soft_notifies_once_then_hard_drains_and_shuts_down(tmp_path):
     st, clock, notes = LocalStorage(tmp_path), Clock(), Collect()
     spend.reconcile(st, 39.9, clock.t, "billing report")
-    g = spend.SpendGuard(st, CFG, notes, now=clock)
+    g = spend.SpendGuard(st, CFG, notes, now=clock, boot=NO_BOOT)
     stop = spend.StopFlag(tmp_path / "STOP")
     in_flight = {"n": 2}
     log = []
@@ -151,7 +152,7 @@ def test_soft_notifies_once_then_hard_drains_and_shuts_down(tmp_path):
     assert log == ["release", "sync", "shutdown"]
     # Restarting over the limit shuts straight down again; it never clears the stop flag.
     log.clear()
-    g3 = spend.SpendGuard(st, CFG, notes, now=clock)
+    g3 = spend.SpendGuard(st, CFG, notes, now=clock, boot=NO_BOOT)
     assert spend.run_daemon(g3, stop, in_flight=lambda: 0, release_in_flight=lambda: 0,
                             final_sync=lambda: None, shutdown=lambda: log.append("shutdown"), sleep=sleep) == "hard"
     assert log == ["shutdown"] and stop.is_set()
@@ -160,7 +161,7 @@ def test_soft_notifies_once_then_hard_drains_and_shuts_down(tmp_path):
 
 def test_reconcile_sets_total_to_actual(tmp_path):
     st, clock = LocalStorage(tmp_path), Clock()
-    g = spend.SpendGuard(st, CFG, Collect(), now=clock)
+    g = spend.SpendGuard(st, CFG, Collect(), now=clock, boot=NO_BOOT)
     g.start()
     clock.t += 4 * 3600
     g.tick()

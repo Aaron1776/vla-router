@@ -6,14 +6,21 @@ ledger in the bucket (so it survives preemption and restarts), and:
   - at the hard limit raises the stop flag (workers take no new jobs), waits for in-flight
     jobs up to a grace period, releases the rest cleanly, syncs results and shuts the VM down.
 
-The estimate counts VM time (plus a per-boot allowance for time billed before the guard
-starts), the boot disk for every hour it exists (disks bill while the VM is stopped),
-bucket storage, and reconciliation adjustments against the real billing report.
+The estimate counts VM time from each boot's start (plus a per-boot allowance for time billed before the kernel
+starts; boots whose startup failed before the guard ran are recorded by `startup.sh` and folded in), the boot disk for
+every hour it exists (disks bill while the VM is stopped), bucket storage, and reconciliation adjustments against the
+real billing report.
+
+Several writers share the ledger (the daemon, `spend disk-created` at boot, `disk-deleted` and `reconcile` from the
+Mac, possibly while the VM runs): every write is a conditional read-modify-write with retry (`update_ledger`), so no
+update is lost (amendment 39). Alerts are recorded with the limit they fired at, and fire again when a raised limit is
+crossed (amendment 43).
 """
 
 from __future__ import annotations
 
 import json
+import random
 import shutil
 import subprocess
 import sys
@@ -27,6 +34,7 @@ from .storage import Storage
 
 HOURS_PER_MONTH = 730.0
 LEDGER_KEY = "ops/ledger.json"
+FAILED_BOOTS_PREFIX = "ops/failed-boots/"
 
 
 @dataclass(frozen=True)
@@ -34,7 +42,7 @@ class SpendConfig:
     soft_limit_usd: float = 40.0
     hard_limit_usd: float = 45.0
     vm_hourly_usd: float = 0.46          # g2-standard-16 Spot with its L4; set from the current price
-    boot_allowance_s: float = 180.0      # billed boot time before the guard's first tick
+    boot_allowance_s: float = 180.0      # billed time before the kernel starts (uptime covers the rest; generous)
     storage_usd_per_gb_month: float = 0.020
     tick_s: float = 60.0
     storage_scan_every_s: float = 1800.0
@@ -48,7 +56,7 @@ class SpendConfig:
 
 def new_ledger() -> dict[str, Any]:
     return {"schema": 1, "sessions": [], "disks": [], "storage": {"accrued_usd": 0.0, "last_bytes": 0,
-            "last_at": None, "usd_per_gb_month": None}, "adjustments": [], "alerts": {}}
+            "last_at": None, "usd_per_gb_month": None}, "adjustments": [], "alerts": {"soft": [], "hard": []}}
 
 
 def estimate(ledger: dict[str, Any], now: float) -> dict[str, float]:
@@ -107,44 +115,152 @@ class StopFlag:
         return self.path.exists()
 
 
+class LedgerConflict(RuntimeError):
+    """The ledger kept changing under a writer for every attempt."""
+
+
+def _migrate(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Ledgers written before the per-limit alert records (amendment 43): {"soft_at": t} -> {"soft": [...]}."""
+    alerts = ledger.setdefault("alerts", {})
+    for kind in ("soft", "hard"):
+        if f"{kind}_at" in alerts:
+            alerts.setdefault(kind, []).append({"at": alerts.pop(f"{kind}_at"), "limit_usd": None})
+        alerts.setdefault(kind, [])
+    return ledger
+
+
+def load_ledger(storage: Storage) -> dict[str, Any]:
+    raw = storage.get_bytes(LEDGER_KEY)
+    return _migrate(json.loads(raw)) if raw else new_ledger()
+
+
+def update_ledger(storage: Storage, edit: Callable[[dict[str, Any]], Any], *, attempts: int = 50,
+                  sleep: Callable[[float], None] = time.sleep) -> tuple[dict[str, Any], Any]:
+    """Every ledger write (amendment 39): read the ledger with its version, apply `edit` (which changes the ledger in
+    place and must do nothing else: it may run more than once), write it back only if nobody wrote in between, else
+    re-read and retry. Returns the ledger as written and `edit`'s result."""
+    for i in range(attempts):
+        raw, version = storage.get_versioned(LEDGER_KEY)
+        ledger = _migrate(json.loads(raw)) if raw else new_ledger()
+        out = edit(ledger)
+        if storage.put_if(LEDGER_KEY, json.dumps(ledger, indent=1, sort_keys=True).encode(), version):
+            return ledger, out
+        sleep(min(2.0, 0.05 * (i + 1)) * random.uniform(0.5, 1.0))
+    raise LedgerConflict(f"the ledger changed under every one of {attempts} attempts")
+
+
+def boot_info(now: Callable[[], float] = time.time) -> tuple[Optional[str], Optional[float]]:
+    """This boot's kernel id and start time (Linux; (None, None) elsewhere). Sessions count VM time from boot
+    (amendment 42), so the startup install before the guard starts is included."""
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        up = float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None, None
+    return boot_id, now() - up
+
+
+def pending_failed_boots(storage: Storage, ledger: dict[str, Any], cfg: "SpendConfig") -> list[dict[str, Any]]:
+    """Sessions for boots whose startup failed before the guard ran (`startup.sh` records them under
+    ops/failed-boots/), not yet in the ledger."""
+    known = {s["id"] for s in ledger["sessions"]}
+    out = []
+    for key in storage.list(FAILED_BOOTS_PREFIX):
+        raw = storage.get_bytes(key)
+        try:
+            rec = json.loads(raw) if raw else None
+            boot_id, boot_at, failed_at = str(rec["boot_id"]), float(rec["boot_at"]), float(rec["failed_at"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if boot_id in known:
+            continue
+        out.append({"id": boot_id, "started_at": boot_at, "last_tick": failed_at,
+                    "vm_seconds": max(0.0, failed_at - boot_at), "hourly_usd": cfg.vm_hourly_usd,
+                    "boot_allowance_s": cfg.boot_allowance_s, "failed_boot": str(rec.get("reason", ""))[:500]})
+        known.add(boot_id)
+    return out
+
+
+def due_alerts(ledger: dict[str, Any], est: dict[str, float], cfg: "SpendConfig", t: float) -> list[tuple[str, float]]:
+    """Alerts to send now and record (amendment 43): a limit crossed for the first time, or crossed again after it was
+    raised above the limit of the last alert of its kind."""
+    due = []
+    for kind, limit in (("hard", cfg.hard_limit_usd), ("soft", cfg.soft_limit_usd)):
+        if est["total_usd"] < limit:
+            continue
+        fired = ledger["alerts"][kind]
+        last = max((a["limit_usd"] if a.get("limit_usd") is not None else float("-inf")) for a in fired) \
+            if fired else None
+        if last is None or limit > last:
+            fired.append({"at": t, "limit_usd": limit, "total_usd": round(est["total_usd"], 4)})
+            due.append((kind, limit))
+    return due
+
+
 class SpendGuard:
+    """The daemon's side of the ledger: one session per boot, counted from the boot's start; every write through
+    `update_ledger`, notifications only after the write that records them succeeded."""
+
     def __init__(self, storage: Storage, cfg: SpendConfig, notifier: Notifier,
-                 now: Callable[[], float] = time.time, session_id: Optional[str] = None):
+                 now: Callable[[], float] = time.time, session_id: Optional[str] = None,
+                 boot: Optional[Callable[[], tuple[Optional[str], Optional[float]]]] = None):
         self.storage, self.cfg, self.notifier, self.now = storage, cfg, notifier, now
-        self.session_id = session_id or uuid.uuid4().hex[:12]
-        self._last_tick: Optional[float] = None
+        boot_id, boot_at = (boot or (lambda: boot_info(now)))()
+        self.session_id = session_id or boot_id or uuid.uuid4().hex[:12]
+        self._boot_at = boot_at
+        self._session: Optional[dict[str, Any]] = None
         self._last_scan: float = float("-inf")
 
-    # ledger I/O: re-read before every change so CLI edits (reconcile, disk records) are kept
     def load(self) -> dict[str, Any]:
-        raw = self.storage.get_bytes(LEDGER_KEY)
-        return json.loads(raw) if raw else new_ledger()
+        return load_ledger(self.storage)
 
-    def save(self, ledger: dict[str, Any]) -> None:
-        self.storage.put_bytes(LEDGER_KEY, json.dumps(ledger, indent=1, sort_keys=True).encode())
+    def _update(self, edit):
+        return update_ledger(self.storage, edit)
 
     def start(self) -> str:
         t = self.now()
-        ledger = self.load()
-        ledger["sessions"].append({"id": self.session_id, "started_at": t, "last_tick": t, "vm_seconds": 0.0,
-                                   "hourly_usd": self.cfg.vm_hourly_usd,
-                                   "boot_allowance_s": self.cfg.boot_allowance_s})
-        self._last_tick = t
-        self.save(ledger)
-        return self._evaluate(ledger, t)
+        started = min(t, self._boot_at) if self._boot_at is not None else t
+        failed = pending_failed_boots(self.storage, self.load(), self.cfg)
+
+        def edit(ledger):
+            known = {s["id"] for s in ledger["sessions"]}
+            ledger["sessions"].extend(f for f in failed if f["id"] not in known)
+            sess = next((s for s in ledger["sessions"] if s["id"] == self.session_id), None)
+            if sess is None:          # a new boot (a restarted daemon in the same boot continues its session)
+                sess = {"id": self.session_id, "started_at": started, "last_tick": t, "vm_seconds": 0.0,
+                        "hourly_usd": self.cfg.vm_hourly_usd, "boot_allowance_s": self.cfg.boot_allowance_s}
+                ledger["sessions"].append(sess)
+            sess.update(last_tick=t, vm_seconds=max(float(sess["vm_seconds"]), t - float(sess["started_at"])))
+            return self._judge(ledger, t)
+        ledger, (state, due) = self._update(edit)
+        self._session = dict(next(s for s in ledger["sessions"] if s["id"] == self.session_id))
+        self._notify(due, ledger, t)
+        return state
 
     def tick(self, scan_storage: bool = True) -> str:
         t = self.now()
-        ledger = self.load()
-        sess = next(s for s in ledger["sessions"] if s["id"] == self.session_id)
-        sess["vm_seconds"] += max(0.0, t - (self._last_tick if self._last_tick is not None else t))
-        sess["last_tick"] = t
-        self._last_tick = t
+        nbytes = None
         if scan_storage and t - self._last_scan >= self.cfg.storage_scan_every_s:
-            self._accrue_storage(ledger, t, self.storage.total_bytes(""))
+            nbytes = self.storage.total_bytes("")
+        if self._session is None:
+            return self.start()
+
+        def edit(ledger):
+            sess = next((s for s in ledger["sessions"] if s["id"] == self.session_id), None)
+            if sess is None:          # lost or removed by another writer: put it back, never crash
+                print(f"spend guard: session {self.session_id} missing from the ledger; restored", file=sys.stderr)
+                sess = dict(self._session)
+                ledger["sessions"].append(sess)
+            sess.update(last_tick=t, vm_seconds=max(float(sess["vm_seconds"]), t - float(sess["started_at"])))
+            if nbytes is not None:
+                self._accrue_storage(ledger, t, nbytes)
+            return self._judge(ledger, t)
+        ledger, (state, due) = self._update(edit)
+        self._session = dict(next(s for s in ledger["sessions"] if s["id"] == self.session_id))
+        if nbytes is not None:
             self._last_scan = t
-        self.save(ledger)
-        return self._evaluate(ledger, t)
+        self._notify(due, ledger, t)
+        return state
 
     def _accrue_storage(self, ledger: dict[str, Any], t: float, nbytes: int) -> None:
         st = ledger["storage"]
@@ -153,54 +269,44 @@ class SpendGuard:
                                   * max(0.0, t - st["last_at"]) / 3600.0 / HOURS_PER_MONTH)
         st.update(last_bytes=nbytes, last_at=t, usd_per_gb_month=self.cfg.storage_usd_per_gb_month)
 
-    def _evaluate(self, ledger: dict[str, Any], t: float) -> str:
+    def _judge(self, ledger: dict[str, Any], t: float) -> tuple[str, list]:
         est = estimate(ledger, t)
-        total = est["total_usd"]
-        if total >= self.cfg.hard_limit_usd:
-            if not ledger["alerts"].get("hard_at"):
-                ledger["alerts"]["hard_at"] = t
-                self.save(ledger)
-                self.notifier.notify("spend_hard_limit", {"estimate": est, "limit_usd": self.cfg.hard_limit_usd})
-            return "hard"
-        if total >= self.cfg.soft_limit_usd:
-            if not ledger["alerts"].get("soft_at"):
-                ledger["alerts"]["soft_at"] = t
-                self.save(ledger)
-                self.notifier.notify("spend_soft_limit", {"estimate": est, "limit_usd": self.cfg.soft_limit_usd})
-            return "soft"
-        return "ok"
+        due = due_alerts(ledger, est, self.cfg, t)
+        state = ("hard" if est["total_usd"] >= self.cfg.hard_limit_usd
+                 else "soft" if est["total_usd"] >= self.cfg.soft_limit_usd else "ok")
+        return state, due
+
+    def _notify(self, due, ledger: dict[str, Any], t: float) -> None:
+        est = estimate(ledger, t)
+        for kind, limit in due:
+            self.notifier.notify(f"spend_{kind}_limit", {"estimate": est, "limit_usd": limit})
 
 
-# ---------------------------------------------------------------- CLI-side ledger edits
+# ---------------------------------------------------------------- CLI-side ledger edits (any machine, any time)
 
 def record_disk(storage: Storage, gb: float, usd_per_gb_month: float, since: float, name: str) -> None:
-    g = SpendGuard(storage, SpendConfig(), PrintNotifier())
-    ledger = g.load()
-    ledger["disks"].append({"name": name, "gb": gb, "usd_per_gb_month": usd_per_gb_month, "since": since,
-                            "until": None})
-    g.save(ledger)
+    update_ledger(storage, lambda ledger: ledger["disks"].append(
+        {"name": name, "gb": gb, "usd_per_gb_month": usd_per_gb_month, "since": since, "until": None}))
 
 
 def close_disk(storage: Storage, name: str, until: float) -> None:
-    g = SpendGuard(storage, SpendConfig(), PrintNotifier())
-    ledger = g.load()
-    open_disks = [d for d in ledger["disks"] if d["name"] == name and d.get("until") is None]
-    if not open_disks:
-        raise ValueError(f"no open disk named {name!r} in the ledger")
-    for d in open_disks:
-        d["until"] = until
-    g.save(ledger)
+    def edit(ledger):
+        open_disks = [d for d in ledger["disks"] if d["name"] == name and d.get("until") is None]
+        if not open_disks:
+            raise ValueError(f"no open disk named {name!r} in the ledger")
+        for d in open_disks:
+            d["until"] = until
+    update_ledger(storage, edit)
 
 
 def reconcile(storage: Storage, actual_usd: float, at: float, note: str = "") -> dict[str, float]:
     """Set the ledger total to the billing report's figure as of `at` (§12: at least weekly)."""
-    g = SpendGuard(storage, SpendConfig(), PrintNotifier())
-    ledger = g.load()
-    before = estimate(ledger, at)["total_usd"]
-    ledger["adjustments"].append({"at": at, "actual_usd": actual_usd, "estimate_before_usd": before,
-                                  "delta_usd": actual_usd - before, "note": note})
-    g.save(ledger)
-    return {"estimate_before_usd": before, "delta_usd": actual_usd - before}
+    def edit(ledger):
+        before = estimate(ledger, at)["total_usd"]
+        ledger["adjustments"].append({"at": at, "actual_usd": actual_usd, "estimate_before_usd": before,
+                                      "delta_usd": actual_usd - before, "note": note})
+        return {"estimate_before_usd": before, "delta_usd": actual_usd - before}
+    return update_ledger(storage, edit)[1]
 
 
 # ---------------------------------------------------------------- daemon

@@ -54,7 +54,7 @@ def test_files_are_uploaded_and_checked_before_the_marker(tmp_path):
     storage, q = setup(tmp_path)
     runner, _ = files_runner(tmp_path)
     assert run_worker(q, storage, runner, "w") == {"done": 2, "done_local": 0, "retry": 0, "failed": 0,
-                                                   "refused": 0}
+                                                   "refused": 0, "lost": 0}
     for jid in q.done_ids():
         marker = result_key("base", jid)
         files = [k for k in storage.order if k.startswith(f"files/{jid}/")]
@@ -148,3 +148,62 @@ def test_markers_carry_the_meta_and_staging_is_cleaned(tmp_path):
         marker = json.loads(storage.get_bytes(result_key("base", jid)))
         assert marker["meta"] == {"worker_id": "w", "provenance": {"harness_version": "x"}}
     assert sorted(cleaned) == sorted(q.done_ids())
+
+
+# ---------------------------------------------------------------- leases (amendment 40)
+
+def test_overrun_job_cannot_be_reset_or_completed_by_its_old_worker(tmp_path):
+    """The review's case: A's job outlives its lease, B claims it, then A fails (or finishes): A changes nothing,
+    the job stays B's (a third worker cannot claim it), and B's result is the one recorded."""
+    import time
+
+    from vlar_ops.queue import LeaseLost
+    storage, q = setup(tmp_path)
+    a = q.claim("A", lease_s=0.05)
+    time.sleep(0.1)                                            # A overruns its lease
+    b = q.claim("B")
+    assert b.job_id == a.job_id
+    assert q.fail(a, "A crashed late", worker_id="A") == "lost"
+    c = q.claim("C")
+    assert c is None or c.job_id != a.job_id                   # still B's: not handed to a third worker
+    with pytest.raises(LeaseLost):
+        q.complete(a, {"from": "A"}, worker_id="A")
+    assert not q.release(a, worker_id="A")
+    assert q.complete(b, {"from": "B"}, worker_id="B")
+    rec = json.loads(storage.get_bytes(result_key(b.phase, b.job_id)))
+    assert rec["result"] == {"from": "B"}
+    row = q._db.execute("SELECT status, attempts FROM jobs WHERE job_id=?", (a.job_id,)).fetchone()
+    assert row == ("done", 0)
+
+
+def test_a_running_job_renews_its_lease(tmp_path):
+    import time
+    storage, q = setup(tmp_path)
+    job = q.claim("A", lease_s=0.2)
+    with q.keep_lease(job, "A", lease_s=0.2, every_s=0.05) as lease:
+        time.sleep(0.6)                                        # three lease lengths
+        other = q.claim("B")
+        assert other is None or other.job_id != job.job_id
+    assert lease["renewals"] >= 5 and not lease["lost"]
+    assert q.complete(job, {"ok": 1}, worker_id="A")
+
+
+def test_renewal_notices_a_lost_lease_and_the_worker_counts_it(tmp_path, monkeypatch):
+    import time
+
+    from vlar_ops import queue as Q
+    storage, q = setup(tmp_path)
+    monkeypatch.setattr(Q, "RENEW_EVERY_S", 0.05)
+    runner, _ = files_runner(tmp_path)
+    taken = {}
+
+    def slow(job):
+        if not taken:                                          # the first job loses its lease to B mid-run
+            q._db.execute("UPDATE jobs SET lease_owner='B' WHERE job_id=?", (job.job_id,))
+            taken["id"] = job.job_id
+            time.sleep(0.2)
+        return runner(job)
+    stats = run_worker(q, storage, slow, "A")
+    assert stats["lost"] == 1 and stats["done"] == 1
+    assert q._db.execute("SELECT status, lease_owner FROM jobs WHERE job_id=?",
+                         (taken["id"],)).fetchone() == ("leased", "B")

@@ -122,7 +122,7 @@ def served(tmp_path_factory):
 
 
 def test_the_job_is_done_and_the_dagger_job_refused(served):
-    assert served["stats"] == {"done": 1, "done_local": 0, "retry": 0, "failed": 0, "refused": 0}
+    assert served["stats"] == {"done": 1, "done_local": 0, "retry": 0, "failed": 0, "refused": 0, "lost": 0}
     assert served["refused"]["refused"] == 1 and served["refused"]["done"] == 0
     attempts = dict(served["queue"]._db.execute("SELECT phase, attempts FROM jobs").fetchall())
     assert attempts == {"explore": 0, "dagger": 0} and served["queue"].counts("dagger")["pending"] == 1

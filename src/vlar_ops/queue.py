@@ -5,6 +5,10 @@ bucket: a job is done when its result object exists there. Each result is writte
 local disk first, then uploaded, then marked done, so a preempted VM loses at most the
 jobs in flight. On restart, `resume()` releases stale leases, re-uploads local results
 that never reached the bucket, and marks done every job whose result is in the bucket.
+
+Leases (amendment 40): `complete`, `fail` and `release` change a job only while the caller still holds its lease
+(`lease_owner`), and a worker renews its lease while a job runs (`keep_lease`). A job that outlived its lease and was
+claimed by another worker therefore cannot be reset, failed or marked done by the first one.
 """
 
 from __future__ import annotations
@@ -13,8 +17,10 @@ import json
 import os
 import socket
 import sqlite3
+import threading
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -22,6 +28,12 @@ from .plan import Job, Plan
 from .storage import Storage
 
 RESULTS_PREFIX = "results"
+LEASE_S = 3 * 3600.0
+RENEW_EVERY_S = 600.0
+
+
+class LeaseLost(RuntimeError):
+    """The job's lease expired and another worker claimed it: this worker's result is not recorded."""
 
 
 def result_key(phase: str, jid: str) -> str:
@@ -99,7 +111,7 @@ class JobQueue:
 
     # ------------------------------------------------------------ worker side
 
-    def claim(self, worker_id: str, lease_s: float = 3 * 3600,
+    def claim(self, worker_id: str, lease_s: float = LEASE_S,
               phases: Optional[Sequence[str]] = None) -> Optional[Job]:
         """The next job in order, optionally only from `phases` (workers started for one phase's options)."""
         now = time.time()
@@ -116,26 +128,78 @@ class JobQueue:
                              (worker_id, now + lease_s, row[0]))
         return Job.from_json(row[1])
 
-    def complete(self, job: Job, result: Mapping[str, Any], meta: Optional[Mapping[str, Any]] = None) -> bool:
-        """Persist a job's result locally, upload it, mark it done. Returns True once it is in the bucket."""
+    def holds(self, job: Job, worker_id: str) -> bool:
+        return self._db.execute("SELECT 1 FROM jobs WHERE job_id=? AND status='leased' AND lease_owner=?",
+                                (job.job_id, worker_id)).fetchone() is not None
+
+    def complete(self, job: Job, result: Mapping[str, Any], meta: Optional[Mapping[str, Any]] = None, *,
+                 worker_id: str) -> bool:
+        """Persist a job's result locally, upload it, mark it done. Returns True once it is in the bucket. Raises
+        LeaseLost (recording nothing) if `worker_id` no longer holds the job's lease."""
+        if not self.holds(job, worker_id):
+            raise LeaseLost(f"{worker_id} no longer holds {job.job_id}")
         record = {"job": json.loads(job.to_json()), "result": result, "meta": dict(meta or {}),
                   "finished_at": time.time()}
         path = self._local_path(job.phase, job.job_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + f".tmp{os.getpid()}")
         tmp.write_text(json.dumps(record, sort_keys=True, default=_json_default))
-        tmp.replace(path)
         with self._tx():
-            self._db.execute("UPDATE jobs SET status='done_local', lease_owner=NULL WHERE job_id=?", (job.job_id,))
+            if self._db.execute("UPDATE jobs SET status='done_local', lease_owner=NULL, lease_expires=NULL "
+                                "WHERE job_id=? AND status='leased' AND lease_owner=?",
+                                (job.job_id, worker_id)).rowcount != 1:
+                tmp.unlink(missing_ok=True)
+                raise LeaseLost(f"{worker_id} lost {job.job_id} while completing it")
+            tmp.replace(path)
         return self._upload(job.phase, job.job_id)
 
-    def fail(self, job: Job, error: str) -> str:
+    def fail(self, job: Job, error: str, *, worker_id: str) -> str:
+        """Count a failed attempt (back to pending, or failed after max_attempts). Returns the new status, or "lost"
+        (changing nothing) if `worker_id` no longer holds the job's lease."""
         with self._tx():
-            attempts = self._db.execute("SELECT attempts FROM jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] + 1
+            row = self._db.execute("SELECT attempts FROM jobs WHERE job_id=? AND status='leased' AND lease_owner=?",
+                                   (job.job_id, worker_id)).fetchone()
+            if row is None:
+                return "lost"
+            attempts = row[0] + 1
             status = "failed" if attempts >= self.max_attempts else "pending"
             self._db.execute("UPDATE jobs SET status=?, attempts=?, last_error=?, lease_owner=NULL, "
                              "lease_expires=NULL WHERE job_id=?", (status, attempts, error[-4000:], job.job_id))
         return status
+
+    def renew(self, job: Job, worker_id: str, lease_s: float = LEASE_S) -> bool:
+        """Extend `worker_id`'s lease on the job to now + lease_s; False if it no longer holds it."""
+        with self._tx():
+            return self._db.execute("UPDATE jobs SET lease_expires=? WHERE job_id=? AND status='leased' AND "
+                                    "lease_owner=?", (time.time() + lease_s, job.job_id, worker_id)).rowcount == 1
+
+    @contextmanager
+    def keep_lease(self, job: Job, worker_id: str, lease_s: Optional[float] = None, every_s: Optional[float] = None):
+        """Renew the lease every `every_s` (default RENEW_EVERY_S) to now + `lease_s` (default LEASE_S) while the block
+        runs, so a long job never outlives its lease, from a thread with its own database connection. Yields a dict
+        whose "lost" turns true if a renewal found the lease gone."""
+        lease_s = LEASE_S if lease_s is None else lease_s
+        every_s = RENEW_EVERY_S if every_s is None else every_s
+        state, stop = {"lost": False, "renewals": 0}, threading.Event()
+
+        def loop():
+            q = JobQueue(self.db_path, self.storage, self.local_dir, self.max_attempts)
+            try:
+                while not stop.wait(every_s):
+                    if q.renew(job, worker_id, lease_s):
+                        state["renewals"] += 1
+                    else:
+                        state["lost"] = True
+                        return
+            finally:
+                q.close()
+        t = threading.Thread(target=loop, name=f"lease-{job.job_id}", daemon=True)
+        t.start()
+        try:
+            yield state
+        finally:
+            stop.set()
+            t.join()
 
     def release_all_leases(self) -> int:
         """Return every leased job to pending (VM restart, or abandoning jobs at a hard spend stop)."""
@@ -143,11 +207,12 @@ class JobQueue:
             return self._db.execute("UPDATE jobs SET status='pending', lease_owner=NULL, lease_expires=NULL "
                                     "WHERE status='leased'").rowcount
 
-    def release(self, job: Job) -> None:
-        """Give a claimed job back untouched (clean abandon, e.g. on a hard spend stop)."""
+    def release(self, job: Job, *, worker_id: str) -> bool:
+        """Give a claimed job back untouched (clean abandon, e.g. on a hard spend stop); only by its lease holder."""
         with self._tx():
-            self._db.execute("UPDATE jobs SET status='pending', lease_owner=NULL, lease_expires=NULL "
-                             "WHERE job_id=? AND status='leased'", (job.job_id,))
+            return self._db.execute("UPDATE jobs SET status='pending', lease_owner=NULL, lease_expires=NULL "
+                                    "WHERE job_id=? AND status='leased' AND lease_owner=?",
+                                    (job.job_id, worker_id)).rowcount == 1
 
     # ------------------------------------------------------------ status
 
@@ -237,10 +302,15 @@ def run_worker(queue: JobQueue, handler: Callable[[Job], Mapping[str, Any]], *,
             break
         started = time.time()
         try:
-            result = handler(job)
+            with queue.keep_lease(job, wid):
+                result = handler(job)
         except Exception:
-            queue.fail(job, traceback.format_exc())
+            queue.fail(job, traceback.format_exc(), worker_id=wid)
             continue
-        queue.complete(job, result, {"worker": wid, "started_at": started, **(meta() if meta else {})})
+        try:
+            queue.complete(job, result, {"worker": wid, "started_at": started, **(meta() if meta else {})},
+                           worker_id=wid)
+        except LeaseLost:
+            continue
         n += 1
     return n

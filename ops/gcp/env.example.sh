@@ -4,7 +4,7 @@ export BILLING_ACCOUNT="REPLACE"          # gcloud billing accounts list
 export REGION="us-central1"               # needs L4 Spot capacity and quota
 export ZONE="us-central1-a"
 export BUCKET="REPLACE"                   # globally unique, e.g. <project>-vla-router
-export VM_NAME="vlar-l4"
+export VM_NAME="REPLACE"                 # the L4 VM (30_create_vm.sh)
 export SA_NAME="vlar-vm"
 export DISK_GB=100                        # L4 boot disk, sized 2026-11-22 (ops/README.md, "Boot disk size"):
                                           # VM image 50 + images 14 + image files while loading 7 + weights 11

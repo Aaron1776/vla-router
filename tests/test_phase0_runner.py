@@ -49,6 +49,8 @@ esac
 FAKE_SYSTEMCTL = '#!/bin/bash\necho "systemctl $*" >> "$FAKE/log"\n'
 # GNU timeout's interface, without the cap (the runner's 124/137 handling is tested by a step exiting 124).
 FAKE_TIMEOUT = '#!/bin/bash\nwhile [[ "$1" == --* ]]; do shift; done\nshift\nexec "$@"\n'
+# The kernel log for the OOM check: $FAKE/kernel.log for `journalctl -k`, nothing otherwise (never the host's).
+FAKE_JOURNALCTL = '#!/bin/bash\n[[ " $* " == *" -k "* && -f "$FAKE/kernel.log" ]] && cat "$FAKE/kernel.log"\nexit 0\n'
 
 
 def setup(tmp_path, steps, stop_flag=False):
@@ -57,7 +59,7 @@ def setup(tmp_path, steps, stop_flag=False):
     queue.mkdir(parents=True)
     bin_.mkdir()
     for name, text in [("gcloud", FAKE_GCLOUD), ("vlar-ops", FAKE_VLAR_OPS), ("systemctl", FAKE_SYSTEMCTL),
-                       ("timeout", FAKE_TIMEOUT)]:
+                       ("timeout", FAKE_TIMEOUT), ("journalctl", FAKE_JOURNALCTL)]:
         (bin_ / name).write_text(text)
         (bin_ / name).chmod(0o755)
     for name, body in steps.items():
@@ -138,6 +140,29 @@ def test_a_failing_or_capped_step_is_set_aside_and_the_vm_stops(tmp_path, code, 
     assert state["state"] == "failed" and word in state["reason"]
     assert ls(p0 / "failed") == ["010-a.sh"] and ls(p0 / "queue") == ["020-b.sh"]
     assert not (fake / "order").exists() and (fake / "SHUTDOWN").exists()
+
+
+@pytest.mark.parametrize("case,outcome,word", [
+    ("oom", "oom_killed", "out-of-memory killer"),
+    ("plain", "killed", "within its 600 s cap; no out-of-memory kill"),
+    ("cap", "time_cap", "hit its time cap (1 s)")])
+def test_exit_137_is_told_apart(tmp_path, case, outcome, word):
+    """Amendment 41: 137 is the time cap only if the cap had passed; else an OOM kill if the kernel log since the
+    step's start says so; else a kill within the cap."""
+    cap, body = (1, "sleep 2; exit 137") if case == "cap" else (600, "exit 137")
+    steps = {"010-a.sh": f"# cap-seconds: {cap}\n{body}", "020-b.sh": 'echo b >> "$FAKE/order"'}
+    fake, local, env = setup(tmp_path, steps)
+    if case == "oom":
+        (fake / "kernel.log").write_text("Memory cgroup out of memory: Killed process 4242 (python) "
+                                          "total-vm:31000000kB\n")
+    out = subprocess.run(["bash", str(RUNNER)], env=env, capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stdout + out.stderr
+    p0 = fake / "bucket" / "b" / "vla-router" / "phase0"
+    state = json.loads((p0 / "STATE.json").read_text())
+    hist = [json.loads(line) for line in (p0 / "history.jsonl").read_text().splitlines()]
+    assert state["state"] == "failed" and word in state["reason"], state
+    assert hist[-1]["outcome"] == outcome and hist[-1]["exit"] == 137
+    assert ls(p0 / "failed") == ["010-a.sh"] and ls(p0 / "queue") == ["020-b.sh"]
 
 
 def test_the_cap_comment_is_passed_to_timeout(tmp_path):

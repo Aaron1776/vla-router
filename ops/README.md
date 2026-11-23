@@ -123,10 +123,10 @@ on a pass, `400` the 500 base rollouts. To run stage B on new images, once the V
 
 ```bash
 BUILD_PROVISIONING=STANDARD caffeinate -i -s ops/gcp/35_build_images.sh   # the one rebuild (CPU VM, on-demand)
-gcloud compute instances add-metadata vlar-l4 --zone us-central1-a \
+gcloud compute instances add-metadata $VM_NAME --zone $ZONE \
   --metadata vlar-images-url=gs://$BUCKET/containers/<full commit>
 ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{010,015,030,040,050,090,200,210,300}-*.sh
-gcloud compute instances start vlar-l4 --zone us-central1-a && ops/gcp/32_watch_vm.sh
+gcloud compute instances start $VM_NAME --zone $ZONE && ops/gcp/32_watch_vm.sh
 ```
 
 ## Every start (including after a preemption)

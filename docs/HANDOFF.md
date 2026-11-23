@@ -1,4 +1,8 @@
-# Handoff: state of the harness build (2026-11-23)
+# Handoff: state of the harness build (2026-11-23, afternoon)
+
+Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
+`$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
+fails if they reappear in a tracked file.
 
 For a session that starts without the previous conversation. Read this file at startup; read `docs/SPEC.md` (the
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
@@ -50,7 +54,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | 3. Measurement recording, snapshot store | snapshot capture/restore and a local `SnapshotStore` done and tested; decider inputs and measurement recording (`observe()`, proposal, free signals, spread/drift, chunk-time samples, probes, `record="full"`) done and tested on the Mac with fake models (`6c08bf5`); Parquet dataset records and snapshot sync to the bucket (through the worker) done and tested against a local bucket (the commit after `6c08bf5`); the Cloud Storage path is untested |
 | 4. Queue, spend guard, packaging | done on the Mac against a local stand-in for the bucket (`src/vlar_ops`): queue, spend guard, packaging, runner and worker loop (the commit after `6c08bf5`), the VM worker command `vlar-ops worker` and the dataset manifest and datacard (`vlar-ops dataset manifest`/`verify`; the commit after `1683b56`); the Cloud Storage backend is first exercised by the VM smoke run on the re-run list |
 | 5. Dockerfiles, lockfiles | done on the Mac, the commit after `1e92964` (wording changed by amendment 28): `containers/` (Dockerfile with targets sim/pi05/xvla, hashed linux/x86_64 locks, `check_env.py`, `locktool.py`, `lock.sh`), `ops/gcp/35_build_images.sh` + `build_vm_startup.sh` (CPU build VM), `ops/vm/load_images.sh` (driver check, load, GPU checks), service units; image builds and in-container tests are Phase 0's first step |
-| 6. GCP scripts | done 2026-11-22: scripts ready to run, `ops/gcp/env.sh` and `ops/ops.yaml` filled in (git-ignored; billing account `01982D-EC777A-1F425C`, the Education account; `IMAGE_FAMILY` common-cu129-ubuntu-2404-nvidia-580, driver 580); `05_check_account.sh` (read-only) confirmed billing linked and enabled, GPUS_ALL_REGIONS 1, NVIDIA_L4_GPUS 1, PREEMPTIBLE_NVIDIA_L4_GPUS 1 (unused), compute/storage/logging/monitoring APIs on (iam and billingbudgets enabled by `10_bucket_and_account.sh`); budget excludes credits (coupon account). Nothing created |
+| 6. GCP scripts | done 2026-11-22: scripts ready to run, `ops/gcp/env.sh` and `ops/ops.yaml` filled in (git-ignored; billing account `$BILLING_ACCOUNT`, the Education account; `IMAGE_FAMILY` common-cu129-ubuntu-2404-nvidia-580, driver 580); `05_check_account.sh` (read-only) confirmed billing linked and enabled, GPUS_ALL_REGIONS 1, NVIDIA_L4_GPUS 1, PREEMPTIBLE_NVIDIA_L4_GPUS 1 (unused), compute/storage/logging/monitoring APIs on (iam and billingbudgets enabled by `10_bucket_and_account.sh`); budget excludes credits (coupon account). Nothing created |
 | 7. VM re-run list, commits, HANDOFF | VM re-run list complete (image build and driver check first, then steps 1-5, rendering, worker, manifest, smoke run); parity tooling and reference files committed (`25794f7`); everything committed with the item-6 commit after `c6d49ed`, tree clean |
 
 ## Status
@@ -77,6 +81,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | Container definitions (amendments 28-30; HARNESS.md "Container images and lockfiles"): Dockerfile, hashed locks at the notebook's versions, CPU build VM, L4 loader with driver check, service units, `tests/test_containers.py` | done on the Mac | the commit after `1e92964` |
 | Phase 0 step 0: container images built and tested on a CPU build VM, exported to the bucket (amendments 28, 31-33) | done | `be7b95a` |
 | Phase 0 stage A on the L4 (images `be7b95a`): image load, host checks, weights, VM re-run rows, verdict | failed at 090: row pi05-batch-invariance-l4 (padded vs batch of one, max |diff| 1.94); all other rows passed; VM stopped 05:21:59Z; spend $0.73 | `94b1966`, `6690b19` |
+| π0.5 diagnosis (step 095, 2026-11-23): numerical, not a bug (HARNESS.md); host-package freeze (amendment 36); approved rules (joint memory, grasp check) | done, uncommitted; option for π0.5 open; spend $0.86 | |
 | Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
 | Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | stage B ready to queue after commit, rebuild and the user's approval | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
@@ -263,7 +268,7 @@ Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the t
 
 ## Open questions for the user
 
-None open. (The fresh-chunk charge question raised during §18 item 3 was decided as amendment 27.)
+None open. The π0.5 question was decided as option A (amendment 37); the partner's review became amendments 39-44.
 
 **Billing and spending rules (user, 2026-11-22).**
 - The billing account is a university education coupon for **$50**, on a paid billing account with no payment
@@ -275,13 +280,13 @@ None open. (The fresh-chunk charge question raised during §18 item 3 was decide
   recreate it from the bucket to resume (ops/README.md, "Costs the spend guard counts"). The disk is 100 GB
   (about $0.33/day; breakdown in ops/README.md, "Boot disk size").
 - **Decider training on the Mac where possible** (SPEC §12, §13 already allow it): download only
-  `records/{runs,events,points}` (`gcloud storage cp -r gs://swift-library-515509-vla-data/vla-router/records/<table> ...`),
+  `records/{runs,events,points}` (`gcloud storage cp -r gs://$BUCKET/vla-router/records/<table> ...`),
   compute labels locally (`labels.py` is pure Python; a point's prefix is the parent run's `events` rows up to its
   `decision_point` event, so snapshots and images are not needed; check this on first use), train locally, and
   upload the checkpoints for Phase 3 and evaluation. The VM then only collects data and runs evaluation.
 
-**Google Cloud account (user, 2026-11-22).** Project `swift-library-515509-v9`, us-central1, bucket
-`swift-library-515509-vla-data`; billing is a $50 university education coupon on a paid billing account with no
+**Google Cloud account (user, 2026-11-22).** Project `$PROJECT_ID`, us-central1, bucket
+`$BUCKET`; billing is a $50 university education coupon on a paid billing account with no
 payment method, credits expiring 2027-08-20: $50 is a hard ceiling, the hard stop stays at $45, and the rest must
 cover storage and the final download before the expiry. GPU quota reported approved (GPUS_ALL_REGIONS 1,
 NVIDIA_L4_GPUS 1, PREEMPTIBLE_NVIDIA_L4_GPUS 1); to be confirmed with `05_check_account.sh` before anything is
@@ -296,8 +301,30 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**OVERNIGHT LOG (2026-11-23, read first).** Stage A **failed** at its verdict, so per the user's pre-approved plan
-nothing more ran: no rebuild, nothing queued, no debugging. The L4 `vlar-l4` is **STOPPED** (TERMINATED since
+**SESSION 2026-11-23 (read first).** Decided and done on `harness-v1` (commit after `01dc2dc`):
+- π0.5 padded vs batch of one, diagnosed at max effort on the L4 (step `095`, `ops/vm/phase0/debug/`; HARNESS.md "π0.5
+  padded to 8 vs the batch of one"): numerical, not a bug. The user chose option A (amendment 37): both exact checks
+  kept; the random-image 0.05 check replaced by 20 real decision points (executed actions within 0.05 everywhere, all
+  50 within 0.05 at >= 90%); parity (step `300`) runs the production padded path (confirmed: production servers at
+  the calibrated geometry, every π0.5 request seeded, `episode.py` `_pi05_request`).
+- Approved: host packages frozen on every boot (amendment 36; the journal confirmed apt-daily-upgrade restarting the
+  runner at 04:35:50Z); the step-2 rules with the joint memory measurement and the grasp check with its defaults
+  (amendment 38).
+- The partner's review, all six points (amendments 39-44): conditional ledger writes with retry and no StopIteration;
+  lease-checked `complete`/`fail`/`release` with renewal; exit 124/137 told apart (time cap, OOM, kill); sessions
+  from boot time plus failed-boot records; alerts per limit with re-alerts; identifiers replaced by env.sh
+  placeholders with `tests/test_no_identifiers.py`. Bucket checked: uniform access, public access prevention
+  enforced, no public members.
+- Spend guard **$0.86**. VM `$VM_NAME` STOPPED since 08:16Z on 2026-11-23: pause rule, delete it and its disk if still
+  stopped at 08:16Z on 2026-11-24. Queue empty. **Its startup-script metadata holds an uncommitted `startup.sh`**:
+  re-set it from the committed file (`gcloud compute instances add-metadata $VM_NAME --zone $ZONE
+  --metadata-from-file startup-script=ops/vm/phase0/startup.sh`) before stage B.
+- Next (xhigh): the one rebuild from this commit (`BUILD_PROVISIONING=STANDARD caffeinate -i -s
+  ops/gcp/35_build_images.sh`, about 85 min, about $0.40, cost told to the user first), the metadata re-set, then
+  stage B as in "START HERE" below, step 4 (queue `010,015,030,040,050,090,200,210,300`), each cost announced first.
+
+**OVERNIGHT LOG (2026-11-23, superseded by the session above).** Stage A **failed** at its verdict, so per the user's pre-approved plan
+nothing more ran: no rebuild, nothing queued, no debugging. The L4 `$VM_NAME` is **STOPPED** (TERMINATED since
 05:21:59Z on 2026-11-23); pause rule: delete it and its disk if it is still stopped at 05:22Z on 2026-11-24. Spend
 guard: **$0.73** total (VM $0.73, 1.38 VM hours; disk not yet charged in the ledger). Steps: 010 done (451 s),
 015 done, 020 done (113 s), 030 done (2117 s; sim-reference 101 passed, 3 skipped), 040 done (172 s), 050 done
@@ -349,10 +376,10 @@ committed on `harness-v1` (`65b5b42`; amendment 35, HARNESS.md "Calibration file
    confirms. Then record the commit, image digests and test counts here.
 4. **Queue stage B** (only once the L4 is STOPPED, and from the same commit as the images, tree clean):
    ```bash
-   gcloud compute instances add-metadata vlar-l4 --zone us-central1-a \
+   gcloud compute instances add-metadata $VM_NAME --zone $ZONE \
      --metadata vlar-images-url=gs://$BUCKET/containers/<full commit>
    ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{010,015,030,040,050,090,200,210,300}-*.sh
-   gcloud compute instances start vlar-l4 --zone us-central1-a && ops/gcp/32_watch_vm.sh
+   gcloud compute instances start $VM_NAME --zone $ZONE && ops/gcp/32_watch_vm.sh
    ```
    (If the VM was deleted under the pause rule: recreate it with `IMAGES_COMMIT=<full commit> ops/gcp/30_create_vm.sh`
    and queue `020-weights.sh` too.) The VM installs the new host source on boot, `010` loads the new images (the old
@@ -374,18 +401,18 @@ committed on `harness-v1` (`65b5b42`; amendment 35, HARNESS.md "Calibration file
 
 **Created in Google Cloud (Phase 0 stage 1, 2026-11-22, approved by the user; nothing that bills by the hour):**
 - APIs enabled: compute, storage, iam, logging, monitoring, billingbudgets.
-- Bucket `gs://swift-library-515509-vla-data` (us-central1, Standard, public access prevention enforced, uniform
+- Bucket `gs://$BUCKET` (us-central1, Standard, public access prevention enforced, uniform
   access, soft delete off). Empty; the queue and data go under `vla-router/` (`ops/ops.yaml`).
-- Service account `vlar-vm@swift-library-515509-v9.iam.gserviceaccount.com`: `roles/storage.objectAdmin` on the
+- Service account `$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com`: `roles/storage.objectAdmin` on the
   bucket, `roles/logging.logWriter` on the project. (The first run of `10_bucket_and_account.sh` failed at the
   bucket binding because the new account had not reached IAM yet; the two bindings were applied by hand and the
   script now retries for up to two minutes.)
-- Budget `vla-router-50usd` (`bca134d7-e7c6-4118-93f5-b6b166c1ea49`): $50, alerts at 50/80/100%, credits excluded,
+- Budget `vla-router-50usd`: $50, alerts at 50/80/100%, credits excluded,
   one custom period 2026-11-01 to 2027-08-20 (created as a calendar-month budget, which would reset monthly; changed
   in place, and `20_budget_alerts.sh` now sets the period from `BUDGET_START`/`BUDGET_END`), alerts also sent to the
   email channel below (`40_spend_alert_policy.sh` now attaches it).
-- Monitoring email channel `120237596798409676` (the alert email in `env.sh`) and alert policy
-  `11822138694703063206` (the spend guard's soft and hard limit log events).
+- A monitoring email channel (the alert email in `env.sh`) and an alert policy
+  (the spend guard's soft and hard limit log events).
 
 **Phase 0 stage 2, image build (2026-11-22, approved by the user).** First attempt on `0046252` (build script
 hardened against network drops on the Mac: three-way checks, deletion only after DONE/FAILED is read, the cap, or a
@@ -478,7 +505,7 @@ AVX-512; PyTorch's CPU capability AVX2 in all three images. Tests: sim 293 passe
 1 skipped; xvla 12 passed; **no NotBitIdentical warnings: every batch-invariance check was bit-exact on this CPU**,
 as in run 4. Run 5's CPU was not recorded, so the maximum size of its differences is still unmeasured (only its
 first differing values, 1-5 ulp, are known); a later build on another CPU records them as warnings.
-Images in `gs://swift-library-515509-vla-data/containers/be7b95a5d944d351428b5d79978864dc62ad4d1a/`: vlar-sim 3994 MB,
+Images in `gs://$BUCKET/containers/be7b95a5d944d351428b5d79978864dc62ad4d1a/`: vlar-sim 3994 MB,
 vlar-pi05 3963 MB, vlar-xvla 2998 MB (about 11 GB, about $0.22/month in Standard storage), image-digests.json
 (sim sha256:3dfe75be..., pi05 sha256:fceeb4b8..., xvla sha256:94508c13...), SHA256SUMS, logs. The earlier attempts'
 prefixes hold only sources and logs (a few MB). Six build attempts in all cost roughly $1.10 before credits.
@@ -533,12 +560,12 @@ run's is unrecorded) with SHA-256 in SPEC §2, cached at `gs://$BUCKET/vla-route
 `gs://$BUCKET/vla-router/phase0/STATE.json` and `history.jsonl` for where it ended; a stopped VM stays within the pause
 rule for one day.
 
-**L4 VM created (2026-11-22, user's go-ahead):** `vlar-l4` (us-central1-a, Spot, 100 GB pd-balanced) with stage A
+**L4 VM created (2026-11-22, user's go-ahead):** `$VM_NAME` (us-central1-a, Spot, 100 GB pd-balanced) with stage A
 queued (host source `94b1966`, images `be7b95a`); it stops itself when stage A ends (`32_watch_vm.sh` follows it).
 Spend guard ledger starts with this VM ($0 before it; the six build VMs, about $1.10 before credits, are outside the
 ledger until the weekly reconcile). Pause rule: if the VM stays stopped for more than a day, delete it and its disk
-(`gcloud compute instances delete vlar-l4 --zone us-central1-a --delete-disks=all`, then
-`vlar-ops spend disk-deleted --name vlar-l4-boot`).
+(`gcloud compute instances delete $VM_NAME --zone $ZONE --delete-disks=all`, then
+`vlar-ops spend disk-deleted --name ${VM_NAME}-boot`).
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script

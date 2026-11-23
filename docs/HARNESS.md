@@ -500,6 +500,38 @@ restored byte for byte), 7 of 8 caught:
 calls only read them. The lock stays: it covers the first calls' update, where a collision would raise an error (never
 a wrong prompt), and any later code that tokenizes with other settings.
 
+### π0.5 padded to 8 vs the batch of one on the L4 (stage A failure, diagnosed 2026-11-23)
+
+Stage A's row `pi05-batch-invariance-l4` failed only `check_pi05_reference_path`: the test's random-image request
+(task 6, seed 105) padded to 8 rows differed from the batch of one by 1.94. Diagnosis on the L4 with the real
+checkpoint (`ops/vm/phase0/debug/pi05_batch_debug.py`, run as step `095`; outputs in the bucket under
+`phase0/logs/debug-pi05/` and locally in the git-ignored `outputs/debug-pi05/`):
+- **Not a bug.** Every input of row 0 is bit-identical to the batch of one (noise, tokens, attention masks, the three
+  images, the 4-D prefix mask, position ids); every padded row is bit-identical to row 0; the max_batch-1 batched path
+  equals `act_unbatched` bit for bit on every request (5 requests, 2 real); repeats are bit-identical.
+- **First difference:** SigLIP's patch-embedding convolution (float32, TF32 allowed as in the reference): identical
+  input, row 0 changes once the batch has 2 or more images (max 5e-4, relative 2e-4); run alone, the same module on the
+  same input repeats bit for bit at 1 row and gives one different result at 2-16 rows. The kernel profile shows cuDNN
+  and cuBLAS picking other kernels at 1 row than at 8 (GEMV and split-K at 1 row, other tile shapes and implicit-GEMM
+  convolution at 8). Every batch size from 2 to 16 differs slightly from the others too.
+- **Growth, then one flip:** relative differences grow through the 27 vision layers (2e-5 to 3e-4) and the bfloat16
+  language model (0.3% to 4%); the denoising steps carry them (x_t 0.004 to 0.02 by step 6), and on this request
+  one gripper value of a far-ahead action (step 34 of 50; the first 10 are executed, max difference 0.008) sits on
+  the open/close boundary and goes to -0.96 instead of +0.98 in the last three steps. Splitting the stages: the
+  prefix at 8 rows with the denoising at 1 row already gives the flip; the reverse gives 0.03.
+- **The request is on a knife edge either way:** in the batch of one alone, adding 2^-20 to a single pixel gives the
+  same 1.94 flip; a real observation changes by 0.006-0.014 under the same perturbation.
+- **Real observations** (50 decision points, 5 per task, following the batch of one's actions): max |padded -
+  one| median 0.0037, p90 0.0057; executed actions (first 10) at most 0.0056; one flip (task 7, a gripper value at
+  step 27). Random-image requests: median 0.0036, one flip at step 2 (task 3).
+- **Which result is off:** neither. In float32 with TF32 off the two paths agree within 7e-7 on ordinary requests and
+  within 0.0045 on the two flipping ones (no flip). Against that float32 result, the bfloat16 batch of one is the
+  farther of the two on both flipping requests (1.94 and 1.54, against 0.32 and 0.42 for the padded result), and
+  about as far on ordinary ones (0.004-0.010 against 0.003-0.005).
+- `allow_bf16_reduced_precision_reduction = False` changes nothing material (it moves the batch of one by 1.95 on the
+  flipping requests itself). Timing on the L4 (model span, deterministic): 0.80 s per request at 1 row, 1.80 s per
+  batch of 8 (0.225 s per request), so padding to 8 gives 3.6x the π0.5 throughput of running it unbatched.
+
 ## Rendering only what is used (SPEC §12, amendment 7)
 
 Models, measurements and snapshots read images only at decision points: the observation left by the
@@ -802,13 +834,25 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
   is frozen. Collection stores no `sim_time_s` (runs) and no gripper fractions (points): clocks are re-scored from the
   event log; `measure.gripper_fractions_of_point` computes the fractions from `prev_actions` and `prev_gripper_qpos`
   (equal to the live ones: `tests/test_measure.py`, `tests/reference/test_collect.py`).
-- **Geometry rule** (`vlar_ops.step2.choose_geometry`, proposed 2026-11-22): sizes whose two models' deterministic
-  peak memory sums to at most 20 GB; the smallest whose deterministic GPU cost per request (X-VLA `/act` + `/sample` +
+- **Geometry rule** (`vlar_ops.step2.choose_geometry`, proposed 2026-11-22, approved with the memory change
+  2026-11-23): feasible sizes are those both benches ran and whose joint memory measurement left at least 2 GB
+  (`HEADROOM_MIB` 2048) of the card free: in step `200`, at each size B both production servers at that geometry,
+  the planned 2 x B workers (at most 12) rendering every camera every step (`vlar-ops step2 render`, one container
+  each), full batches to both servers from B client threads each (`step2 load`), the card's peak from `nvidia-smi`
+  sampled every 250 ms (`step2 memory` -> `memory-B.json`); a size whose servers or renderers did not all run through
+  it is infeasible. Of those, the smallest whose deterministic GPU cost per request (X-VLA `/act` + `/sample` +
   `/features` + π0.5, full batches) is within 10% of the best; stop if deterministic mode costs more than 1.25x the
   non-deterministic run there. Workers = 2 x `max_batch`, at most 12. Padding cost by fill is reported, not gated.
-- **Gripper thresholds** (`vlar-ops step2 gripper`): π0.5's delta mode, no arm motion, gripper open then closed on
-  nothing for 30 steps each, tasks 0, 3, 6 at initial state 0; shut = widest closed width + 10% of the open-shut
-  range, open = narrowest open width - 10%. Not write-once: only offline values and live `observe()` use them.
+  The benches' per-model peaks are reported only. Tests: `tests/test_step2.py`, `tests/reference/test_step2_sim.py`.
+- **Gripper thresholds** (`vlar-ops step2 gripper`, approved 2026-11-23): π0.5's delta mode, no arm motion, gripper
+  open then closed on nothing for 30 steps each, tasks 0, 3, 6 at initial state 0; shut = widest closed width + 10% of
+  the open-shut range, open = narrowest open width - 10%. Not write-once: only offline values and live `observe()`
+  use them. **Grasp check** after the base rollouts, before the freeze (`vlar-ops grasps --root <local copy>`,
+  `vlar_ops/grasps.py`, sim image or `.venv-sim`): the base runs' commanded-closed steps (`action[6] > 0`) and their
+  finger widths against the thresholds, all of them and the settled ones (closed for at least 10 consecutive steps,
+  which leaves out the closing sweep); fractions shut / partly open / open, quantiles, a 1 mm histogram, per task;
+  exit 75 with the reasons when more than 2% of the settled steps lie within 5% of the open-shut range of either
+  threshold (they do not separate cleanly: the user looks before the freeze). Tests: `tests/test_grasps.py`.
 - **Steps on the L4** (`ops/vm/phase0/steps/`): `200` step 2, `210` invariance rows at the chosen geometry, `300`
   parity + gate (`vlar-ops parity gate`, `vlar_ops/parity.py`) + manifest over its records, queues `400` (base).
   Tests: `tests/test_config.py`, `tests/test_step2.py`, `tests/test_parity_gate.py`, `tests/test_manifest.py`,

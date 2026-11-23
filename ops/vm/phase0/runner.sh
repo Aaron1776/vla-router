@@ -11,7 +11,10 @@
 # Exit status of a step:   0 done (moved to done/)
 #                         75 needs the user: stays queued (it re-runs on the next boot, once the input is there)
 #                         76 a gate failed: moved to failed/, stop, no debugging (e.g. π0.5 parity)
-#                      other failed (124 = time cap): moved to failed/
+#                        124 the time cap (timeout's TERM): moved to failed/
+#                        137 SIGKILL: the time cap if the cap had passed (timeout's KILL after an ignored TERM), else
+#                            an out-of-memory kill if the kernel log since the step's start says so, else "killed"
+#                      other failed: moved to failed/
 # Steps write a one-line reason to $VLAR_REASON_FILE.
 #
 # The VM never sits idle on the GPU: when the queue is empty, or a step fails or needs the user, the runner stops
@@ -44,6 +47,12 @@ try:
                                              "hard_limit_usd")}))
 except Exception:
     print("null")' 2>/dev/null || echo null
+}
+
+oom_killed() {   # oom_killed <epoch>: the kernel log since then records an out-of-memory kill (amendment 41)
+  local log
+  log="$(journalctl -k --no-pager --since "@$1" 2>/dev/null)"
+  grep -qiE 'out of memory|oom-kill|oom_reaper|killed process' <<<"$log"
 }
 
 write_state() {  # write_state <state> <step> <reason>
@@ -139,9 +148,20 @@ run_step() {     # run_step <file>
     "$GATE_FAILED")
         move_step "$f" failed; history "$name" gate_failed "$rc" $(( $(date +%s) - t0 )); sync_files
         finish gate_failed "$name: gate failed: ${reason:-see logs/$name.log}" ;;
-    124|137)
+    124)
         move_step "$f" failed; history "$name" time_cap "$rc" $(( $(date +%s) - t0 )); sync_files
         finish failed "$name hit its time cap (${cap} s)" ;;
+    137)
+        local elapsed=$(( $(date +%s) - t0 )) kind why
+        if (( elapsed >= cap )); then
+          kind=time_cap; why="hit its time cap (${cap} s) and was killed after ignoring SIGTERM"
+        elif oom_killed "$t0"; then
+          kind=oom_killed; why="was killed by the kernel's out-of-memory killer after ${elapsed} s (exit 137)"
+        else
+          kind=killed; why="was killed (SIGKILL, exit 137) after ${elapsed} s, within its ${cap} s cap; no out-of-memory kill in the kernel log"
+        fi
+        move_step "$f" failed; history "$name" "$kind" "$rc" "$elapsed"; sync_files
+        finish failed "$name $why" ;;
     *)  move_step "$f" failed; history "$name" failed "$rc" $(( $(date +%s) - t0 )); sync_files
         finish failed "$name failed (exit $rc): ${reason:-see logs/$name.log}" ;;
   esac

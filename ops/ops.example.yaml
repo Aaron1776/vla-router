@@ -6,7 +6,7 @@ spend:
   soft_limit_usd: 40               # one notification (log-based alert -> email)
   hard_limit_usd: 45               # stop new jobs, drain, sync, shut down
   vm_hourly_usd: 0.46              # g2-standard-16 Spot incl. its L4: check the current price before each start
-  boot_allowance_s: 180            # billed boot time before the guard's first tick
+  boot_allowance_s: 180            # billed time before the kernel starts (sessions count from boot)
   storage_usd_per_gb_month: 0.020  # Standard storage, regional: check for your region
   tick_s: 60
   storage_scan_every_s: 1800
