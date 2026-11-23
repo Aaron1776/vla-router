@@ -165,6 +165,16 @@ def cmd_finish(a: argparse.Namespace) -> None:
               + (f"written to {res['written']}" if a.write else "not written (--write)"))
     elif a.cmd == "first-targets":
         print(f"{finish.first_targets(a.root, Path(a.out))} first-target distances -> {a.out}")
+    elif a.cmd == "summary":
+        summary = finish.summary(a.root, json.loads(Path(a.time_limits).read_text()),
+                                 json.loads(Path(a.grasps).read_text()))
+        text = finish.write_summary(summary, Path(a.out))
+        print(text.read_text(), end="")
+    elif a.cmd == "unchanged":
+        same, why = finish.unchanged(json.loads(Path(a.previous).read_text()), a.root)
+        print(why)
+        if not same:
+            sys.exit(1)
     elif a.cmd == "freeze":
         print(f"frozen: {finish.freeze(Path(a.golden))}")
 
@@ -292,9 +302,13 @@ def main(argv: list[str] | None = None) -> None:
     pa.set_defaults(fn=cmd_parity)
 
     fi = sub.add_parser("finish", help="Phase 0 steps 6-7 from the records (vlar_ops/finish.py)")
-    fi.add_argument("cmd", choices=["calibrate", "first-targets", "freeze"])
-    fi.add_argument("--root", help="local copy of the bucket's records (calibrate, first-targets)")
-    fi.add_argument("--out", help="calibrate: JSON summary; first-targets: the distances file")
+    fi.add_argument("cmd", choices=["calibrate", "first-targets", "summary", "unchanged", "freeze"])
+    fi.add_argument("--root", help="local copy of the bucket's records (calibrate, first-targets, summary, unchanged)")
+    fi.add_argument("--out", help="calibrate: JSON summary; first-targets: the distances file; summary: "
+                                  "calibration-summary.json (the text beside it, .txt)")
+    fi.add_argument("--time-limits", help="summary: calibrate's --out file")
+    fi.add_argument("--grasps", help="summary: the grasp check's report (vlar-ops grasps --out)")
+    fi.add_argument("--previous", help="unchanged: an earlier calibration-summary.json")
     fi.add_argument("--write", action="store_true", help="calibrate: store the limits in the calibration file")
     fi.add_argument("--golden", help="freeze: the checked golden set (golden.json)")
     fi.set_defaults(fn=cmd_finish)

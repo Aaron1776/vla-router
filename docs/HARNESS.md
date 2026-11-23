@@ -864,11 +864,24 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
   rebuild (`b4c6beb`), so they live in `vlar_ops` and the sim containers mount the host source's `vlar_ops` over the
   image's copy (`lib.sh` `OPS_RUN`, `vlar-worker@.service`); `vlar_harness`, the code v1.0 freezes (its source digest
   covers only that package), stays the image's. Result markers record the host source as `ops_source`.
+- **The ops code is pinned by its digest** (amendment 46, the user's rule 2026-11-23): `provenance.ops_digest()`, the
+  source digest over the `vlar_ops` the process imports (the mounted host copy on the VM), is in every record header
+  (result markers' `meta.provenance` and snapshot headers; `runs` rows through their job's marker) and in
+  `freeze.json`; `verify_freeze` (and so the workers' startup and step 7's check) refuses other ops code or a record
+  without it, `write_freeze` refuses without ops code, and the manifest refuses mixed or missing ops digests. Every
+  container that runs or checks ops code mounts the host copy (`tests/test_phase0_steps.py` checks it; step 7's
+  verification lacked the mount before).
 - **Step 6** (`ops/vm/phase0/steps/500-calibrate.sh`, queued by hand after `400`): records of `base` and
   `pi05_parity` from the bucket; the event logs rebuilt from the `runs` and `events` tables (`vlar_ops.finish`,
   every run complete in `seq` order); the relative handoff check (first-target distances, then the VM row with both
   servers up); `calibration.calibrate` + `write` (time limits and margin into the calibration file); the grasp check
-  (exit 75 when flagged; `phase0/step6/grasps-accepted` in the bucket lets it go on); then queues `600`.
+  (its flag goes into the summary); `vlar-ops finish summary` (per-task limits and m read back from the calibration
+  file and checked against this run's, π0.5's share within the limits, the grasp check), printed and uploaded to
+  `phase0/step6/calibration-summary.{txt,json}`; then it **stops for the user** (exit 75; the user's rule,
+  2026-11-23): `600` is queued only with the user's explicit approval after reading the summary. Exit 75 keeps the
+  step queued; on a later boot `finish unchanged` (the summary's records digest and calibration hash against the
+  current ones) ends it done (exit 0) with nothing recomputed, so an approved `600` queued behind it runs; with new
+  records or another calibration file it recomputes and stops again (delete the summary to force a recompute).
 - **Step 7** (`600-freeze.sh`): `vlar-ops golden select`: five base snapshots, tasks drawn with seed 20261123, one
   decision point (index >= 1) each, with the base run's recorded steps after it (`golden/golden.json` + `.npz`
   beside the calibration file); `golden check --mark-checked` replays each (restore, X-VLA local to the end,
@@ -878,8 +891,10 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
 - **Every start of a frozen harness** (`lib.sh` `run_phase`): the golden check runs after the servers answer and
   before any worker, writing `/var/lib/vlar/golden-pass.json` (boot id, calibration hash, pass); `vlar-ops worker`
   refuses a frozen harness without this boot's pass for this calibration file.
-- Tests: `tests/test_finish.py`, `tests/reference/test_golden.py` (fake models: replay bit for bit; a changed action,
-  pose or outcome caught at its step; the worker gate), `tests/test_phase0_steps.py`.
+- Tests: `tests/test_finish.py` (also the summary and the re-run check), `tests/reference/test_golden.py` (fake models:
+  replay bit for bit; a changed action, pose or outcome caught at its step; the worker gate),
+  `tests/test_phase0_steps.py` (the step chain, the ops mounts), `tests/test_config.py` and `tests/test_manifest.py`
+  (the ops digest in the freeze record and the manifest).
 
 ## Phase 2 training (`vlar_train`, started 2026-11-23)
 

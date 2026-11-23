@@ -5,9 +5,14 @@
 #   1. the relative handoff check: X-VLA's first-target distances at ordinary chunk boundaries of the base rollouts,
 #      then the VM row with both production servers up (amendment 10);
 #   2. the per-task time limits and margin m, written to the calibration file (`vlar-ops finish calibrate`);
-#   3. the grasp check (amendment 38): flagged -> exit 75, the user looks before the freeze (to go on anyway, the
-#      user creates <phase0>/step6/grasps-accepted in the bucket and the step is re-run);
-# then queues 600 (step 7, the freeze). Re-runnable: everything is recomputed from the records.
+#   3. the grasp check (amendment 38); a flag goes into the summary;
+#   4. the calibration summary (`vlar-ops finish summary`: per-task limits, m, π0.5's share within the limits, the
+#      grasp check), printed and uploaded to <phase0>/step6/calibration-summary.{txt,json};
+# then it stops for the user (exit 75; the user's rule, 2026-11-23): the freeze (600) is queued only with the user's
+# explicit approval after reading the summary, never by this step. Exit 75 keeps the step queued, so it re-runs on
+# the next boot: a re-run whose records and calibration file are the uploaded summary's does nothing and ends done
+# (exit 0), so a 600 queued behind it runs; otherwise everything is recomputed from the records (to force that,
+# delete the uploaded summary).
 source /opt/vla-router/ops/vm/phase0/lib.sh
 need_images
 calfile require-write-once >/dev/null || fail "no write-once calibration: run step 2 (200) first"
@@ -20,6 +25,12 @@ for t in runs events steps; do
 done
 OPS=(docker run "${SIM_RUN[@]}" "${CAL_ENV[@]}" "vlar-sim:${C}" vlar-ops)
 up6() { gcloud storage cp -q "$1" "${VLAR_PHASE0_URL}/step6/$(basename "$1")" >/dev/null 2>&1 || echo "warning: $1 not synced"; }
+S="${G}/calibration-summary.json"
+if gcloud storage cp -q "${VLAR_PHASE0_URL}/step6/calibration-summary.json" "${G}/previous-summary.json" >/dev/null 2>&1 \
+   && "${OPS[@]}" finish unchanged --root "${G}" --previous "${G}/previous-summary.json"; then
+  echo "step 6 already done for these records and this calibration file (phase0/step6/calibration-summary.txt)"
+  exit 0
+fi
 
 "${OPS[@]}" finish first-targets --root "${G}" --out "${G}/first_targets.json" || fail "first-target distances failed"
 up6 "${G}/first_targets.json"
@@ -40,13 +51,12 @@ up6 "${G}/time_limits.json"
 
 "${OPS[@]}" grasps --root "${G}" --out "${G}/grasps.json"; rc=$?
 up6 "${G}/grasps.json"
-if (( rc == 75 )); then
-  gcloud storage ls "${VLAR_PHASE0_URL}/step6/grasps-accepted" >/dev/null 2>&1 \
-    || need_input "grasp check flagged (phase0/step6/grasps.json): the gripper thresholds do not separate the base rollouts' grasps cleanly; the user decides before the freeze"
-  echo "grasp check flagged, accepted by the user (phase0/step6/grasps-accepted)"
-elif (( rc != 0 )); then
-  fail "grasp check failed (exit ${rc})"
-fi
-gcloud storage cp -q "${R}/ops/vm/phase0/steps/600-freeze.sh" "${VLAR_PHASE0_URL}/queue/600-freeze.sh" \
-  || fail "step 6 done but 600-freeze could not be queued"
-echo "step 6 done: time limits written; 600-freeze queued"
+(( rc == 0 || rc == 75 )) || fail "grasp check failed (exit ${rc})"      # 75: flagged, reported in the summary
+
+"${OPS[@]}" finish summary --root "${G}" --time-limits "${G}/time_limits.json" --grasps "${G}/grasps.json" \
+  --out "${S}" || fail "calibration summary failed"
+for f in "${S%.json}.txt" "${S}"; do        # the JSON last: a re-run counts as done only once both are up
+  gcloud storage cp -q "${f}" "${VLAR_PHASE0_URL}/step6/$(basename "${f}")" >/dev/null 2>&1 \
+    || fail "$(basename "${f}") not uploaded: the user cannot review step 6"
+done
+need_input "step 6 done, calibration written: read phase0/step6/calibration-summary.txt; the freeze (600) is queued only with the user's explicit approval"

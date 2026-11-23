@@ -181,6 +181,38 @@ def test_freeze_record_pins_the_calibration_and_its_lineage(cfg_dir, tmp_path, m
         P.verify_freeze(cfg, config_dir=cfg_dir)
 
 
+def test_freeze_record_pins_the_ops_code(cfg_dir, tmp_path, monkeypatch):
+    # Amendment 46: vlar_ops runs from the host source over the image's copy; the freeze pins it by digest and
+    # verify_freeze (the workers' startup) refuses other ops code, or a record without the digest.
+    monkeypatch.setattr(C, "CONFIG_DIR", cfg_dir)
+    cal = tmp_path / "calibration.yaml"
+    _complete(cfg_dir, cal)
+    assert P.ops_dir().name == "vlar_ops" and P.ops_digest() == P.source_digest(P.ops_dir())
+    P.write_freeze(["g1"], cal, config_dir=cfg_dir)
+    cfg = C.load_config(config_dir=cfg_dir, calibration=cal)
+    rec = P.verify_freeze(cfg, config_dir=cfg_dir)
+    assert rec["ops_digest"] == P.ops_digest() and P.record_header(cfg)["ops_digest"] == rec["ops_digest"]
+    real = P.ops_digest()
+    monkeypatch.setattr(P, "ops_digest", lambda: "0" * 64)
+    with pytest.raises(P.FreezeError, match=r"ops code \(vlar_ops\)"):
+        P.verify_freeze(cfg, config_dir=cfg_dir)
+    monkeypatch.setattr(P, "ops_digest", lambda: real)
+    path = cal.with_name("freeze.json")
+    path.write_text(__import__("json").dumps({k: v for k, v in rec.items() if k != "ops_digest"}))
+    with pytest.raises(P.FreezeError, match=r"ops code \(vlar_ops\)"):
+        P.verify_freeze(cfg, config_dir=cfg_dir)
+
+
+def test_no_freeze_without_ops_code(cfg_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(C, "CONFIG_DIR", cfg_dir)
+    cal = tmp_path / "calibration.yaml"
+    _complete(cfg_dir, cal)
+    monkeypatch.setattr(P, "ops_digest", lambda: None)
+    with pytest.raises(P.FreezeError, match="nothing to pin"):
+        P.write_freeze(["g1"], cal, config_dir=cfg_dir)
+    assert not C.load_config(config_dir=cfg_dir, calibration=cal).frozen       # refused before freezing the file
+
+
 def test_source_digest_changes_with_code(tmp_path):
     pkg = tmp_path / "pkg"
     (pkg / "configs").mkdir(parents=True)

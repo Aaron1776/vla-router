@@ -26,7 +26,7 @@ from vlar_ops.worker import run_worker
 
 PROV = {"harness_version": "1.0.0", "config_name": "harness-v1", "config_hash": "c" * 64,
         "config_options": {"scene_seed": "project"}, "calibration_hash": "1" * 64, "source_digest": "s" * 64,
-        "commit": "a" * 40, "harness_dirty": False, "image_digests": {}}
+        "ops_digest": "o" * 64, "commit": "a" * 40, "harness_dirty": False, "image_digests": {}}
 
 
 def runner_for(staging, header):
@@ -111,6 +111,16 @@ def test_mixed_harness_code_stops_the_build(tmp_path):
     other = {**PROV, "source_digest": "t" * 64}
     root = make_dataset(tmp_path, provs=(PROV, other))
     with pytest.raises(manifest.ManifestError, match="mixed source_digest"):
+        manifest.build(root)
+
+
+def test_mixed_or_missing_ops_code_stops_the_build(tmp_path):
+    # Amendment 46: the ops code runs from the host source, pinned by its digest in every record.
+    root = make_dataset(tmp_path / "mixed", provs=(PROV, {**PROV, "ops_digest": "p" * 64}))
+    with pytest.raises(manifest.ManifestError, match="mixed ops_digest"):
+        manifest.build(root)
+    root = make_dataset(tmp_path / "missing", provs=({k: v for k, v in PROV.items() if k != "ops_digest"},))
+    with pytest.raises(manifest.ManifestError, match="no ops digest in the provenance"):
         manifest.build(root)
 
 

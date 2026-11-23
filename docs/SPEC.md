@@ -330,6 +330,9 @@ Approved by the user on 2026-11-23 from the project partner's review of the pull
 43. §12: spend alerts are recorded with the limit they fired at, and a limit raised after an alert alerts again when it is crossed (older ledgers' alert times are migrated).
 44. Repo hygiene: the VM name, project ID, bucket, billing account ID and service-account email are removed from the tracked files (placeholders `$VM_NAME`, `$PROJECT_ID`, `$BUCKET`, `$BILLING_ACCOUNT`, `$SA_NAME` for the git-ignored `ops/gcp/env.sh`; the budget, channel and policy IDs too); `tests/test_no_identifiers.py` fails if they reappear (salted digests, plus the values from `env.sh` where it exists). History is not rewritten; making the repository private is with the project partner. Checked with gcloud on 2026-11-23: the bucket has uniform bucket-level access, public access prevention enforced, and no allUsers or allAuthenticatedUsers binding.
 
+Approved by the user on 2026-11-23 (required before Phase 0 steps 6-7, `500` and `600`, are ever queued):
+46. §15: the ops code runs from the host source, pinned by digest. Phase 0 steps 6-7, the golden-set self-check and the Phase 2 code were written after the images, so the simulator containers mount the host source's `vlar_ops` over the image's copy, while the harness (`vlar_harness`, the code v1.0 freezes) stays the image's. The ops code is pinned like the harness: its digest (`provenance.ops_digest`, the source digest over the `vlar_ops` the process imports) is in every record (result markers, snapshot headers; `runs` rows through their job's marker) and in the freeze record; `verify_freeze`, and so every worker's startup, refuses other ops code; the manifest refuses mixed or missing ops digests. Any ops-code change after the freeze needs a new version, as a harness change does.
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
