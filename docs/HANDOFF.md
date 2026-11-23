@@ -8,6 +8,22 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## MUST DO before steps 500 or 600 are ever queued (user, 2026-11-23)
+
+Steps 6-7, the golden-set self-check and the Phase 2 training code are on branch **`phase2-work`** (`23de105`,
+pushed, **not merged** into `harness-v1`; HARNESS.md there, "Phase 0 steps 6-7" and "Phase 2 training"). They run as
+ops code (`vlar_ops`) mounted from the host source over the images' copy, so the frozen harness (`vlar_harness`) stays
+the rebuilt images'. Two changes the user requires first (at xhigh):
+1. **Pin the ops code.** Put the `vlar_ops` source digest (like `provenance.source_digest`, over `src/vlar_ops`) in
+   the freeze record and in every record (result markers, snapshots' headers, runs rows via the worker's meta),
+   check it like the harness digest (`verify_freeze`, the worker's startup, the manifest), and log the §15 change
+   (ops code from the host source, pinned by digest) as an amendment in SPEC §17 with the user's approval.
+2. **Step 500 stops for the user.** `500-calibrate.sh` ends with exit 75 ("needs input") right after writing the
+   calibration (time limits, margin, grasp report), instead of queueing `600`; it prints and uploads a calibration
+   summary (per-task limits, m, the π0.5 share within the limits, the grasp check). The freeze (`600`) is queued
+   only with the user's explicit approval after reading that summary.
+Then merge `phase2-work` into `harness-v1` (it is based on `b4c6beb`), run the suites, commit, push.
+
 ## Working rules the user set
 
 - **Effort checkpoints (SPEC §16).** Before starting any step on the §16 max list, stop and say exactly:
@@ -300,6 +316,24 @@ confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates
 any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
+
+**STATE AT THE STOP (2026-11-23 ~09:05Z, user at 88% of the 5-hour limit).**
+- `harness-v1` = `b4c6beb` + this HANDOFF commit, pushed. Images: the one rebuild of `b4c6beb` was **running** at the
+  stop (on-demand CPU build VM `vlar-build` created 08:43Z; `35_build_images.sh` polls from the Mac and deletes the VM
+  when it ends; the VM also deletes itself after `BUILD_MAX_HOURS` = 4 h). Log: `outputs/build-logs/rebuild-b4c6beb.log`
+  (git-ignored). First check: `gcloud compute instances list` shows no `vlar-build` (else delete it and its disk),
+  and `gs://$BUCKET/containers/b4c6beb51cd1ea04fe002fb4be95a0ca3d60dd99/` holds `DONE` (or `FAILED`).
+- Stage B: **not queued** unless a line below says so. To queue it (images DONE, from `b4c6beb` exactly: the queue
+  script archives HEAD, so `git checkout --detach b4c6beb` first and back after): re-set the L4's metadata
+  (`gcloud compute instances add-metadata $VM_NAME --zone $ZONE --metadata vlar-images-url=gs://$BUCKET/containers/b4c6beb51cd1ea04fe002fb4be95a0ca3d60dd99`
+  and `--metadata-from-file startup-script=ops/vm/phase0/startup.sh`), then
+  `ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{010,015,030,040,050,090,200,210,300}-*.sh`, then
+  `gcloud compute instances start $VM_NAME --zone $ZONE` (stage B ~$3-4 + disk, approved by the user).
+- Spend guard: **$0.86** (L4 only; the six earlier build VMs and this rebuild, about $1.50 before credits, are
+  outside the ledger until a `spend reconcile`). L4 `$VM_NAME` STOPPED since 08:16Z on 2026-11-23: pause rule, delete
+  it and its disk if still stopped at 08:16Z on 2026-11-24 (then recreate it and queue `020` too).
+- The L4's startup-script metadata holds an **older** `startup.sh` (the package freeze, without the failed-boot record
+  of amendment 42): it must be re-set from `b4c6beb`'s file before stage B (the queue instructions above do).
 
 **SESSION 2026-11-23 (read first).** Decided and done on `harness-v1` (commit after `01dc2dc`):
 - π0.5 padded vs batch of one, diagnosed at max effort on the L4 (step `095`, `ops/vm/phase0/debug/`; HARNESS.md "π0.5
