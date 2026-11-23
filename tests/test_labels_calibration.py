@@ -360,36 +360,37 @@ def test_calibration_refuses_the_wrong_runs():
 def cfg_dir(tmp_path):
     d = tmp_path / "configs"
     shutil.copytree(C.CONFIG_DIR, d)
-    for f in d.glob("*.calibration.yaml"):
-        f.unlink()
     return d
 
 
 def test_calibration_file_round_trip(cfg_dir):
     base, parity = synthetic_runs()
     tl = cal.calibrate(base, parity, CFG)
-    cal.write(tl, config_dir=cfg_dir)
-    cfg = C.load_config(config_dir=cfg_dir)
+    path = cal.write(tl, cfg_dir / "cal" / "calibration.yaml", config_dir=cfg_dir)
+    cfg = C.load_config(config_dir=cfg_dir, calibration=path)
     assert {t: cfg.time_limit_s(t) for t in range(10)} == tl.per_task_s        # exact floats
     assert cfg["time_limit"]["margin"] == 1.5 and cfg["time_limit"]["status"] == "calibrated"
-    assert cfg.hash != CFG.hash
+    assert cfg.calibration_hash == C.file_sha256(path)
 
 
 def test_upload_size_is_written_into_every_network_choice(cfg_dir):
-    C.write_upload_size(19876, config_dir=cfg_dir, note="test")
-    cfg = C.load_config(config_dir=cfg_dir)
+    path = C.write_upload_size(19876, cfg_dir / "calibration.yaml", config_dir=cfg_dir, note="test")
+    cfg = C.load_config(config_dir=cfg_dir, calibration=path)
     assert cfg.option("network")["upload_image_bytes"] == 19876
     assert cfg.option("network")["upload_image_bytes_status"] == "measured"
     assert net.NetworkParams.from_config(cfg).upload_bytes == 19876 + 1024
     with pytest.raises(C.ConfigError, match="not calibration paths"):
-        C.write_calibration({"options": {"network": {"choices": {"default": {"p_fail": 0.5}}}}}, config_dir=cfg_dir)
+        C.write_calibration({"options": {"network": {"choices": {"default": {"p_fail": 0.5}}}}}, path,
+                            config_dir=cfg_dir)
+    with pytest.raises(C.ConfigError, match="write-once"):              # amendment 35
+        C.write_upload_size(19877, path, config_dir=cfg_dir)
 
 
 def test_frozen_config_refuses_a_placeholder_upload_size(cfg_dir):
     import yaml
-    path = cfg_dir / "harness-v1.yaml"
-    raw = yaml.safe_load(path.read_text())
-    raw["frozen"] = True
-    path.write_text(yaml.safe_dump(raw))
+    choices = yaml.safe_load((cfg_dir / "harness-v1.yaml").read_text())["options"]["network"]["choices"]
+    path = cfg_dir / "calibration.yaml"
+    path.write_text(yaml.safe_dump({"schema": 1, "config": "harness-v1", "frozen": True, "values": {
+        "options": {"network": {"choices": {c: {"upload_image_bytes": 1} for c in choices}}}}}))
     with pytest.raises(C.ConfigError, match="placeholder upload size"):
-        C.load_config(config_dir=cfg_dir)
+        C.load_config(config_dir=cfg_dir, calibration=path)

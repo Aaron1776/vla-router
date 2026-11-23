@@ -12,7 +12,10 @@
   set of image digests across all markers. Several config hashes are allowed (named options, e.g. the π0.5 parity
   run's scene seeds) and listed with their options; several git commits are allowed (code outside the harness
   package changes the commit, not the harness) and listed; markers from a harness with uncommitted changes are
-  listed as a warning.
+  listed as a warning;
+- checks every marker carries a calibration hash (amendment 35) and every run row repeats its marker's; given the
+  freeze record (`freeze`), every calibration hash must be the frozen file's or in its lineage, so parity and base
+  records count as v1.0; without one, the hashes are listed and a warning says they were not checked.
 Only when every check passes does it write DATACARD.md (vlar_ops/datacard-v1.md) and MANIFEST.json at the root.
 `verify(root)` checks a tree against its MANIFEST.json, e.g. after download and unpacking: every listed file
 present with its size and SHA-256, and no other file.
@@ -62,6 +65,7 @@ def _canon(v: Any) -> str:
 
 
 def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path | str] = None,
+          freeze: Optional[Path | str] = None,
           now: Optional[datetime] = None) -> dict[str, Any]:
     """Check the dataset under `root`; if it passes, write DATACARD.md and MANIFEST.json and return the manifest.
     `quick` checks sizes only (the SHA-256 recorded at upload are trusted). `move_unlisted` moves data files no
@@ -127,6 +131,8 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
     seen: dict[str, Counter] = {f: Counter() for f in SINGLE}
     commits: Counter = Counter()
     configs: dict[str, dict[str, Any]] = {}
+    calibrations: Counter = Counter()
+    frozen = json.loads(Path(freeze).read_text()) if freeze else None
     dirty = 0
     for mkey, m in markers.items():
         prov = (m.get("meta") or {}).get("provenance")
@@ -140,6 +146,15 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
         c = configs.setdefault(prov.get("config_hash"), {"config_name": prov.get("config_name"),
                                                          "options": prov.get("config_options"), "jobs": 0})
         c["jobs"] += 1
+        cal = prov.get("calibration_hash")
+        calibrations[cal] += 1
+        if cal is None:
+            problems.append(f"{mkey}: no calibration hash in the provenance (amendment 35)")
+        elif frozen is not None and cal != frozen["calibration_hash"] and cal not in frozen["calibration_lineage"]:
+            problems.append(f"{mkey}: calibration {cal[:12]} is not the frozen file's nor in its lineage")
+    if frozen is None and calibrations:
+        warnings.append("calibration hashes not checked against a freeze record (--freeze): "
+                        + ", ".join(f"{str(h)[:12]} ({n} jobs)" for h, n in calibrations.most_common()))
     for f, counts in seen.items():
         if len(counts) > 1:
             problems.append(f"mixed {f}: " + ", ".join(f"{v} ({n} jobs)" for v, n in counts.most_common()))
@@ -179,7 +194,8 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
             if table != "runs":
                 continue
             want = {"schema_version": SCHEMA_VERSION, "harness_version": prov.get("harness_version"),
-                    "config_hash": prov.get("config_hash"), "phase": job["phase"], "job_id": job["job_id"]}
+                    "config_hash": prov.get("config_hash"), "calibration_hash": prov.get("calibration_hash"),
+                    "phase": job["phase"], "job_id": job["job_id"]}
             for row in pq.read_table(root / k, columns=[*want, "run_kind"]).to_pylist():
                 phases[job["phase"]][f"{row['run_kind']}_runs"] += 1
                 bad = [f for f, v in want.items() if row[f] != v]
@@ -195,7 +211,10 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
     manifest = {
         "manifest_version": MANIFEST_VERSION, "dataset": DATASET, "schema_version": SCHEMA_VERSION,
         **single, "git_commits": sorted((c for c in commits if c), key=str),
-        "configs": configs, "phases": {p: dict(sorted(c.items())) for p, c in sorted(phases.items())},
+        "configs": configs, "calibrations": dict(calibrations),
+        "freeze": None if frozen is None else {k: frozen[k] for k in ("harness_version", "calibration_hash",
+                                                                      "calibration_lineage")},
+        "phases": {p: dict(sorted(c.items())) for p, c in sorted(phases.items())},
         "tables": tables, "warnings": warnings,
         "datacard": {"path": DATACARD, "sha256": sha256_file(root / DATACARD), "size": (root / DATACARD).stat().st_size},
         "totals": {"files": len(files), "bytes": sum(f["size"] for f in files)},

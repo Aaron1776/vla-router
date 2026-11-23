@@ -1,15 +1,16 @@
 # Harness config, versioned with the harness (docs/SPEC.md §15).
 #
 # Experiments never edit this file. They pick among the named choices under `options`
-# and nothing else. Phase 0 writes the measured latencies, gripper thresholds and time
-# limits here before the freeze; after `frozen: true` the calibration writers refuse.
+# and nothing else. Phase 0's measurements (latencies, batch geometry, worker count, gripper
+# thresholds, upload size, time limits) go into the separate calibration file named by
+# VLAR_CALIBRATION (amendments 34, 35; config.py), never here: this file is part of the
+# images and the source digest. The calibration file, not this one, is frozen at v1.0.
 #
 # `status: placeholder` marks values taken from the reference notebook (docs/SPEC.md §2)
 # that Phase 0 must replace with measurements from this harness.
 
 schema: 1
-harness_version: "1.0.0.dev0"
-frozen: false
+harness_version: "1.0.0"
 
 env:
   suite: libero_10
@@ -105,8 +106,9 @@ models:
 servers:
   xvla: {host: 127.0.0.1, port: 8777}
   pi05: {host: 127.0.0.1, port: 8778}
+  workers: null               # simulator workers (§12), from the Phase 0 step 2 throughput figures
   batching:
-    status: placeholder       # set from the Phase 0 step 2 batched measurements
+    status: placeholder       # decided in Phase 0 step 2; max_batch and xvla_sample_rows are write-once (amendment 35)
     # Fixed padded geometry (amendment 24): every pass runs at exactly these sizes, so a request's result never
     # depends on its batch. max_batch: requests per batch (rows of every X-VLA encoder and /act denoising pass,
     # and of every π0.5 pass); xvla_sample_rows: rows of every X-VLA /sample denoising pass (K samples a request).

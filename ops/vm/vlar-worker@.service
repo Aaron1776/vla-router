@@ -1,7 +1,10 @@
 # One simulator worker in the sim image (docs/SPEC.md §12, §15; vlar_ops/vm_worker.py). Start several by hand after
 # `vlar-ops queue resume` and once both model servers answer:  sudo systemctl start vlar-worker@{1..N}
 # Not enabled at boot on purpose: after a preemption the queue is resumed first (ops/README.md, "Every start").
-# The image tag comes from /etc/vlar/images.env (ops/vm/load_images.sh).
+# The image tag comes from /etc/vlar/images.env (ops/vm/load_images.sh); the calibration file from
+# /etc/vlar/calibration (read-only; the worker refuses without its write-once group, amendment 35); the phase and
+# options from VLAR_WORKER_ARGS in /etc/vlar/worker.env (written by the Phase 0 steps, e.g.
+# "--phase pi05_parity --option scene_seed=pi05_parity").
 [Unit]
 Description=vla-router simulator worker %i
 After=network-online.target docker.service vlar-spend.service vlar-xvla.service vlar-pi05.service
@@ -9,10 +12,12 @@ Requires=docker.service
 
 [Service]
 EnvironmentFile=/etc/vlar/images.env
+EnvironmentFile=-/etc/vlar/worker.env
 ExecStart=/usr/bin/docker run --rm --name vlar-worker-%i --gpus all --network host \
   -v /etc/vlar:/etc/vlar:ro -v /opt/vla-router/ops/ops.yaml:/etc/vlar-ops/ops.yaml:ro \
   -v /var/lib/vlar:/var/lib/vlar -e VLAR_OPS_CONFIG=/etc/vlar-ops/ops.yaml \
-  vlar-sim:${VLAR_IMAGE_COMMIT} vlar-ops worker --worker-id w%i
+  -e VLAR_CALIBRATION=/etc/vlar/calibration/calibration.yaml -e MUJOCO_GL=egl -e PYOPENGL_PLATFORM=egl \
+  vlar-sim:${VLAR_IMAGE_COMMIT} vlar-ops worker --worker-id w%i $VLAR_WORKER_ARGS
 # docker stop sends SIGTERM: the worker abandons its current job cleanly (lease released, no marker).
 ExecStop=/usr/bin/docker stop -t 60 vlar-worker-%i
 TimeoutStopSec=90

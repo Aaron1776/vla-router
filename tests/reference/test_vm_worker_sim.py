@@ -16,6 +16,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("pyarrow")
 
 from conftest import requires_lerobot
+from vlar_harness import config as C
 from vlar_harness.config import load_config
 
 pytestmark = requires_lerobot
@@ -81,6 +82,13 @@ def served(tmp_path_factory):
                             profile="router", record="full", order_seed=7))
     xc, pc = XVLAFakeClient(infos()["xvla"]), PI05FakeClient(infos()["pi05"])
     sims = []
+    from calib_testkit import calibration
+    from vlar_ops.vm_worker import StartupError
+    with pytest.raises(StartupError, match="write-once group"):           # no calibration file: refused
+        serve(ops, worker_id="w-test", phases=["explore"], clients={"xvla": xc, "pi05": pc}, p_escalate=0.5)
+    cal = calibration(tmp / "cal")                                        # write-once complete, not frozen
+    mp = pytest.MonkeyPatch()
+    mp.setenv("VLAR_CALIBRATION", str(cal))
 
     def make_sim(task_id):
         sims.append(LiberoSim(task_id, SimSpec.from_config(CFG)))
@@ -89,6 +97,7 @@ def served(tmp_path_factory):
                   p_escalate=0.5)
     refused = serve(ops, worker_id="w-test", phases=["dagger"], clients={"xvla": xc, "pi05": pc},
                     make_sim=make_sim, p_escalate=0.5)
+    mp.undo()
 
     # The same job through the Runner with test_collect's factory, into another bucket.
     sim = LiberoSim(TASK, SimSpec.from_config(CFG))
@@ -108,7 +117,7 @@ def served(tmp_path_factory):
         dest.write_bytes(open(a["path"], "rb").read())
     sim.close()
     yield {"stats": stats, "refused": refused, "bucket": tmp / "bucket", "direct": direct_root, "root": tmp / "root",
-           "job": plan.jobs[0], "pi05": pc, "sims": sims, "queue": q}
+           "job": plan.jobs[0], "pi05": pc, "sims": sims, "queue": q, "cal": cal}
     q.close()
 
 
@@ -125,8 +134,10 @@ def test_records_equal_the_test_factory_run(served):
         got, want = read_table(served["bucket"], table), read_table(served["direct"], table)
         assert got.num_rows > 0
         if table == "runs":
-            assert got.drop(["config_hash"]).to_pylist() == want.drop(["config_hash"]).to_pylist()
-            assert got["config_hash"].to_pylist() == [CFG.hash]
+            drop = ["config_hash", "calibration_hash"]
+            assert got.drop(drop).to_pylist() == want.drop(drop).to_pylist()
+            assert got["config_hash"].to_pylist() == [CFG.hash]               # calibration not in the config hash
+            assert got["calibration_hash"].to_pylist() == [C.file_sha256(served["cal"])]
         else:
             assert got.to_pylist() == want.to_pylist(), table
     run = read_table(served["bucket"], "runs").to_pylist()[0]
@@ -143,6 +154,7 @@ def test_marker_carries_provenance_and_staging_is_cleaned(served):
     meta = marker["meta"]
     assert meta["worker_id"] == "w-test" and meta["p_escalate"] == 0.5
     assert meta["provenance"]["config_hash"] == CFG.hash
+    assert meta["provenance"]["calibration_hash"] == C.file_sha256(served["cal"])
     assert meta["provenance"]["source_digest"] == provenance.source_digest()
     assert meta["servers"]["xvla"]["batching"]["max_batch"] == CFG["servers"]["batching"]["max_batch"]
     snap_keys = [a["key"] for a in marker["result"]["artifacts"] if a["key"].startswith("snapshots/")]

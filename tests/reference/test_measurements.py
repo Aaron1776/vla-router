@@ -51,6 +51,7 @@ def make(sim, svc=None, measure=True):
     ep = Episode(sim, XVLAAdapter(svc.act), PI05Adapter(sim), FakePI05(), CFG, remote=FailAt({ABANDON_STEP}),
                  measure_client=svc if measure else None)
     ep.gripper_thresholds = THRESHOLDS
+    ep.calibration_frozen = True          # observe() needs the frozen calibration (amendment 34); see the test below
     return ep, svc
 
 
@@ -302,3 +303,27 @@ def test_branches_measure_nothing(runs, other_sim):
     br = ep.run_branch(s, branch="b2_one_call", pi05_calls=1, seed_index=1)
     assert {k for k, _ in svc.calls} == {"act"} and ep.measurements == []
     assert br.result.steps == 520
+
+
+@requires_lerobot
+def test_observe_refuses_until_the_calibration_is_frozen(sim, tmp_path):
+    """Amendments 34-35: observe()'s free signals and remaining time use calibrated values, so it refuses until the
+    calibration file is frozen; a frozen file's thresholds are the ones it uses."""
+    from calib_testkit import frozen_config
+    from vlar_harness.config import CalibrationNotFrozen
+    ep, _ = make(sim)
+    ep.calibration_frozen = bool(CFG.frozen)
+    dp = ep.start(INIT, ROLLOUT, "routed", profile="router")
+    with pytest.raises(CalibrationNotFrozen):
+        ep.observe()
+    from episode_driver import FakePI05
+    from vlar_harness.adapters.pi05 import PI05Adapter
+    from vlar_harness.adapters.xvla import XVLAAdapter
+    from vlar_harness.episode import Episode
+    cfg = frozen_config(tmp_path, thresholds=THRESHOLDS)
+    svc = FakeXVLAService()
+    ep = Episode(sim, XVLAAdapter(svc.act), PI05Adapter(sim), FakePI05(), cfg, remote=FailAt({ABANDON_STEP}),
+                 measure_client=svc)
+    assert ep.calibration_frozen and ep.gripper_thresholds == THRESHOLDS
+    dp = ep.start(INIT, ROLLOUT, "routed", profile="router")
+    assert ep.observe().point.index == dp.index

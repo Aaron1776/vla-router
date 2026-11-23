@@ -128,22 +128,42 @@ def tracking(segment: Sequence[dict]) -> tuple[float, float, bool]:
     return float(pos_err.mean()), float(rot_err.mean()), True
 
 
+def gripper_fractions(actions, gripper_qpos, shut_width_m: Optional[float],
+                      open_width_m: Optional[float]) -> tuple[float, float]:
+    """The gripper-mismatch signals over a segment's steps (§6): the fraction of steps commanded closed (g > 0)
+    whose fingers are fully shut (width at most `shut_width_m`), and partly open (between the thresholds). Finger
+    width is qpos[0] - qpos[1]. Used live by `observe()` and offline from the points table's `prev_actions` and
+    `prev_gripper_qpos` (amendment 35: not computed at collection). An empty segment gives (0, 0)."""
+    act = np.asarray(actions, dtype=np.float64).reshape(-1, 7)
+    qpos = np.asarray(gripper_qpos, dtype=np.float64).reshape(-1, 2)
+    if len(act) != len(qpos):
+        raise ValueError(f"{len(act)} actions but {len(qpos)} gripper positions")
+    if not len(act):
+        return 0.0, 0.0
+    if shut_width_m is None or open_width_m is None:
+        raise ValueError("gripper thresholds are uncalibrated (measurement.gripper_thresholds; Phase 0 step 2)")
+    if not shut_width_m < open_width_m:
+        raise ValueError("gripper thresholds need shut_width_m < open_width_m")
+    width = qpos[:, 0] - qpos[:, 1]
+    close = act[:, 6] > 0
+    shut = close & (width <= shut_width_m)
+    partial = close & (width > shut_width_m) & (width < open_width_m)
+    return float(shut.mean()), float(partial.mean())
+
+
+def gripper_fractions_of_point(row: dict, shut_width_m: float, open_width_m: float) -> tuple[float, float]:
+    """`gripper_fractions` from a points-table row (flattened `prev_actions`, `prev_gripper_qpos`)."""
+    return gripper_fractions(row["prev_actions"] or [], row["prev_gripper_qpos"] or [], shut_width_m, open_width_m)
+
+
 def free_signals(segment: Sequence[dict], shut_width_m: Optional[float], open_width_m: Optional[float]) -> FreeSignals:
     """Free signals from the previous segment's per-step records (`Episode.prev_segment`): each has `driver`,
     `action` (executed form), `ee_pos` and `ee_ori_mat` (the controller's cached pose after the step) and
     `gripper_qpos`. An empty segment (episode start) gives zeros with tracking flagged invalid."""
     if not segment:
         return FreeSignals(0.0, 0.0, False, 0.0, 0.0)
-    if shut_width_m is None or open_width_m is None:
-        raise ValueError("gripper thresholds are uncalibrated (measurement.gripper_thresholds; Phase 0 step 2)")
-    if not shut_width_m < open_width_m:
-        raise ValueError("gripper thresholds need shut_width_m < open_width_m")
     track = tracking(segment)
-    act = np.array([r["action"] for r in segment], dtype=np.float64)
-    qpos = np.array([r["gripper_qpos"] for r in segment], dtype=np.float64)
-    width = qpos[:, 0] - qpos[:, 1]
-    close = act[:, 6] > 0
-    shut = close & (width <= shut_width_m)
-    partial = close & (width > shut_width_m) & (width < open_width_m)
+    shut, partial = gripper_fractions([r["action"] for r in segment], [r["gripper_qpos"] for r in segment],
+                                      shut_width_m, open_width_m)
     return FreeSignals(track_pos_err=track[0], track_rot_err=track[1], tracking_valid=track[2],
-                       grip_closed_shut_frac=float(shut.mean()), grip_closed_partial_frac=float(partial.mean()))
+                       grip_closed_shut_frac=shut, grip_closed_partial_frac=partial)

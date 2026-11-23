@@ -12,7 +12,8 @@ be scored only under their own profile, never under `none` (amendment 21).
     python -m vlar_harness.calibration --base base.jsonl ... --parity parity.jsonl ... [--write]
 
 prints, per task, the limit and the share of π0.5 successes that fit, and with --write stores
-`time_limit.per_task_s`, `margin` and `status` in the calibration file (config.write_calibration).
+`time_limit.per_task_s`, `margin` and `status` in the calibration file named by VLAR_CALIBRATION
+(config.write_calibration; amendments 34, 35).
 """
 
 from __future__ import annotations
@@ -135,10 +136,12 @@ def calibrate(base_logs: Iterable[Sequence[Mapping]], parity_logs: Iterable[Sequ
     return TimeLimits(p90, margin, per_task, shares, rows)
 
 
-def write(tl: TimeLimits, name: str = C.DEFAULT_CONFIG, config_dir: Path = C.CONFIG_DIR, note: str = "") -> Path:
+def write(tl: TimeLimits, path=C.FROM_ENV, name: str = C.DEFAULT_CONFIG, config_dir: Path = C.CONFIG_DIR,
+          note: str = "") -> Path:
     return C.write_calibration({"time_limit": {"per_task_s": {int(t): float(v) for t, v in tl.per_task_s.items()},
                                                "margin": tl.margin, "status": "calibrated"}},
-                               name, config_dir, note=note or "Phase 0 step 6: time limits from base and parity logs")
+                               path, name=name, config_dir=config_dir,
+                               note=note or "Phase 0 step 6: time limits from base and parity logs")
 
 
 def report(tl: TimeLimits) -> str:
@@ -164,7 +167,7 @@ def main(argv: list[str] | None = None) -> None:
     tl = calibrate(eventlog.read_logs(a.base), eventlog.read_logs(a.parity), cfg)
     print(report(tl))
     if a.write:
-        print(f"written to {write(tl, a.config)}")
+        print(f"written to {write(tl, name=a.config)}")
 
 
 if __name__ == "__main__":

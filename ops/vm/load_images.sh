@@ -24,12 +24,15 @@ done
 rm -f vlar-*.tar.zst                                  # 7 GB back before anything else (disk budget)
 sudo install -D -m 0644 image-digests.json /etc/vlar/image-digests.json
 echo "VLAR_IMAGE_COMMIT=${COMMIT}" | sudo tee /etc/vlar/images.env >/dev/null   # the tag the services run
-# The servers' batch geometry, from the image's own harness config (the workers check /info against it).
-docker run --rm "vlar-sim:${COMMIT}" python -c "
-from vlar_harness.config import load_config
-b = load_config()['servers']['batching']
-print(f\"VLAR_MAX_BATCH={b['max_batch']}\nVLAR_XVLA_SAMPLE_ROWS={b['xvla_sample_rows']}\")" \
-  | sudo tee /etc/vlar/batching.env >/dev/null
+# The servers' batch geometry lives in the calibration file's write-once group (amendment 35): written to
+# /etc/vlar/batching.env once Phase 0 step 2 has chosen it; until then the production servers cannot start.
+if docker run --rm -v /etc/vlar:/etc/vlar:ro -e VLAR_CALIBRATION=/etc/vlar/calibration/calibration.yaml \
+    "vlar-sim:${COMMIT}" python -m vlar_harness.calfile batching-env > /tmp/vlar-batching.env 2>/dev/null; then
+  sudo install -m 0644 /tmp/vlar-batching.env /etc/vlar/batching.env
+else
+  sudo rm -f /etc/vlar/batching.env; echo "no batch geometry yet (Phase 0 step 2 decides it)"
+fi
+rm -f /tmp/vlar-batching.env
 for t in sim pi05 xvla; do
   lock=lerobot.lock; [[ "${t}" == xvla ]] && lock=xvla.lock
   docker run --rm --gpus all -v /etc/vlar:/etc/vlar:ro "vlar-${t}:${COMMIT}" \

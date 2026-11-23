@@ -769,17 +769,50 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
 | L4 VM, host, before anything else | `ops/vm/load_images.sh gs://<bucket>/containers/<commit>` | **driver check**: NVIDIA driver 580.65.06 or later (CUDA 13.0, amendment 29); images match `SHA256SUMS` and their recorded IDs; `check_env.py --gpu` in each image (torch sees the L4, CUDA 13.0, MuJoCo EGL context in sim) |
 | simulator | `pytest tests/reference/test_sim_reference.py tests/reference/test_snapshot_replay.py tests/reference/test_handoff.py tests/reference/test_clock_live.py tests/reference/test_render_used.py tests/reference/test_measurements.py tests/test_measure.py tests/reference/test_collect.py tests/reference/test_vm_worker_sim.py tests/test_manifest.py` | decider inputs and measurement recording (§6, §7); dataset records, runner and worker end to end (§12, §13); the VM worker entry point with fake clients; the dataset manifest and datacard; adapters vs both references (both render modes); rendering only what is used vs always-on rendering, byte for byte at decision points (§12; EGL may differ from CGL); snapshot restore and replay; determinism; handoffs, budget, run modes; live clocks equal offline replay for every profile; network retries and the `pi05_only` cap; live time cut vs offline crossing; branch determinism; labels from branch logs; the live-limit rules (amendments 19-23: refused combinations, the flag, cut runs scored only under their own profile, the DAgger-style parent re-scored for `cascader_full`); handoff diagnostics; sensitivity checks |
 | simulator, both servers up, after Phase 0 step 5 | `VLAR_XVLA_SERVER=127.0.0.1:8777 VLAR_PI05_SERVER=127.0.0.1:8778 VLAR_BASE_FIRST_TARGETS=<json list> pytest tests/reference/test_handoff.py -k vm` | handoff continuity with the real models, **relative** (SPEC §11 step 3, amendment 10): X-VLA's first target after a handoff must be at or below the 99th percentile of its first-step target distances at ordinary chunk boundaries (no handoff) in the base rollouts; the JSON list comes from the base rollouts' event logs with `python -m vlar_harness.eventlog first-targets <base logs> --out <json list>`. The fixed 3 cm check is for the fake-model tests on the Mac only. |
-| simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | observations at decision points of π0.5-alone episodes sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; `config.write_upload_size` | the upload size of decision 14 from the images the policy itself consumes; replaces the Mac placeholder (20,290 bytes) before the parity run |
+| simulator + π0.5 server, Phase 0 step 2 (a measurement, not a re-run) | `vlar-ops step2 upload` (in `ops/vm/phase0/steps/200-step2-measure.sh`) | the upload size of decision 14: π0.5-alone decision points (tasks 0-9, 16 calls each, no network model) sent to `PI05Client.upload_bytes`; `network.median_upload_image_bytes`; written to the calibration file's write-once group (amendment 35) before the parity run |
 | simulator, both servers up, before the base rollouts (a smoke run) | `vlar-ops worker --phase base --max-jobs 1`, then `vlar-ops dataset manifest --root <copy of the bucket>` | the production worker with the real clients and servers (geometry and deterministic checks pass, one job's files and marker in the Cloud Storage bucket), the Cloud Storage backend, and a manifest over real data; delete that job's files and marker afterwards, or keep them as the first base job |
 | main | `vlar-ops reference check` | the reference files' pinned SHA-256 and totals, before any parity run |
 | X-VLA (throwaway container: first `pip install --require-hashes --no-deps --only-binary :all: -r containers/xvla-test.lock`) | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… pytest tests/reference/test_model_servers.py -k xvla` | server vs the authors' handler with the real weights and LoRA |
 | X-VLA (throwaway container: first `pip install --require-hashes --no-deps --only-binary :all: -r containers/xvla-test.lock`) | `VLAR_XVLA_MODEL_PATH=… VLAR_XVLA_LORA_PATH=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k xvla` | batch invariance on the L4 at the production geometry (8 requests, 40 sample rows), bit for bit: alone, with companions, at every position (six tasks' requests, each at every position of a full batch); the batches captured from the Mac's concurrency failure; simultaneous requests through the queue; rows post-processed alone; features equal across endpoints (amendment 24) |
 | LeRobot (with the `pi` extra) | `VLAR_PI05_CHECKPOINT=… VLAR_TEST_DEVICE=cuda pytest tests/reference/test_batch_invariance.py -k pi05_real` | π0.5 at the production geometry with the real weights and tokenizer, bit for bit: alone, with companions, at every position and in a full batch, batch-mates from different tasks with different prompt and state token lengths; padding ids cannot change a result; every LIBERO-10 prompt fits the 200 tokens; max_batch 1 equals `act_unbatched`; simultaneous requests keep their prompts and outputs (amendments 24, 26). Deterministic mode must not raise on any CUDA kernel π0.5 uses. |
-| both servers, Phase 0 step 2 (a measurement) | throughput at the fixed geometry against unpadded batches, with deterministic mode on and off | the cost of fixed padding and of deterministic mode; if padding is too slow, stop and bring the numbers to the user before relaxing anything (amendment 24) |
-| both servers, Phase 0 step 2 (a measurement) | servers started at `--max-batch 1` (X-VLA also `--sample-rows 5`): median latency of `/act`, `/features`, `/sample` K = 5 and π0.5 inference | the clock charges, unpadded, as a deployed robot runs the calls (amendment 25); written to `latency` in the config; the padded figures never are |
+| each model's image, Phase 0 step 2 (a measurement) | `python -m vlar_harness.servers.bench xvla|pi05` on requests captured by `vlar-ops step2 capture`, then `vlar-ops step2 choose` (step `200`) | GPU time per full batch at sizes 1-16, deterministic on and off; the geometry rule (below) picks `max_batch`, `xvla_sample_rows` = K x `max_batch` and the worker count; deterministic mode costing more than 25% stops the step (exit 75) with the numbers (amendment 24) |
+| both servers, Phase 0 step 2 (a measurement) | servers started at `--max-batch 1` (X-VLA also `--sample-rows 5`), then `vlar-ops step2 latency` (step `200`) | the clock charges, unpadded (amendment 25): median client wall time over localhost of 30 seeded calls after 5 warm-ups of `/act`, `/features`, `/sample` K = 5 and π0.5 `/act`; written to `latency` in the calibration file (π0.5's in the write-once group) |
 | LeRobot | `VLAR_PI05_CHECKPOINT=… pytest tests/reference/test_model_servers.py -k pi05` | server vs lerobot-eval's per-step processing (needs the gated tokenizer) |
 | main | `pytest tests` | config, queue, spend guard, packaging; network model, clock charges, labels and calibration on synthetic logs |
 | simulator | `pytest tests/test_labels_calibration.py -k numpy` | the pure-Python percentile equals NumPy's bit for bit (the main environment has no NumPy) |
+
+## Calibration file and stage B (amendments 34, 35)
+
+- **File.** `VLAR_CALIBRATION` names it (VM: `/etc/vlar/calibration/calibration.yaml`): `{schema, config, frozen,
+  values, history}`; `values` only under `config.CALIBRATION_PATHS`, deep-merged over the base config's placeholders.
+  Every version written is kept as `versions/<sha256>.yaml`. A named file that does not exist is an error (never
+  silently the placeholders). The base config no longer has `frozen`; `harness_version` is 1.0.0 in the code that
+  runs parity and the base rollouts, because the freeze no longer touches the package.
+- **Identity.** `config_hash` covers the base config (fixed settings) and the chosen options only;
+  `calibration_hash` (SHA-256 of the file) goes into every record: `provenance.record_header` (markers, snapshots),
+  runs rows, the runner's header check.
+- **Write-once group** (`config.WRITE_ONCE_PATHS`): `latency.pi05_infer_s`, every network choice's
+  `upload_image_bytes`, `servers.batching.max_batch` and `xvla_sample_rows`. The writer refuses any change once set
+  (the same value again is a no-op); `vlar-ops worker` refuses to start until all are set.
+- **Freeze** (`provenance.write_freeze`): marks the file frozen, writes `freeze.json` beside it with the final hash and
+  its lineage (`config.calibration_lineage`: every earlier version with the complete, identical write-once group);
+  `verify_freeze` re-checks code, config, calibration and lineage; `vlar-ops dataset manifest --freeze freeze.json`
+  requires every record's calibration hash in it.
+- **Refusals.** `Episode.start(time_limit=True)` and `Episode.observe()` raise `CalibrationNotFrozen` until the file
+  is frozen. Collection stores no `sim_time_s` (runs) and no gripper fractions (points): clocks are re-scored from the
+  event log; `measure.gripper_fractions_of_point` computes the fractions from `prev_actions` and `prev_gripper_qpos`
+  (equal to the live ones: `tests/test_measure.py`, `tests/reference/test_collect.py`).
+- **Geometry rule** (`vlar_ops.step2.choose_geometry`, proposed 2026-11-22): sizes whose two models' deterministic
+  peak memory sums to at most 20 GB; the smallest whose deterministic GPU cost per request (X-VLA `/act` + `/sample` +
+  `/features` + π0.5, full batches) is within 10% of the best; stop if deterministic mode costs more than 1.25x the
+  non-deterministic run there. Workers = 2 x `max_batch`, at most 12. Padding cost by fill is reported, not gated.
+- **Gripper thresholds** (`vlar-ops step2 gripper`): π0.5's delta mode, no arm motion, gripper open then closed on
+  nothing for 30 steps each, tasks 0, 3, 6 at initial state 0; shut = widest closed width + 10% of the open-shut
+  range, open = narrowest open width - 10%. Not write-once: only offline values and live `observe()` use them.
+- **Steps on the L4** (`ops/vm/phase0/steps/`): `200` step 2, `210` invariance rows at the chosen geometry, `300`
+  parity + gate (`vlar-ops parity gate`, `vlar_ops/parity.py`) + manifest over its records, queues `400` (base).
+  Tests: `tests/test_config.py`, `tests/test_step2.py`, `tests/test_parity_gate.py`, `tests/test_manifest.py`,
+  `tests/reference/test_measurements.py` / `test_clock_live.py` (refusals), `test_vm_worker_sim.py`.
 
 ## Running the reference tests
 

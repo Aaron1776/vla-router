@@ -14,6 +14,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("pyarrow")
 
 from conftest import requires_lerobot
+from vlar_harness import measure as meas
 from vlar_harness.config import load_config
 
 CFG = load_config()
@@ -153,7 +154,10 @@ def test_points_equal_the_direct_runs_measurements(collected):
         assert p["drift_pos_dist_mean"] == m["drift"]["pos_dist_mean"]
         assert p["chunk_spread_rot_dev_mean"] == m["chunk_spread"]["rot_dev_mean"]
         assert p["prev_len"] == len(m["prev_segment"]) and p["tracking_valid"] == (p["index"] > 0)
-        assert p["grip_closed_shut_frac"] is not None             # thresholds set for the test
+        assert "grip_closed_shut_frac" not in p                    # computed offline (amendment 35), and equal:
+        live = meas.free_signals(m["prev_segment"], *THRESHOLDS)
+        assert meas.gripper_fractions_of_point(p, *THRESHOLDS) == (live.grip_closed_shut_frac,
+                                                                   live.grip_closed_partial_frac)
 
 
 @requires_lerobot

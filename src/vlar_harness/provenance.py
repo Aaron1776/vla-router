@@ -1,9 +1,11 @@
-"""Provenance header for every record, and the freeze check (docs/SPEC.md §15).
+"""Provenance header for every record, and the freeze check (docs/SPEC.md §15, amendments 34, 35).
 
-The source digest covers every file of this package that can change behaviour (Python
-sources and configs). At the Phase 0 freeze it is written to
-`configs/<name>.frozen.json`; from then on `verify_freeze` refuses to run a harness
-whose digest differs, because any change to harness code is a new harness version.
+The source digest covers every file of this package that can change behaviour (Python sources and configs); the
+calibration file lives outside the package and is identified by its own hash (`calibration_hash`, in every record).
+The Phase 0 freeze (step 7) marks the calibration file frozen and writes `freeze.json` beside it: harness version,
+config hash, source digest, image digests, the final calibration hash and its lineage (earlier calibration versions
+whose write-once values are unchanged in the final file). From then on `verify_freeze` refuses to run a harness that
+differs from the record, and `in_lineage` tells which records count as v1.0.
 """
 
 from __future__ import annotations
@@ -14,8 +16,9 @@ import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
+from . import config as C
 from .config import CONFIG_DIR, DEFAULT_CONFIG, HarnessConfig
 
 PACKAGE_DIR = Path(__file__).parent
@@ -84,43 +87,77 @@ def record_header(cfg: HarnessConfig) -> dict[str, Any]:
     }
 
 
-def freeze_path(name: str = DEFAULT_CONFIG, config_dir: Path = CONFIG_DIR) -> Path:
-    return config_dir / f"{name}.frozen.json"
+FREEZE_FILE = "freeze.json"
 
 
-def write_freeze(cfg: HarnessConfig, golden_set: list[str], config_dir: Path = CONFIG_DIR) -> Path:
-    """Record the frozen harness identity (Phase 0 step 7). The config must say `frozen: true`."""
-    if not cfg.frozen:
-        raise FreezeError("set `frozen: true` and the release harness_version in the config first")
-    from .config import load_config
-    path = freeze_path(cfg.name, config_dir)
-    path.write_text(json.dumps({
+def freeze_path(cfg: HarnessConfig) -> Path:
+    if not cfg.calibration_path:
+        raise FreezeError("no calibration file: the freeze record lives beside it (amendment 35)")
+    return Path(cfg.calibration_path).with_name(FREEZE_FILE)
+
+
+def write_freeze(golden_set: list[str], calibration: Any = C.FROM_ENV, name: str = DEFAULT_CONFIG,
+                 config_dir: Path = CONFIG_DIR) -> Path:
+    """Phase 0 step 7: freeze the calibration file and record the frozen harness identity beside it. The write-once
+    group must be complete; the frozen config must validate (no placeholders)."""
+    target = C.calibration_target(calibration)
+    cfg = C.load_config(name, config_dir, calibration=target)
+    if not cfg.write_once_complete:
+        raise FreezeError(f"write-once calibration values missing: {list(cfg.write_once_missing)}")
+    C.write_calibration({}, target, name=name, config_dir=config_dir, note="v1.0 freeze", freeze=True)
+    cfg = C.load_config(name, config_dir, calibration=target)           # default options
+    rec = {
         "harness_version": cfg["harness_version"],
-        "config_hash": load_config(cfg.name, config_dir).hash,   # default options
+        "config_hash": cfg.hash,
         "source_digest": source_digest(),
+        "image_digests": image_digests(),
+        "calibration_hash": cfg.calibration_hash,
+        "calibration_lineage": C.calibration_lineage(target, name, config_dir),
         "golden_set": list(golden_set),
         "frozen_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }, indent=2) + "\n")
+    }
+    path = freeze_path(cfg)
+    path.write_text(json.dumps(rec, indent=2) + "\n")
     return path
 
 
+def read_freeze(path: Path) -> dict[str, Any]:
+    return json.loads(Path(path).read_text())
+
+
+def in_lineage(rec: dict[str, Any], calibration_hash: Optional[str]) -> bool:
+    """Whether a record made under `calibration_hash` counts as the frozen version (amendment 35)."""
+    return calibration_hash is not None and (calibration_hash == rec["calibration_hash"]
+                                             or calibration_hash in rec["calibration_lineage"])
+
+
 def verify_freeze(cfg: HarnessConfig, config_dir: Path = CONFIG_DIR) -> dict[str, Any] | None:
-    """For a frozen config, check the code and config are exactly what was frozen."""
+    """For a frozen calibration file, check code, config and calibration are exactly what was frozen, and re-check
+    the lineage: every listed version is present, hashes to its name and has the final write-once values."""
     if not cfg.frozen:
         return None
-    path = freeze_path(cfg.name, config_dir)
+    path = freeze_path(cfg)
     if not path.exists():
-        raise FreezeError(f"config is frozen but {path.name} is missing")
-    rec = json.loads(path.read_text())
+        raise FreezeError(f"the calibration file is frozen but {path} is missing")
+    rec = read_freeze(path)
     problems = []
     if rec["harness_version"] != cfg["harness_version"]:
         problems.append("harness_version")
     if rec["source_digest"] != source_digest():
         problems.append("source code or config files")
     # The option choices change the hash, so compare against the default-options config.
-    from .config import load_config
-    if rec["config_hash"] != load_config(cfg.name, config_dir).hash:
+    if rec["config_hash"] != C.load_config(cfg.name, config_dir, calibration=cfg.calibration_path).hash:
         problems.append("config values")
+    if rec["calibration_hash"] != cfg.calibration_hash:
+        problems.append("calibration file")
+    else:
+        try:
+            lineage = C.calibration_lineage(Path(cfg.calibration_path), cfg.name, config_dir)
+        except C.ConfigError as e:
+            problems.append(f"calibration lineage ({e})")
+        else:
+            if sorted(lineage) != sorted(rec["calibration_lineage"]):
+                problems.append("calibration lineage (versions missing, added or changed)")
     if problems:
         raise FreezeError(f"harness differs from frozen {rec['harness_version']} in: {', '.join(problems)}. "
                           "Any harness change needs a new version and the Phase 0 tests (§15).")

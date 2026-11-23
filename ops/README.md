@@ -107,8 +107,27 @@ Steps (`ops/vm/phase0/steps/`): `010` load the images (waits for the driver), `0
 reference check, `020` weights at the pinned revisions (SHA-256 to `logs/weights.SHA256SUMS`) and the gated
 tokenizer from `gs://$BUCKET/vla-router/hf-tokenizer/` (copied there from a logged-in machine, envs/README.md),
 `030`/`040`/`050` the VM re-run rows (simulator; X-VLA; π0.5, which needs the tokenizer), each row's result in
-`logs/results/`, and `090` the verdict (any failed row stops the VM; rows not run need the user). Metadata
-`vlar-runner=off` (`VLAR_RUNNER=off 30_create_vm.sh`) boots without the runner for manual work.
+`logs/results/<image commit>/`, and `090` the verdict (any failed row stops the VM; rows not run need the user).
+Metadata `vlar-runner=off` (`VLAR_RUNNER=off 30_create_vm.sh`) boots without the runner for manual work.
+
+**Stage B (amendments 34, 35).** The calibration file lives in `/etc/vlar/calibration/` on the VM (`calibration.yaml`,
+every version in `versions/<sha256>.yaml`, later `freeze.json`), read-only in every container (`VLAR_CALIBRATION`),
+written only through `python -m vlar_harness.calfile write` in the sim image, and synced to
+`gs://$BUCKET/vla-router/calibration/` after every write (restored from there on boot when missing). Its write-once
+group (π0.5 latency, upload size, batch geometry) is set by `200` and never changes; workers refuse to run without it.
+Steps: `200` step 2 (capture, GPU bench per batch size, the geometry rule, unpadded latencies, upload size, gripper
+widths; exit 75 if deterministic fixed batching is too slow; sub-results in `phase0/step2/<image commit>/`), `210`
+the L4 batch-invariance rows at the chosen geometry (skipped at 8/40), `300` the π0.5 parity run with the production
+workers, its gate (`vlar-ops parity gate`: exit 76 on a fail) and a manifest over its records, which queues `400`
+on a pass, `400` the 500 base rollouts. To run stage B on new images, once the VM has stopped:
+
+```bash
+BUILD_PROVISIONING=STANDARD caffeinate -i -s ops/gcp/35_build_images.sh   # the one rebuild (CPU VM, on-demand)
+gcloud compute instances add-metadata vlar-l4 --zone us-central1-a \
+  --metadata vlar-images-url=gs://$BUCKET/containers/<full commit>
+ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{010,015,030,040,050,090,200,210,300}-*.sh
+gcloud compute instances start vlar-l4 --zone us-central1-a && ops/gcp/32_watch_vm.sh
+```
 
 ## Every start (including after a preemption)
 

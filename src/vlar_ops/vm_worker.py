@@ -4,7 +4,9 @@ Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch a
 1. loads the harness config with the named options given (`--option name=choice`), and refuses a frozen harness
    whose code or config differ from its freeze record (provenance.verify_freeze). A frozen harness must also pass
    the golden-set self-check (§15) before any job; that check is written with the freeze (Phase 0 step 7), so
-   until then a frozen config is refused here;
+   until then a frozen config is refused here. It also refuses to run without the calibration file
+   (VLAR_CALIBRATION) and its complete write-once group (upload size, π0.5 latency, batch geometry: Phase 0 step 2,
+   amendment 35), so no record is ever made under placeholder values that would change outcomes;
 2. checks the pinned reference files it runs: the authors' X-VLA client and LeRobot's LIBERO and π0.5 files;
 3. waits for both model servers' /info and checks they run the configured fixed batch geometry with the
    deterministic settings (amendment 24): a server started otherwise (Phase 0 step 2's unpadded latency runs)
@@ -14,8 +16,8 @@ Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch a
 5. runs `worker.run_worker` with the spend guard's stop flag (`<local_root>/STOP`): once the flag is up no job is
    claimed; a SIGTERM or Ctrl-C abandons the current job cleanly (lease released, no marker). A job the worker's
    options cannot run is given back and the worker stops (exit status 3).
-Every result marker carries the provenance header (harness version, config hash and options, source digest, git
-commit, image digests), the worker id, p_escalate and the servers' settings, so the dataset manifest can check
+Every result marker carries the provenance header (harness version, config hash and options, calibration hash,
+source digest, git commit, image digests), the worker id, p_escalate and the servers' settings, so the dataset manifest can check
 that nothing from different harness versions is mixed (§15). Staged files are deleted after each job.
 """
 
@@ -152,6 +154,9 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     from vlar_harness.config import load_config
 
     cfg = load_config(**dict(options))
+    if not cfg.write_once_complete:
+        raise StartupError("no calibration file with the complete write-once group (VLAR_CALIBRATION; Phase 0 "
+                           f"step 2, amendment 35): missing {list(cfg.write_once_missing)}")
     provenance.verify_freeze(cfg)
     if cfg.frozen:
         raise StartupError("frozen harness: the golden-set self-check (§15) must pass before any job, and it is "

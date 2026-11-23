@@ -31,14 +31,14 @@ class Runner:
     def __init__(self, cfg, make_episode: Callable[[int], Any], read_bytes: Callable[[str], Optional[bytes]],
                  staging: Path | str, *, p_escalate: float, header: Optional[Mapping[str, Any]] = None):
         """`header` goes into every snapshot and run record: on the VM, provenance.record_header(cfg) (harness
-        version, config hash and options, source digest, git commit, image digests, §15)."""
+        version, config hash and options, calibration hash, source digest, git commit, image digests, §15)."""
         self.cfg, self.make_episode, self.read_bytes = cfg, make_episode, read_bytes
         self.staging, self.p_escalate = Path(staging), float(p_escalate)
-        self.header = {"harness_version": cfg["harness_version"], "config_hash": getattr(cfg, "hash", None)}
+        self.header = {"harness_version": cfg["harness_version"], "config_hash": getattr(cfg, "hash", None),
+                       "calibration_hash": getattr(cfg, "calibration_hash", None)}
         if header is not None:
-            if (header.get("harness_version"), header.get("config_hash")) != \
-                    (self.header["harness_version"], self.header["config_hash"]):
-                raise ValueError("the record header is for another harness version or config")
+            if any(header.get(k) != v for k, v in self.header.items()):
+                raise ValueError("the record header is for another harness version, config or calibration file")
             self.header = dict(header)
 
     def job_dir(self, job) -> Path:
@@ -93,7 +93,7 @@ class Runner:
                     out.put_snapshot(sid, ep.snapshot(header=self.header))
                     out.put_images(episode_id, dp.index, {k: ep.sim.obs[k] for k in ep.sim.camera_keys})
                     out.add_point(episode_id, m, budget_remaining_steps=dp.budget_remaining_steps, snapshot_id=sid,
-                                  thresholds=ep.gripper_thresholds, n_samples=ep.K)
+                                  n_samples=ep.K)
                     points += 1
                 dp = ep.decide(self._choice(job.phase, ep, dp)).next_point
         else:
@@ -134,6 +134,6 @@ def _run_row(run_id: str, kind: str, st, res, **extra) -> dict:
            "record": st.record, "time_limit": bool(res.time_limit), "time_limit_s": st.time_limit_s,
            "success": bool(res.success), "end_reason": res.end_reason, "steps": res.steps,
            "success_step": res.success_step, "pi05_steps": res.pi05_steps, "pi05_requests": res.pi05_requests,
-           "pi05_failed_requests": res.pi05_failed_requests, "sim_time_s": res.sim_time_s}
+           "pi05_failed_requests": res.pi05_failed_requests}     # no clock: re-scored offline (amendment 35)
     row.update(extra)
     return row

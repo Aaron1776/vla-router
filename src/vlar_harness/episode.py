@@ -66,7 +66,7 @@ from . import measure as meas
 from . import seeding
 from .api import (CommonInputs, DecisionPoint, DeciderInputs, EpisodeResult, Proposal, SegmentOutcome, SpreadSummary,
                   Drift, check_reset)
-from .config import BRANCHES, PROFILES
+from .config import BRANCHES, PROFILES, CalibrationNotFrozen
 from .network import DirectLink, RemoteLink, RemoteOutcome, SimulatedNetwork, check_outcome  # noqa: F401
 
 MODES = ("routed", "xvla_only", "pi05_only")
@@ -155,6 +155,9 @@ class Episode:
         self.K = int(cfg["measurement"]["K"])
         thr = cfg["measurement"]["gripper_thresholds"]
         self.gripper_thresholds = (thr.get("shut_width_m"), thr.get("open_width_m"))
+        # Live calibration-dependent values (the live time cut, observe()) refuse until the calibration file is
+        # frozen (amendments 34, 35); scripted runs are scored offline from their logs.
+        self.calibration_frozen = bool(getattr(cfg, "frozen", False))
         self.chunk_len = int(cfg["models"]["xvla"]["chunk_len"])
         self.charges = clk.Charges.from_config(cfg)
         self.remote = remote if remote is not None else SimulatedNetwork(self.charges.network)
@@ -180,6 +183,9 @@ class Episode:
         Scripted runs leave it off and are scored offline. `record="full"` measures everything any decider could
         need at every decision point where escalation is offered (base, exploration and DAgger rollouts, §7)."""
         check_reset(mode, profile, time_limit)                # before anything touches the simulator
+        if time_limit and not self.calibration_frozen:
+            raise CalibrationNotFrozen("time_limit=True applies the calibrated limit live: it needs the frozen "
+                                       "calibration file (amendment 34)")
         if record not in RECORD_MODES:
             raise ValueError(f"record must be one of {RECORD_MODES}")
         if record == "full" and (mode != "routed" or self.measure_client is None):
@@ -465,7 +471,11 @@ class Episode:
     def observe(self, profile: Optional[str] = None) -> DeciderInputs:
         """The decider inputs at the current decision point (§6) for `profile` (default: the run's own). Another
         profile's view needs a recording run. `time_remaining_s` is always the run's own (training recomputes it
-        per profile from the event log, amendment 23)."""
+        per profile from the event log, amendment 23). Refuses until the calibration file is frozen (amendments 34,
+        35): the free signals use the gripper thresholds and the remaining time the calibrated limits."""
+        if not self.calibration_frozen:
+            raise CalibrationNotFrozen("observe() gives live decider inputs from calibrated values: it needs the "
+                                       "frozen calibration file (amendment 34)")
         st = self.state
         point = self.current_point()
         if point is None:

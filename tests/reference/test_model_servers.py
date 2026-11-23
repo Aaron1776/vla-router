@@ -67,11 +67,28 @@ def make_xvla_service(batching=None):
     return XVLAService(model, XVLAProcessor.from_pretrained(XVLA_CONFIG_DIR), batching)
 
 
+def calibrated_geometry():
+    """The production batch geometry from the calibration file when VLAR_CALIBRATION names one with the write-once
+    group (Phase 0 step 2's re-check at the chosen geometry, amendment 35), else None (the servers' defaults)."""
+    import os
+    if not os.environ.get("VLAR_CALIBRATION"):
+        return None
+    from vlar_harness.config import load_config
+    cfg = load_config()
+    if not cfg.write_once_complete:
+        raise RuntimeError(f"VLAR_CALIBRATION is set but the write-once group misses {cfg.write_once_missing}")
+    b = cfg["servers"]["batching"]
+    return int(b["max_batch"]), int(b["xvla_sample_rows"])
+
+
 def cpu_geometry():
     """A small fixed geometry for the random-weight CPU runs (the invariance argument does not depend on the
-    sizes); the VM runs use the production geometry."""
+    sizes); the VM runs use the production geometry: the calibration file's once step 2 has chosen it."""
     from vlar_harness.servers.xvla_server import XVLABatching
-    return XVLABatching(max_batch=3, sample_rows=6, steps=10) if DEVICE == "cpu" else None
+    if DEVICE == "cpu":
+        return XVLABatching(max_batch=3, sample_rows=6, steps=10)
+    geo = calibrated_geometry()
+    return None if geo is None else XVLABatching(max_batch=geo[0], sample_rows=geo[1])
 
 
 @pytest.fixture(scope="module")

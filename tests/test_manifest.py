@@ -24,9 +24,9 @@ from vlar_ops.queue import JobQueue
 from vlar_ops.storage import LocalStorage
 from vlar_ops.worker import run_worker
 
-PROV = {"harness_version": "1.0.0.dev0", "config_name": "harness-v1", "config_hash": "c" * 64,
-        "config_options": {"scene_seed": "project"}, "source_digest": "s" * 64, "commit": "a" * 40,
-        "harness_dirty": False, "image_digests": {}}
+PROV = {"harness_version": "1.0.0", "config_name": "harness-v1", "config_hash": "c" * 64,
+        "config_options": {"scene_seed": "project"}, "calibration_hash": "1" * 64, "source_digest": "s" * 64,
+        "commit": "a" * 40, "harness_dirty": False, "image_digests": {}}
 
 
 def runner_for(staging, header):
@@ -67,6 +67,8 @@ def test_a_clean_dataset_gets_a_manifest_and_verifies(tmp_path):
     assert m["configs"] == {PROV["config_hash"]: {"config_name": "harness-v1", "options": {"scene_seed": "project"},
                                                   "jobs": 2}}
     assert m["phases"] == {"base": {"episode_runs": 2, "jobs": 2}}
+    assert m["calibrations"] == {"1" * 64: 2} and m["freeze"] is None
+    assert m["warnings"] == [f"calibration hashes not checked against a freeze record (--freeze): {'1' * 12} (2 jobs)"]
     assert m["tables"]["runs"] == {"parts": 2, "rows": 2} and m["tables"]["steps"]["rows"] == 6
     # every file in the tree except the manifest itself, the datacard separately
     tree = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
@@ -118,7 +120,27 @@ def test_options_and_commits_may_differ_and_dirty_code_is_a_warning(tmp_path):
     root = make_dataset(tmp_path, provs=(PROV, other))
     m = manifest.build(root)
     assert set(m["configs"]) == {"c" * 64, "d" * 64} and m["git_commits"] == ["a" * 40, "b" * 40]
-    assert m["warnings"] == ["1 job(s) ran a harness with uncommitted changes (harness_dirty)"]
+    assert m["warnings"][1:] == ["1 job(s) ran a harness with uncommitted changes (harness_dirty)"]
+
+
+def test_calibration_hashes_must_be_in_the_freeze_lineage(tmp_path):
+    """Amendment 35: parity and base records made under earlier calibration versions with the same write-once
+    values count as v1.0; anything else, or no calibration hash, stops the build."""
+    later = {**PROV, "calibration_hash": "2" * 64}
+    root = make_dataset(tmp_path, provs=(PROV, later))
+    freeze = tmp_path / "freeze.json"
+    freeze.write_text(json.dumps({"harness_version": "1.0.0", "calibration_hash": "3" * 64,
+                                  "calibration_lineage": ["1" * 64, "2" * 64]}))
+    m = manifest.build(root, freeze=freeze)
+    assert m["calibrations"] == {"1" * 64: 1, "2" * 64: 1} and m["freeze"]["calibration_hash"] == "3" * 64
+    assert not any("calibration" in w for w in m["warnings"])
+    freeze.write_text(json.dumps({"harness_version": "1.0.0", "calibration_hash": "3" * 64,
+                                  "calibration_lineage": ["2" * 64]}))
+    with pytest.raises(manifest.ManifestError, match="not the frozen file's nor in its lineage"):
+        manifest.build(root, freeze=freeze)
+    root2 = make_dataset(tmp_path / "b", provs=({**PROV, "calibration_hash": None},))
+    with pytest.raises(manifest.ManifestError, match="no calibration hash"):
+        manifest.build(root2)
 
 
 def test_a_run_row_that_disagrees_with_its_marker_stops_the_build(tmp_path):
@@ -128,6 +150,10 @@ def test_a_run_row_that_disagrees_with_its_marker_stops_the_build(tmp_path):
     m["meta"]["provenance"]["config_hash"] = "e" * 64
     marker.write_text(json.dumps(m))
     with pytest.raises(manifest.ManifestError, match="run row's config_hash differ"):
+        manifest.build(root)
+    m["meta"]["provenance"].update(config_hash="c" * 64, calibration_hash="2" * 64)
+    marker.write_text(json.dumps(m))
+    with pytest.raises(manifest.ManifestError, match="run row's calibration_hash differ"):
         manifest.build(root)
     del m["meta"]["provenance"]
     marker.write_text(json.dumps(m))

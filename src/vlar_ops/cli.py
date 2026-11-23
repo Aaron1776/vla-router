@@ -106,7 +106,7 @@ def cmd_dataset(a: argparse.Namespace) -> None:
     from . import manifest
     if a.action == "manifest":
         try:
-            m = manifest.build(a.root, quick=a.quick, move_unlisted=a.move_unlisted)
+            m = manifest.build(a.root, quick=a.quick, move_unlisted=a.move_unlisted, freeze=a.freeze)
         except manifest.ManifestError as e:
             sys.exit(f"no manifest written: {e}")
         print(json.dumps({k: m[k] for k in ("dataset", "harness_version", "configs", "phases", "tables", "totals",
@@ -136,6 +136,41 @@ def cmd_package(a: argparse.Namespace) -> None:
         problems = packaging.verify(a.out, deep=not a.quick)
         print("\n".join(problems) if problems else "verified")
         sys.exit(1 if problems else 0)
+
+
+def cmd_plan(a: argparse.Namespace) -> None:
+    """Write an episode plan (one job per task and initial state) with the phase's rollout-seed namespace."""
+    from .plan import episode_plan, load_collection_config
+
+    def span(text: str) -> list[int]:
+        lo, _, hi = text.partition("-")
+        return list(range(int(lo), int(hi or lo) + 1))
+    ns = int(load_collection_config()["rollout_seed_namespaces"][a.namespace or a.phase])
+    plan = episode_plan(a.phase, tasks=span(a.tasks), inits=span(a.inits), namespace=ns, mode=a.mode,
+                        profile=a.profile, record=a.record, order_seed=a.order_seed, scene=a.scene)
+    plan.write(Path(a.out))
+    print(f"{a.out}: plan {plan.plan_id} ({plan.phase}), {len(plan.jobs)} jobs, namespace {ns}")
+
+
+def cmd_parity(a: argparse.Namespace) -> None:
+    from vlar_harness.config import load_config
+    from . import parity
+    cal = load_config().calibration_hash
+    try:
+        res = parity.gate(a.records, a.references, calibration_hash=cal)
+    except parity.ParityRunInvalid as e:
+        sys.exit(f"parity run invalid, no verdict: {e}")
+    Path(a.out).write_text(json.dumps(res, indent=1, default=list))
+    print(json.dumps(res, indent=1, default=list))
+    if not res["passed"]:
+        print(f"GATE FAILED: McNemar p = {res['mcnemar_p']:.4f} < 0.05 (ours {res['ours']}/{res['n']}, "
+              f"reference {res['reference']}/{res['n']})")
+        sys.exit(parity.GATE_FAILED_EXIT)
+
+
+def cmd_step2(a: argparse.Namespace) -> None:
+    from . import step2
+    sys.exit(step2.run(a.cmd, a))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -174,12 +209,44 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--root", required=True, help="local copy of the bucket's dataset files")
     d.add_argument("--quick", action="store_true", help="check sizes only, not SHA-256")
     d.add_argument("--move-unlisted", help="manifest: move data files no result marker lists into this directory")
+    d.add_argument("--freeze", help="manifest: the v1.0 freeze record (freeze.json); every record's calibration hash "
+                                    "must be the frozen file's or in its lineage")
     d.set_defaults(fn=cmd_dataset)
 
     r = sub.add_parser("reference")
     r.add_argument("action", choices=["check"])
     r.add_argument("--dir", default="References")
     r.set_defaults(fn=cmd_reference)
+
+    pl = sub.add_parser("plan", help="write an episode plan for `queue add`")
+    pl.add_argument("kind", choices=["episodes"])
+    pl.add_argument("--phase", required=True)
+    pl.add_argument("--namespace", help="rollout-seed namespace name (default: the phase)")
+    pl.add_argument("--tasks", default="0-9")
+    pl.add_argument("--inits", required=True, help="e.g. 0-9 or 0-49")
+    pl.add_argument("--mode", required=True, choices=["routed", "xvla_only", "pi05_only"])
+    pl.add_argument("--profile", default="none")
+    pl.add_argument("--record", default="off", choices=["off", "full"])
+    pl.add_argument("--scene", default="project", help="the harness's scene_seed choice")
+    pl.add_argument("--order-seed", type=int, default=0)
+    pl.add_argument("--out", required=True)
+    pl.set_defaults(fn=cmd_plan)
+
+    pa = sub.add_parser("parity", help="the π0.5 parity gate (SPEC §11 step 4): exit 76 if it fails")
+    pa.add_argument("action", choices=["gate"])
+    pa.add_argument("--records", required=True, help="local copy of the bucket (records/runs/pi05_parity/)")
+    pa.add_argument("--references", default="References")
+    pa.add_argument("--out", required=True)
+    pa.set_defaults(fn=cmd_parity)
+
+    s2 = sub.add_parser("step2", help="Phase 0 step 2 measurements on the L4 (vlar_ops/step2.py)")
+    s2.add_argument("cmd", choices=["capture", "choose", "latency", "upload", "gripper", "updates"])
+    s2.add_argument("--out", required=True)
+    s2.add_argument("--obs", help="latency: the capture directory")
+    s2.add_argument("--xvla", help="choose: X-VLA bench JSON")
+    s2.add_argument("--pi05", help="choose: π0.5 bench JSON")
+    s2.add_argument("--dir", help="updates: the directory holding geometry/latency/upload/gripper.json")
+    s2.set_defaults(fn=cmd_step2)
 
     p = sub.add_parser("package")
     p.add_argument("action", choices=["build", "verify"])

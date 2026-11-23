@@ -618,8 +618,10 @@ def test_pi05_batched_requests_must_fit_the_fixed_geometry(pi05_tiny):
 
 @pytest.fixture(scope="module")
 def pi05_real():
-    from vlar_harness.servers.pi05_server import PI05Service
-    svc = PI05Service.load(PI05_CKPT, DEVICE)                # the production geometry
+    from vlar_harness.servers.pi05_server import PI05Batching, PI05Service
+    from test_model_servers import calibrated_geometry
+    geo = calibrated_geometry()                              # the production geometry (step 2's choice, if made)
+    svc = PI05Service.load(PI05_CKPT, DEVICE, None if geo is None else PI05Batching(max_batch=geo[0]))
     yield svc
     svc.close()
 

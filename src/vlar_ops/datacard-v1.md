@@ -45,11 +45,17 @@ with probability `p_escalate` per decision point while budget remains, §7), `pi
 ## Provenance and integrity (§13, §15)
 
 Every result marker's `meta.provenance` and every snapshot's header hold: `harness_version`, `config_name`,
-`config_hash` (the harness config with its named options), `config_options`, `source_digest` (SHA-256 over the
-harness package's code and configs), `commit` and `harness_dirty` (git), and `image_digests` (container images).
-Every `runs` row repeats `harness_version`, `config_hash` and `schema_version`. The manifest refuses to mix harness
+`config_hash` (the harness config's fixed settings with its named options), `config_options`, `calibration_hash`
+(SHA-256 of the Phase 0 calibration file in effect: latencies, batch geometry, worker count, gripper thresholds,
+upload size, time limits; amendments 34, 35), `source_digest` (SHA-256 over the harness package's code and
+configs), `commit` and `harness_dirty` (git), and `image_digests` (container images). Every `runs` row repeats
+`harness_version`, `config_hash`, `calibration_hash` and `schema_version`. The manifest refuses to mix harness
 versions, source digests or image digests; several config hashes may appear (named options, e.g. the parity run's
-scene seeds) and are listed with their options. `vlar-ops dataset verify --root <dir>` checks every file's size and
+scene seeds) and are listed with their options. Given the freeze record (`--freeze freeze.json`), every calibration
+hash must be the frozen file's or one in its lineage (earlier versions with the same write-once values: upload
+size, π0.5 latency, batch geometry). Clocks and the gripper fractions are not stored: re-score the event log under
+any profile, and compute the fractions from `prev_actions` and `prev_gripper_qpos` with the frozen thresholds
+(`vlar_harness.measure.gripper_fractions_of_point`). `vlar-ops dataset verify --root <dir>` checks every file's size and
 SHA-256 against the manifest and that no other file is present.
 
 ## Tables
@@ -89,8 +95,8 @@ One row per episode or branch run.
 | `pi05_steps` | int32 | Steps driven by π0.5 (the budget counts these, §4). |
 | `pi05_requests` | int32 | π0.5 requests that got through. |
 | `pi05_failed_requests` | int32 | π0.5 requests abandoned after their retries. |
-| `sim_time_s` | double | The simulated clock at the end, under the run's own profile (§5). Other profiles: re-score the event log. |
-| `config_hash` | string | Harness config hash (with options). |
+| `config_hash` | string | Harness config hash: fixed settings with the named options (not the calibration). |
+| `calibration_hash` | string | SHA-256 of the Phase 0 calibration file in effect (amendment 35); v1.0 records have the frozen file's hash or one in its lineage (`freeze.json`). |
 | `harness_version` | string | Harness version. |
 | `schema_version` | int32 | This schema's version, 1. |
 
@@ -171,8 +177,6 @@ One row per measured decision point (routed runs with `record="full"`): everythi
 | `track_pos_err` | double | X-VLA segments: mean distance between the controller's pose after each step and that step's target. |
 | `track_rot_err` | double | Same, rotation angle (rad). |
 | `tracking_valid` | bool | Whether the tracking errors apply (false after a π0.5 segment, whose actions are deltas). |
-| `grip_closed_shut_frac` | double | Fraction of the previous segment's steps commanded closed whose fingers are shut (width at most the shut threshold); null until Phase 0 calibrates the thresholds, computable later from `prev_gripper_qpos` and `prev_actions`. |
-| `grip_closed_partial_frac` | double | Same, fingers partly open (between the two thresholds). |
 
 The spread, drift and free-signal definitions are `vlar_harness/measure.py` (its docstring states every choice);
 they are pure functions of the raw samples and segments stored above, so new summaries can be computed offline.

@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-22)
+# Handoff: state of the harness build (2026-11-23)
 
 For a session that starts without the previous conversation. Read this file at startup; read `docs/SPEC.md` (the
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
@@ -76,7 +76,9 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | VM worker entry point (`vlar_ops/vm_worker.py`, `vlar-ops worker`: production factory with `XVLAClient`/`PI05Client`, one `LiberoSim` per task, server geometry and deterministic checks, the spend guard's `StopFlag`, clean abandon on SIGTERM, refuse-and-stop for jobs the worker's options cannot run, provenance in markers and snapshots, `ops/vm/vlar-worker@.service`); dataset manifest and datacard (`vlar_ops/manifest.py`, `vlar_ops/datacard-v1.md`, `vlar-ops dataset manifest`/`verify`) (HARNESS.md "VM worker entry point, dataset manifest and datacard") | done on Mac; VM smoke run pending | the commit after `1683b56` |
 | Container definitions (amendments 28-30; HARNESS.md "Container images and lockfiles"): Dockerfile, hashed locks at the notebook's versions, CPU build VM, L4 loader with driver check, service units, `tests/test_containers.py` | done on the Mac | the commit after `1e92964` |
 | Phase 0 step 0: container images built and tested on a CPU build VM, exported to the bucket (amendments 28, 31-33) | done | `be7b95a` |
-| VM bring-up; Phase 0 runs (latency and upload measurement, parity, base rollouts, calibration, freeze) | not started; the L4 waits for the user's go-ahead | |
+| Phase 0 stage A on the L4 (images `be7b95a`): image load, host checks, weights, VM re-run rows, verdict | running (step 030 at 05:05Z) | `94b1966`, `6690b19` |
+| Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
+| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | stage B ready to queue after commit, rebuild and the user's approval | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
 **Tests after the container definitions (Mac, 2026-11-22).** Main venv 158 passed, 13 skipped (`tests/test_containers.py` 19); simulator env 125 passed, 17 skipped; `uv pip install --dry-run` of every lock for cp313 linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4.
@@ -225,6 +227,15 @@ Spec amendments, all approved by the user and logged in SPEC §17:
 30. Python (2026-11-22; §2, §11, §15): all three images run CPython 3.13.16, the notebook's (runtime-check cell; the
     X-VLA venv was built on it with `--system-site-packages`), a hash-pinned standalone build; locks re-resolved for
     cp313 (same pinned versions); the Python version is part of the parity checklist's version check.
+31-33. (2026-11-22, image builds) sdists built as the notebook did (CMake <4.2, policy minimum 3.5); LIBERO reads
+    the pinned assets at `~/.cache/libero/assets`; CPU batch invariance in the images within tolerance, exact on the L4.
+34. (2026-11-22) Phase 0 calibration in its own file (hashed, in the bucket, read-only in the containers, in every
+    record, pinned by the freeze); no rebuild after the measurements; base rollouts count as v1.0; live
+    calibration-dependent values refuse until frozen; tokenizer pinned at 35e4f46.
+35. (2026-11-22) The four exceptions: write-once group (π0.5 latency, upload size, batch geometry) set in step 2
+    before parity; calibration hash in every record; freeze pins the final file plus its lineage and verifies it;
+    `sim_time_s` dropped; gripper fractions offline, `observe()` refuses until frozen; batch geometry in the
+    calibration file, one image rebuild in all.
 
 Implementation decisions and findings, recorded in `docs/HARNESS.md` (with the tests that show them):
 - The reference stack: LeRobot 0.6.1, hf-libero 0.1.4, robosuite 1.4.0, MuJoCo 3.8.1, file hashes pinned in
@@ -284,6 +295,52 @@ confirm when it is approved. Nothing in effort steps 4-5 depends on it; it gates
 any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
+
+**START HERE (2026-11-22): stage B of Phase 0, at xhigh.** Stage B's code is committed on `harness-v1` (the commit
+after `c991493`; amendment 35, HARNESS.md "Calibration file and stage B", ops/README.md "Stage B"). Nothing of
+stage B is built or queued yet. In order:
+1. **Open decision (ask the user if not yet answered):** approve the two rules proposed with stage B, or change them
+   *before the rebuild* (they are in `src/vlar_ops/step2.py`, which ships in the sim image): the geometry rule
+   (`choose_geometry`: sizes 1-16 whose two models' deterministic peak memory sums to <= 20 GB; the smallest whose
+   deterministic GPU cost per request is within 10% of the best; stop with exit 75 if deterministic mode costs
+   > 1.25x the non-deterministic run there; workers = 2 x max_batch, at most 12) and the gripper procedure
+   (`gripper`: delta mode, no arm motion, open then closed on nothing for 30 steps each, tasks 0, 3, 6 at initial
+   state 0; thresholds 10% of the range inside the measured widths). Tests: `tests/test_step2.py`.
+2. **Stage A's verdict.** `export PATH=$HOME/google-cloud-sdk/bin:$PATH; source ops/gcp/env.sh`, then
+   `gcloud storage cat gs://$BUCKET/vla-router/phase0/STATE.json` and `.../history.jsonl`, or `ops/gcp/32_watch_vm.sh`.
+   At 05:05Z on 2026-11-23 it was running step 030 (started 04:35:51Z, cap 3 h; spend $0.39). Tell the user when and
+   why the VM stopped. Look in `gs://$BUCKET/vla-router/phase0/logs/runner.log` for the unexplained 27-minute gap
+   between 020's end (04:08:25Z) and 030's start (04:35:51Z); there was no reboot. If any re-run row failed: stop,
+   report, no debugging without the user (an exact-equality failure is an effort checkpoint, SPEC §16); a fix goes
+   into the one rebuild. A stopped VM may stay stopped at most a day (pause rule below).
+3. **The one rebuild** (only with the user's go-ahead; about 85 min, about $0.40), from the clean stage B commit:
+   `BUILD_PROVISIONING=STANDARD caffeinate -i -s ops/gcp/35_build_images.sh`. It builds `git rev-parse HEAD`, runs the
+   in-container tests on the CPU VM and uploads to `gs://$BUCKET/containers/<full commit>/`; it deletes its VM and
+   confirms. Then record the commit, image digests and test counts here.
+4. **Queue stage B** (only once the L4 is STOPPED, and from the same commit as the images, tree clean):
+   ```bash
+   gcloud compute instances add-metadata vlar-l4 --zone us-central1-a \
+     --metadata vlar-images-url=gs://$BUCKET/containers/<full commit>
+   ops/gcp/31_phase0_queue.sh ops/vm/phase0/steps/{010,015,030,040,050,090,200,210,300}-*.sh
+   gcloud compute instances start vlar-l4 --zone us-central1-a && ops/gcp/32_watch_vm.sh
+   ```
+   (If the VM was deleted under the pause rule: recreate it with `IMAGES_COMMIT=<full commit> ops/gcp/30_create_vm.sh`
+   and queue `020-weights.sh` too.) The VM installs the new host source on boot, `010` loads the new images (the old
+   ones stay loaded), `030`-`090` re-run the test rows on them (results in `phase0/logs/results/<commit>/`), `200`
+   measures step 2 and writes the calibration file (`gs://$BUCKET/vla-router/calibration/`; sub-results in
+   `phase0/step2/<commit>/`), `210` re-checks batch invariance at the chosen geometry, `300` runs parity, its gate
+   (`phase0/parity/gate.json`) and a manifest check, and on a pass queues `400` (500 base rollouts). Estimated 6-8 L4
+   hours, about $3-4 plus disk $0.33/day.
+5. **While it runs:** report to the user which steps are safe unattended (all of them run under systemd; the VM stops
+   itself on a failure, exit 75 or 76, or an empty queue) and the spend guard's total at each major step
+   (`history.jsonl`). Exit 75 at `200` means deterministic fixed batching is too slow: bring
+   `phase0/step2/<commit>/geometry.json` to the user (amendment 24). Exit 76 at `300` means parity failed: stop, no
+   debugging. The write-once group, once written, never changes; to redo it the calibration file would have to be
+   discarded before any record exists, which only the user decides.
+6. **After the base rollouts (not scripted yet):** the relative handoff check (HARNESS.md re-run list, "after Phase 0
+   step 5"), step 6 (`python -m vlar_harness.calibration --base ... --parity ... --write` in the sim image with the
+   calibration directory mounted read-write and `VLAR_CALIBRATION` set), step 7 (golden set, `provenance.write_freeze`,
+   the golden-set self-check the worker requires before it runs a frozen harness).
 
 **Created in Google Cloud (Phase 0 stage 1, 2026-11-22, approved by the user; nothing that bills by the hour):**
 - APIs enabled: compute, storage, iam, logging, monitoring, billingbudgets.
@@ -418,38 +475,26 @@ bucket by `ops/gcp/31_phase0_queue.sh`; `ops/gcp/32_watch_vm.sh` follows `STATE.
 Tests: `tests/test_phase0_runner.py` (fake gcloud/systemctl/vlar-ops/timeout; order, queueing from a step,
 needs-input stays queued, gate failure, failure and time cap, STOP flag, SIGTERM).
 
-**NEXT (start here; xhigh): stage B, under amendment 34 (SPEC §17, approved 2026-11-22).** Calibration lives in
-its own file (hashed, in the bucket, mounted read-only, its hash in every record, pinned by the v1.0 freeze); code
-and fixed settings stay in the images and the source digest; no rebuild after the measurements; base rollouts count
-as v1.0; live calibration-dependent values refuse to run until the calibration file is frozen. The verification
-(amendment 34's second paragraph) found four exceptions; **ask the user to confirm this proposed handling first**:
-(1) network timeouts depend on upload size and π0.5 latency: make those set-once keys written in step 2 before the
-first π0.5-calling run (the writer refuses to change a key once set), every record carries the calibration hash at
-run time, and the freeze pins the final hash plus the lineage of earlier hashes whose every value is unchanged in it;
-the manifest accepts records whose hash is in that lineage (so parity and base records count as v1.0);
-(2) drop `sim_time_s` from the runs table (scoring is offline); (3) stop computing `grip_closed_*_frac` at collection
-and compute them offline from `prev_gripper_qpos`/`prev_actions` (live `observe()` keeps computing them, refusing
-until frozen); (4) the batch geometry stays a fixed setting, decided in step 2 before parity (amendment 24: if padding
-is too slow, stop and ask); changing it means a rebuild.
-One image rebuild is unavoidable before step 2: the calibration-file mechanism, the refusals and (2)-(3) are harness
-code. Then re-queue the re-run rows (030-090) on the new images before the freeze (about 1.5 h, about $0.70): stage A
-certifies `be7b95a`'s code and the L4 platform, not the new code. Stage B work list:
-- Calibration file: `VLAR_CALIBRATION` (on the VM `/etc/vlar/calibration.yaml`, inside the existing read-only
-  `/etc/vlar` mount of every unit and test row) merged over the base config's placeholders; written on the VM host
-  (`config.write_calibration` moved off the package dir) and synced to `gs://$BUCKET/vla-router/calibration/`;
-  `calibration_hash` in `provenance.record_header` (runs, markers, snapshots); the freeze pins it (amendment 34).
-  Refusals: `Episode.start(time_limit=True)` and `Episode.observe()` unless the calibration is frozen.
-- Step 2 tools (vlar_ops, run in the images): unpadded latency medians (servers at `--max-batch 1`, X-VLA
-  `--sample-rows 5`: `/act`, `/features`, `/sample` K=5, π0.5 inference); throughput at the fixed geometry vs unpadded
-  1/2/4/8, deterministic on/off (padding cost; too slow -> exit 75); worker count; gripper thresholds (procedure still
-  to design: e.g. scripted fully-open / closed-on-nothing finger widths in the sim); upload size (π0.5-alone
-  decision points -> `PI05Client.upload_bytes` -> `network.median_upload_image_bytes`).
-- Parity step: plan (`plan.episode_plan`, phase `pi05_parity`, namespace 5000000, tasks 0-9 x inits 0-9), `vlar-ops
-  queue add`, servers + workers `--phase pi05_parity --option scene_seed=pi05_parity` (worker count from step 2),
-  then `reference_runs.compare` on the runs table: pass (`within_sampling_error`, McNemar p >= 0.05) queues the base
-  step into the bucket queue; fail exits 76 (stop, no debugging). Base step: 500 episodes, namespace 1000000, routed
-  X-VLA-only, record full. Then step 6 (`calibration --write`, time limits into the calibration file), step 7 (golden
-  set, freeze).
+**Stage B written (2026-11-22, at xhigh; committed and pushed on `harness-v1`, not built, nothing queued).** The user decided amendment
+34's four exceptions (amendment 35, SPEC §17): a write-once group in the calibration file (π0.5 latency, upload size,
+batch geometry), the record's calibration hash, the freeze pinning the final file plus its lineage; `sim_time_s`
+dropped; gripper fractions offline, `observe()` refusing until frozen; the batch geometry in the write-once group,
+not the images (no reason found against it: the servers already take it as start-up flags and the workers check it).
+Implemented (HARNESS.md "Calibration file and stage B"): `config.py` (file via `VLAR_CALIBRATION`, write-once
+writer, lineage; config hash without calibration; `harness_version` 1.0.0, `frozen` out of the base config),
+`provenance.py` (freeze record and checks), `calfile.py` (VM CLI), refusals in `episode.py`, `measure.py`
+(`gripper_fractions_of_point`), `dataset.py`/`collect.py` (calibration hash in runs, no `sim_time_s`, no fractions),
+`manifest.py` (`--freeze` lineage check), `vm_worker.py` (refuses without the write-once group),
+`servers/bench.py`, `vlar_ops/step2.py`, `vlar_ops/parity.py`, `vlar-ops plan|parity|step2`, units, `lib.sh`,
+`startup.sh` (restores the calibration from the bucket), `load_images.sh`, steps `200`, `210`, `300`, `400`.
+Tests (Mac): see the stage B line in the status table. **Waiting for the user:** approval of the two proposed rules
+(geometry rule and gripper procedure, HARNESS.md), then the one rebuild (`35_build_images.sh`, on-demand,
+about 85 min, about $0.40) once stage A has its verdict, then the queue commands in ops/README.md "Stage B".
+Estimated stage B on the L4: about 5-8 VM hours, about $2.50-3.70, plus disk $0.33/day.
+**Stage A at 05:05Z:** still running step 030 (sim re-run rows) since 04:35:51Z (cap 3 h), VM up, spend $0.39.
+Unexplained: 020 finished at 04:08:25Z but 030's start was written at 04:35:51Z; there was no reboot (serial log:
+one boot, 03:57:53Z). Check `logs/runner.log` for the gap when 030 ends (`pull_queue` or `vlar-ops spend status`
+hanging are the candidates).
 **Tokenizer (2026-11-22):** the user logged in to Hugging Face; revision `35e4f46` (the then-latest; the reference
 run's is unrecorded) with SHA-256 in SPEC §2, cached at `gs://$BUCKET/vla-router/hf-tokenizer/` (flattened, with
 `refs/main`); stage A's step 050 fetches it. Note for downloads: the new `hf` CLI needs one `--include` per pattern and
@@ -464,23 +509,6 @@ Spend guard ledger starts with this VM ($0 before it; the six build VMs, about $
 ledger until the weekly reconcile). Pause rule: if the VM stays stopped for more than a day, delete it and its disk
 (`gcloud compute instances delete vlar-l4 --zone us-central1-a --delete-disks=all`, then
 `vlar-ops spend disk-deleted --name vlar-l4-boot`).
-
-**Not yet written for Phase 0 (found 2026-11-22, needed before stage B):** (1) step 2 tooling: unpadded latency
-medians with the servers at max_batch 1 / sample-rows K (amendment 25), throughput at the fixed geometry vs unpadded
-with deterministic mode on/off (padding cost: if too slow, stop and ask), gripper-threshold calibration, the
-upload-size driver (`PI05Client.upload_bytes` -> `network.median_upload_image_bytes` -> `config.write_upload_size`);
-(2) the parity step: plan file (`plan.episode_plan`, phase `pi05_parity`, namespace 5000000, tasks 0-9 x inits 0-9),
-`vlar-ops queue add`, workers with `--phase pi05_parity --option scene_seed=pi05_parity`, the comparison of the runs
-table with `References/` (`reference_runs.compare`; gate = `within_sampling_error`, McNemar p >= 0.05) that queues the
-base rollouts on a pass and exits 76 on a fail; (3) the base-rollout step (500 episodes, namespace 1000000).
-**Decisions needed from the user before stage B:** (a) the harness config is baked into the images, so step 2's
-calibration (a harness source change) needs either an image rebuild before parity (CPU VM, about 85 min, about $0.40)
-or the calibration file mounted into the containers; (b) the base rollouts' provenance: the dataset manifest refuses
-mixed source digests, but step 6 writes the time limits (and step 7 the freeze) after the base rollouts, so their
-digest would differ from v1.0's although SPEC §11 step 7 reuses them; either keep step 6-7 outputs outside the source
-digest (pinned by the freeze file) or re-run the base rollouts after the freeze (about $4). (c) The gated PaliGemma
-tokenizer: no Hugging Face login on the Mac; the user logs in (`hf auth login`, account with Google's terms
-accepted), then the tokenizer files go to `gs://$BUCKET/vla-router/hf-tokenizer/` (envs/README.md's file list).
 
 **Milestone (2026-11-22):** all seven §18 items hold; the checkpoint was announced and the user's explicit go-ahead
 was given for stage 1 (scripts 10, 20, 40, done). Then Phase 0 at **xhigh**, in this order, each script

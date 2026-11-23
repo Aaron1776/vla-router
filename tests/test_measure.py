@@ -101,3 +101,19 @@ def test_free_signals_by_hand():
         M.free_signals(seg, None, 0.07)
     with pytest.raises(ValueError, match="one driver"):
         M.free_signals(seg[:1] + [dict(seg[1], driver="pi05")], **thr)
+
+
+def test_gripper_fractions_offline_equal_the_live_free_signals():
+    """Amendment 35: the points table stores only the raw segment; the fractions computed from its flattened
+    float32 actions and float64 finger positions equal the live ones."""
+    rng = np.random.default_rng(3)
+    seg = [{"driver": "xvla", "action": np.r_[rng.normal(size=6), g], "ee_pos": rng.normal(size=3),
+            "ee_ori_mat": np.eye(3), "gripper_qpos": np.array([w / 2, -w / 2])}
+           for g, w in zip(rng.choice([-1.0, 1.0], 10), rng.uniform(0.0, 0.08, 10))]
+    live = M.free_signals(seg, 0.01, 0.07)
+    row = {"prev_actions": np.asarray([r["action"] for r in seg], np.float32).ravel().tolist(),
+           "prev_gripper_qpos": np.asarray([r["gripper_qpos"] for r in seg]).ravel().tolist()}
+    assert M.gripper_fractions_of_point(row, 0.01, 0.07) == (live.grip_closed_shut_frac, live.grip_closed_partial_frac)
+    assert M.gripper_fractions_of_point({"prev_actions": [], "prev_gripper_qpos": []}, 0.01, 0.07) == (0.0, 0.0)
+    with pytest.raises(ValueError, match="uncalibrated"):
+        M.gripper_fractions_of_point(row, None, 0.07)

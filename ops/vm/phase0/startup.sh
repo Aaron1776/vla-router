@@ -34,7 +34,13 @@ if [[ "$(cat "${R}/.src" 2>/dev/null)" != "${SRC}" ]]; then
   echo "${SRC}" > "${R}/.src"
 fi
 sed "s#^storage_url: .*#storage_url: ${STORAGE_URL}#" "${R}/ops/ops.example.yaml" > "${R}/ops/ops.yaml"
-mkdir -p /etc/vlar
+mkdir -p /etc/vlar/calibration
+# The calibration file and its versions (amendment 35) survive a VM rebuild through the bucket. Restored only when
+# missing here: a local file is never replaced by an older copy.
+if [[ ! -e /etc/vlar/calibration/calibration.yaml ]]; then
+  gcloud storage rsync -r "${STORAGE_URL}/calibration" /etc/vlar/calibration >/dev/null 2>&1 \
+    && echo "calibration restored from ${STORAGE_URL}/calibration" || echo "no calibration in the bucket yet"
+fi
 printf 'VLAR_PHASE0_URL=%s\nVLAR_STORAGE_URL=%s\nVLAR_IMAGES_URL=%s\n' "${P0}" "${STORAGE_URL}" "${IMAGES_URL}" \
   > /etc/vlar/phase0.env
 cp "${R}"/ops/vm/vlar-{spend,phase0,xvla,pi05}.service "${R}/ops/vm/vlar-worker@.service" /etc/systemd/system/

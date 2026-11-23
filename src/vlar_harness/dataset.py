@@ -21,8 +21,9 @@ Tables (schema version 1; every array column is flattened row-major, shapes give
   snapshot id, robot state (11), proposal (10 x 7), both feature vectors (1024 each, float32), the raw chunk-time
   samples (K x 30 x 20, float32; at the point after they were drawn) or the raw probe (K x 30 x 20), the chunk
   spread, fresh spread and drift summaries, the previous segment (n steps of action 7, controller position 3,
-  rotation matrix 9, finger positions 2) with its tracking errors, and the gripper fractions (null until Phase 0
-  calibrates the thresholds; computable later from the stored segment).
+  rotation matrix 9, finger positions 2) with its tracking errors. The gripper fractions are not stored: they need
+  the calibrated thresholds and are computed offline from the stored segment (amendment 35,
+  measure.gripper_fractions_of_point).
 Nothing here is lossy: every value is the one the run produced, in its own precision.
 """
 
@@ -56,7 +57,7 @@ def _schemas():
         ("scene_seed", i64), ("rollout_seed", i64), ("parent_rollout_seed", i64), ("mode", s), ("profile", s),
         ("record", s), ("time_limit", b), ("time_limit_s", f64), ("success", b), ("end_reason", s), ("steps", i32),
         ("success_step", i32), ("pi05_steps", i32), ("pi05_requests", i32), ("pi05_failed_requests", i32),
-        ("sim_time_s", f64), ("config_hash", s), ("harness_version", s), ("schema_version", i32)])
+        ("config_hash", s), ("calibration_hash", s), ("harness_version", s), ("schema_version", i32)])
     steps = pa.schema([("run_id", s), ("step", i32), ("driver", s), ("action", fixed(f32, 7)),
                        ("eef_pos", fixed(f64, 3)), ("eef_quat", fixed(f64, 4)), ("gripper_qpos", fixed(f64, 2))])
     events = pa.schema([("run_id", s), ("seq", i32), ("t", s), ("step", i32), ("event", s)])
@@ -69,8 +70,7 @@ def _schemas():
         + [(f"drift_{k}", f64) for k in DRIFT]
         + [("prev_len", i32), ("prev_driver", s), ("prev_actions", pa.list_(f32)), ("prev_ee_pos", pa.list_(f64)),
            ("prev_ee_ori_mat", pa.list_(f64)), ("prev_gripper_qpos", pa.list_(f64)), ("track_pos_err", f64),
-           ("track_rot_err", f64), ("tracking_valid", b), ("grip_closed_shut_frac", f64),
-           ("grip_closed_partial_frac", f64)])
+           ("track_rot_err", f64), ("tracking_valid", b)])
     return {"runs": runs, "steps": steps, "events": events, "points": points}
 
 
@@ -119,7 +119,7 @@ class JobOutput:
     def __init__(self, staging: Path | str, phase: str, job_id: str, *, header: Mapping[str, Any]):
         self.dir = Path(staging) / phase / job_id
         self.phase, self.job_id = phase, job_id
-        self.header = dict(header)                     # harness_version, config_hash
+        self.header = dict(header)                     # harness_version, config_hash, calibration_hash
         self.rows: dict[str, list[dict]] = {t: [] for t in TABLES}
         self.files: list[tuple[str, Path]] = []
         self.images: dict[str, dict[str, bytes]] = {}  # episode id -> member -> PNG bytes
@@ -130,6 +130,7 @@ class JobOutput:
     def add_run(self, row: Mapping[str, Any]) -> None:
         self.rows["runs"].append({**row, "phase": self.phase, "job_id": self.job_id,
                                   "config_hash": self.header.get("config_hash"),
+                                  "calibration_hash": self.header.get("calibration_hash"),
                                   "harness_version": self.header.get("harness_version"),
                                   "schema_version": SCHEMA_VERSION})
 
@@ -147,13 +148,11 @@ class JobOutput:
                                         "event": json.dumps(e, sort_keys=True, allow_nan=True)})
 
     def add_point(self, run_id: str, m: Mapping[str, Any], *, budget_remaining_steps: int, snapshot_id: str,
-                  thresholds: tuple, n_samples: int) -> None:
+                  n_samples: int) -> None:
+        """The gripper fractions are not stored (amendment 35): they need the calibrated thresholds and are
+        computed offline from `prev_actions` and `prev_gripper_qpos` (measure.gripper_fractions_of_point)."""
         seg = m["prev_segment"]
         track = meas.tracking(seg)
-        grip = (None, None)
-        if thresholds[0] is not None and thresholds[1] is not None:     # zeros at episode start, as observe()
-            f = meas.free_signals(seg, *thresholds)
-            grip = (f.grip_closed_shut_frac, f.grip_closed_partial_frac)
         row = {"run_id": run_id, "index": int(m["index"]), "step": int(m["step"]), "kind": m["kind"],
                "chunk_pos": int(m["chunk_pos"]), "prev_segment_pi05": bool(m["prev_segment_pi05"]),
                "budget_remaining_steps": int(budget_remaining_steps), "snapshot_id": snapshot_id,
@@ -167,8 +166,7 @@ class JobOutput:
                "prev_ee_pos": _flat([r["ee_pos"] for r in seg], np.float64) if seg else [],
                "prev_ee_ori_mat": _flat([r["ee_ori_mat"] for r in seg], np.float64) if seg else [],
                "prev_gripper_qpos": _flat([r["gripper_qpos"] for r in seg], np.float64) if seg else [],
-               "track_pos_err": track[0], "track_rot_err": track[1], "tracking_valid": track[2],
-               "grip_closed_shut_frac": grip[0], "grip_closed_partial_frac": grip[1]}
+               "track_pos_err": track[0], "track_rot_err": track[1], "tracking_valid": track[2]}
         for group, names in (("chunk_spread", SPREAD), ("fresh_spread", SPREAD), ("drift", DRIFT)):
             summary = m[group]
             for k in names:

@@ -75,13 +75,20 @@ def other_sim():
 
 @pytest.fixture(scope="module")
 def cfg_with_limit(tmp_path_factory):
-    """The harness config with every task's time limit set through the calibration file (the production path)."""
+    """The harness config with every task's time limit set through a frozen calibration file (the production path:
+    the live time cut refuses until the calibration is frozen, amendment 34)."""
+    from calib_testkit import frozen_config
+
     def make_cfg(limit_s):
-        d = tmp_path_factory.mktemp("cfg")
-        shutil.copy(C.CONFIG_DIR / "harness-v1.yaml", d / "harness-v1.yaml")
-        C.write_calibration({"time_limit": {"per_task_s": {t: float(limit_s) for t in range(10)}}}, config_dir=d)
-        return C.load_config(config_dir=d)
+        return frozen_config(tmp_path_factory.mktemp("cal"), limit_s=limit_s)
     return make_cfg
+
+
+def test_live_time_limit_refuses_until_the_calibration_is_frozen(sim):
+    from vlar_harness.config import CalibrationNotFrozen
+    ep = make(sim)
+    with pytest.raises(CalibrationNotFrozen):
+        ep.start(INIT, ROLLOUT, "routed", profile="router", time_limit=True)
 
 
 def make(sim, cfg=CFG, link=None, transport=None, on_step=None):
