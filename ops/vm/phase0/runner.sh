@@ -102,6 +102,9 @@ finish() {       # finish <state> <reason>: stop GPU work, sync everything, reco
 }
 
 on_term() {      # preemption or a manual stop: abandon the step (it stays queued and re-runs on the next boot)
+  say "SIGTERM during ${CURRENT:-no step}: abandoning it (it stays queued)"
+  [[ -n "$CURRENT" ]] && history "$CURRENT" interrupted 143 0
+  sync_files
   [[ -n "$CHILD" ]] && kill -TERM "$CHILD" 2>/dev/null
   if [[ -e "$STOP_FLAG" ]]; then
     write_state stopped "$CURRENT" "the spend guard reached its hard limit and stopped the VM during ${CURRENT:-no step}; the step stays queued"
@@ -146,6 +149,12 @@ run_step() {     # run_step <file>
 }
 
 say "phase 0 runner started; queue $VLAR_PHASE0_URL/queue"
+# Evidence for restarts without a reboot (2026-11-23: the runner restarted at 04:35:50Z mid-step, no reboot; suspected
+# unattended-upgrades/needrestart): who touched the runner and what apt changed, kept in logs/ with every start.
+{ journalctl --no-pager -u vlar-phase0 -u apt-daily-upgrade -u unattended-upgrades --since -2days 2>&1 | tail -n 120
+  echo "== /var/log/apt/history.log"; tail -n 60 /var/log/apt/history.log 2>&1
+  echo "== needrestart"; journalctl --no-pager --since -2days 2>/dev/null | grep -i needrestart | tail -n 40
+} > "$D/logs/system-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || true
 while true; do
   [[ -e "$STOP_FLAG" ]] && finish stopped "the spend guard's STOP flag is up (hard limit); no step started"
   pull_queue

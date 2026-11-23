@@ -76,7 +76,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | VM worker entry point (`vlar_ops/vm_worker.py`, `vlar-ops worker`: production factory with `XVLAClient`/`PI05Client`, one `LiberoSim` per task, server geometry and deterministic checks, the spend guard's `StopFlag`, clean abandon on SIGTERM, refuse-and-stop for jobs the worker's options cannot run, provenance in markers and snapshots, `ops/vm/vlar-worker@.service`); dataset manifest and datacard (`vlar_ops/manifest.py`, `vlar_ops/datacard-v1.md`, `vlar-ops dataset manifest`/`verify`) (HARNESS.md "VM worker entry point, dataset manifest and datacard") | done on Mac; VM smoke run pending | the commit after `1683b56` |
 | Container definitions (amendments 28-30; HARNESS.md "Container images and lockfiles"): Dockerfile, hashed locks at the notebook's versions, CPU build VM, L4 loader with driver check, service units, `tests/test_containers.py` | done on the Mac | the commit after `1e92964` |
 | Phase 0 step 0: container images built and tested on a CPU build VM, exported to the bucket (amendments 28, 31-33) | done | `be7b95a` |
-| Phase 0 stage A on the L4 (images `be7b95a`): image load, host checks, weights, VM re-run rows, verdict | running (step 030 at 05:05Z) | `94b1966`, `6690b19` |
+| Phase 0 stage A on the L4 (images `be7b95a`): image load, host checks, weights, VM re-run rows, verdict | failed at 090: row pi05-batch-invariance-l4 (padded vs batch of one, max |diff| 1.94); all other rows passed; VM stopped 05:21:59Z; spend $0.73 | `94b1966`, `6690b19` |
 | Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
 | Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | stage B ready to queue after commit, rebuild and the user's approval | |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
@@ -296,11 +296,41 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**START HERE (2026-11-22): stage B of Phase 0, at xhigh.** Stage B's code is committed on `harness-v1` (the commit
-after `c991493`; amendment 35, HARNESS.md "Calibration file and stage B", ops/README.md "Stage B"). Nothing of
-stage B is built or queued yet. In order:
-1. **Open decision (ask the user if not yet answered):** approve the two rules proposed with stage B, or change them
-   *before the rebuild* (they are in `src/vlar_ops/step2.py`, which ships in the sim image): the geometry rule
+**OVERNIGHT LOG (2026-11-23, read first).** Stage A **failed** at its verdict, so per the user's pre-approved plan
+nothing more ran: no rebuild, nothing queued, no debugging. The L4 `vlar-l4` is **STOPPED** (TERMINATED since
+05:21:59Z on 2026-11-23); pause rule: delete it and its disk if it is still stopped at 05:22Z on 2026-11-24. Spend
+guard: **$0.73** total (VM $0.73, 1.38 VM hours; disk not yet charged in the ledger). Steps: 010 done (451 s),
+015 done, 020 done (113 s), 030 done (2117 s; sim-reference 101 passed, 3 skipped), 040 done (172 s), 050 done
+(362 s), 090 **failed**: row `pi05-batch-invariance-l4` (logs: `gs://$BUCKET/vla-router/phase0/logs/results/`).
+Every other row passed: host unit tests, reference check, sim-reference, sim-numpy-percentile, xvla-vs-authors,
+xvla-batch-invariance-l4, pi05-vs-lerobot-eval. The failure, as the row printed it (not debugged): the real π0.5
+checkpoint on the L4 reached `check_pi05_reference_path` (so the alone/companions/position and padding-token checks
+before it passed); a batch of one equals `act_unbatched` exactly, but the same request padded to 8 rows differs from
+it by max |diff| = **1.94** (allowed 0.05): not last-bit noise. **Effort checkpoint (SPEC §16): an unexplained
+discrepancy that could corrupt parity and all π0.5 results; debugging needs max effort and the user's word.**
+**The 27-minute gap:** not a hang. `runner.log` shows 030 started at 04:08:34Z, then "phase 0 runner started" at
+04:35:50Z with no reboot (serial log: one boot) and no new startup-script run (startup.log: two boots, both before):
+the runner service was restarted from outside mid-step and 030 re-ran from scratch (27 min, about $0.20). Nothing in
+the repo restarts it; the likely cause is Ubuntu's unattended-upgrades with needrestart restarting services after a
+package update (unconfirmed: the VM is stopped and its serial buffer is gone). The runner did not cause it, but it
+logged nothing on SIGTERM; fixed (`ops/vm/phase0/runner.sh`, committed after `65b5b42`; tests/test_phase0_runner.py 9 passed): it now logs the SIGTERM and an
+`interrupted` history entry, and at every start writes `logs/system-<time>.log` (runner/apt journal, apt history,
+needrestart lines), so the next boot records what happened at 04:35Z. If confirmed, disable unattended-upgrades on
+the VM (a decision for the user).
+**Approved by the user 2026-11-23, NOT implemented yet (do before the rebuild; xhigh):** (1) the batch-size rule's
+memory limit must be the measured total L4 memory with both models loaded at the candidate size AND the planned
+number of workers rendering at the same time, keeping at least 2 GB headroom on the 24 GB card (replace
+`MEMORY_BUDGET_GB` in `vlar_ops/step2.choose_geometry` with a joint measurement in step `200`: servers at each
+candidate geometry, 2 x B workers rendering, full batches to both servers, peak from `nvidia-smi`); the rest of the
+rule stands. (2) Gripper procedure approved; add a check after the base rollouts, before the freeze: report how the
+base rollouts' real grasps (steps table: commanded-closed steps' finger widths) fall relative to the thresholds and
+flag it if they do not separate cleanly. The overnight go-ahead (rebuild, re-point, queue stage B unattended) applied
+only if stage A passed; it does not carry over.
+
+**START HERE (2026-11-22, superseded in part by the log above): stage B of Phase 0, at xhigh.** Stage B's code is
+committed on `harness-v1` (`65b5b42`; amendment 35, HARNESS.md "Calibration file and stage B", ops/README.md
+"Stage B"). Nothing of stage B is built or queued yet. In order, once the π0.5 failure is resolved with the user:
+1. Implement the two approved changes above (the original rule text, for reference): the geometry rule
    (`choose_geometry`: sizes 1-16 whose two models' deterministic peak memory sums to <= 20 GB; the smallest whose
    deterministic GPU cost per request is within 10% of the best; stop with exit 75 if deterministic mode costs
    > 1.25x the non-deterministic run there; workers = 2 x max_batch, at most 12) and the gripper procedure
