@@ -321,14 +321,43 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23 evening): the second rebuild, waiting for the user's go-ahead** (cost told to the user: about
-85-90 min of an on-demand e2-standard-8 build VM, about $0.40 before credits, outside the ledger until a reconcile).
-From the pushed merge commit on `harness-v1`, tree clean: `BUILD_PROVISIONING=STANDARD caffeinate -i -s
-ops/gcp/35_build_images.sh`. Expected in-container counts change: sim adds the HTTP and phase2-work tests (the
-repo-only files skip), pi05 adds `test_server_http.py -k pi05` (3), xvla adds `-k xvla` (4). Then stage B exactly as
-below (metadata re-set from this commit's `startup.sh`, queue `010,015,030,040,050,090,200,210,300`), with the images'
-commit in place of `b4c6beb`. Pause rule: the L4 has been STOPPED since 08:16Z on 2026-11-23; delete it and its disk if
-still stopped at 08:16Z on 2026-11-24 (then recreate with `30_create_vm.sh` and queue `020` too).
+**NOW (2026-11-23, 14:25Z): stage B is running on the L4 from images and host source `03f311c`** (the user
+pre-approved the rebuild, re-setting the L4 and queueing stage B on a DONE, and stopping on any failure, gate or
+needs-input). Images: `gs://$BUCKET/containers/03f311c4cd18a392285709987426bdfc42413fcd/`; host source
+`phase0/src/CURRENT` = `03f311c`. Watch: `ops/gcp/32_watch_vm.sh` (the Mac's log: `outputs/build-logs/stageB-watch-03f311c.log`).
+When the VM stops on its own, read `STATE.json`'s reason. `400` ends with an empty queue, so the VM stops itself.
+`500` is queued by hand afterwards: copy the step script straight into `phase0/queue/`, as `300` does for `400`, so
+`CURRENT` stays `03f311c`. `600` is queued only with the user's explicit approval after they read the step-6 summary.
+
+Run log (UTC; spend = the L4 spend guard's total from `history.jsonl`; the build VM is outside the ledger):
+- 10:41Z: merge `03f311c` pushed to `harness-v1`. Rebuild started on-demand (`BUILD_PROVISIONING=STANDARD caffeinate
+  -i -s ops/gcp/35_build_images.sh`, local log `outputs/build-logs/rebuild-03f311c.log`).
+- 11:11Z (the user's direction): the failed `b4c6beb` folder and, once the new images are verified, the superseded
+  `be7b95a` images are to be deleted, logs saved first. Both folders' non-image files were copied to
+  `outputs/build-logs/b4c6beb/` and `outputs/build-logs/be7b95a5d944d351428b5d79978864dc62ad4d1a/`, with sizes checked
+  against the bucket. `containers/b4c6beb.../` was deleted (6 objects, 1.2 MiB) and confirmed gone.
+- 13:01Z: rebuild **DONE**. The build VM ran 10:44:21Z-13:01:46Z, about 137 on-demand minutes; the 85-90 estimated
+  did not allow for the in-container tests' length (sim 35 min, xvla 23 min, pi05 3 min). In-container tests, no
+  failures: pi05 11 passed, 1 skipped (+3 HTTP); xvla 16 passed (+4 HTTP); sim 364 passed, 63 skipped (the repo-only
+  files skip). Digests: sim `sha256:20d19481...`, pi05 `sha256:39acf6e7...`, xvla `sha256:83896f24...`
+  (`image-digests.json`). The build VM and its disk were deleted and confirmed gone. Logs are in
+  `outputs/build-logs/03f311c/`. **Build cost about $0.65** (list prices, before credits): e2-standard-8 for 2.29 h at
+  about $0.27/h, plus 150 GB pd-balanced and an external IP. The user was told about $0.40.
+- 13:02Z: L4 metadata re-set. `vlar-images-url` now points at `containers/03f311c.../`; `startup-script` was re-set
+  from `ops/vm/phase0/startup.sh` at `03f311c` and checked equal by hash. The queue was empty. Queued
+  `010,015,030,040,050,090,200,210,300`. **13:03:16Z: L4 started (Spot); spend $0.86.**
+- Step results (seconds, spend after): `010` done (433 s, $0.95); checksums OK, all three images loaded and
+  GPU-checked. `015` done (23 s, $0.96). `030` done (2095 s, $1.23). `040` done (191 s, $1.25). `050` done (593 s,
+  $1.33). **`090` done at 14:00:40Z: every re-run row passed on the L4**, including `pi05-batch-invariance-l4`
+  (1 passed), the row that failed in stage A. Also passed: host unit tests 247 passed, 27 skipped; sim-reference
+  106 passed, 3 skipped; xvla-batch-invariance-l4 10 passed; xvla-vs-authors; pi05-vs-lerobot-eval; reference-check;
+  sim-numpy-percentile.
+- 14:20:41Z: `containers/be7b95a.../` deleted (11 objects, 10.2 GiB) and confirmed gone. The bucket has no versioning
+  and soft delete is off, so nothing is retained. `containers/` now holds only `03f311c.../`.
+- 14:00:48Z onwards: `200` (step 2 measurement, cap 3 h) running.
+
+Pause rule: if the L4 is STOPPED for a day, delete it and its disk (then recreate it with `30_create_vm.sh` and
+queue `020` too).
 
 **REBUILD RESULT (2026-11-23, 08:43Z-10:05Z): FAILED in the in-container tests; stage B NOT queued.** The build VM
 and its disk were deleted and confirmed gone (`gcloud compute instances list`: only the stopped L4). Images built;
@@ -337,7 +366,7 @@ tests: pi05 8 passed, 1 skipped; xvla 12 passed; **sim 6 failed**, 337 passed, 4
 images, and the repo's other repo-only tests skip there (`VLAR_IN_IMAGE`). Likely fix (not verified, not debugged, as
 the user asked): mark the file repo-only like `tests/test_containers.py`'s `repo_only`, and check `phase2-work`'s new
 repo-only tests (`test_phase0_steps.py`, `test_no_identifiers.py`) the same way; then a second rebuild (about 85 min,
-about $0.40) needs the user's go-ahead, since it was to be the only one. Logs: `gs://$BUCKET/containers/b4c6beb51cd1ea04fe002fb4be95a0ca3d60dd99/`
+about $0.40) needs the user's go-ahead, since it was to be the only one. Logs: `gs://$BUCKET/containers/b4c6beb51cd1ea04fe002fb4be95a0ca3d60dd99/` (deleted 2026-11-23 11:11Z)
 and locally `outputs/build-logs/b4c6beb/` (git-ignored). Spend guard still **$0.86** (L4); this build VM (about 80
 on-demand minutes, roughly $0.35) is outside the ledger until a reconcile. L4 still STOPPED since 08:16Z: pause rule,
 delete it and its disk if still stopped at 08:16Z on 2026-11-24.
@@ -564,7 +593,7 @@ AVX-512; PyTorch's CPU capability AVX2 in all three images. Tests: sim 293 passe
 1 skipped; xvla 12 passed; **no NotBitIdentical warnings: every batch-invariance check was bit-exact on this CPU**,
 as in run 4. Run 5's CPU was not recorded, so the maximum size of its differences is still unmeasured (only its
 first differing values, 1-5 ulp, are known); a later build on another CPU records them as warnings.
-Images in `gs://$BUCKET/containers/be7b95a5d944d351428b5d79978864dc62ad4d1a/`: vlar-sim 3994 MB,
+Images in `gs://$BUCKET/containers/be7b95a5d944d351428b5d79978864dc62ad4d1a/` (deleted 2026-11-23 14:20Z, superseded by `03f311c`; logs kept locally): vlar-sim 3994 MB,
 vlar-pi05 3963 MB, vlar-xvla 2998 MB (about 11 GB, about $0.22/month in Standard storage), image-digests.json
 (sim sha256:3dfe75be..., pi05 sha256:fceeb4b8..., xvla sha256:94508c13...), SHA256SUMS, logs. The earlier attempts'
 prefixes hold only sources and logs (a few MB). Six build attempts in all cost roughly $1.10 before credits.
