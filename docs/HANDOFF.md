@@ -382,6 +382,35 @@ unchanged since `0a0cd4c`), then `gcloud compute instances start $VM_NAME --zone
 summary's printed `31_phase0_queue.sh` command: it would move `CURRENT` off `0a0cd4c`. Pause rule: delete the VM and
 its disk if it is still stopped at 08:48Z on 2026-11-25.
 
+**Grasp-threshold review (2026-11-24, on the Mac; nothing written to the calibration file; waiting for the user).**
+Files in `outputs/grasp/` (git-ignored): plots `grasp_widths.png` and `grasp_ground_truth.png`, `truth.json`,
+`sample.json`, and the scripts (run from the repo root; `eligible.py` reads local copies of `records/`).
+- Widths: 55,915 settled commanded-closed steps. A spike at 1.0 mm and a tail to 2.3 mm (empty gripper), a valley
+  at 2.8-3.4 mm, then thin grasps (task 3's bowl rims from 3.42 mm, mug handles in tasks 4 and 6 near 5.8 mm) and
+  everything wider. The current shut threshold, 9.00 mm, sits inside the thin-grasp cluster.
+- Ground truth: 500 decision-point snapshots on settled closed steps (40 per task at random, plus 100 from 4-16 mm),
+  restored on the Mac with `mj_setState`. The harness's `restore` refuses VM snapshots on the Mac because the
+  compiled model differs. Contacts count within 1 mm. Held means both fingers touch the same object or fixture (421
+  cases), or a movable object is at least 2 cm above its initial height and touches only the robot (adds none). Not
+  held: 79 cases. 37 are at 2.3 mm or less (empty). 42 are at 3.2-55 mm: 19 with no finger contact (fingers still
+  closing after a slip or a miss) and 23 with one finger on something (11 of them on the stove in task 2).
+- Rates on the random 400 (339 held, 61 not). Current 9.00 mm: 19.5% of held read as shut, 27.9% of not-held read
+  as holding, error 20.8%. **Proposed: shut 3.0 mm, open unchanged at 71.55 mm.** It misreads 0.6% of held (one
+  desk-caddy grasp at 2.45 mm read as shut, one 77.6 mm grasp read as open), reads 39.3% of not-held as holding,
+  error 6.5%. The minimum error, 6.0%, is at 3.4 mm, but task 3's bowl grasps start at 3.42 mm. **No threshold
+  separates cleanly:** the not-held cases above 3 mm (one finger on an object, fingers still closing) look like
+  grasps by width at any threshold (at 12 mm: 27% of held and 26% of not-held misread).
+- Grasp check at 3.0/71.55 mm: shut 9.7%, partly open 90.3%, open 0.04%; near shut 23.6% (band 3.43 mm), so still
+  FLAGGED. With the band at 5% of the open-shut range, any threshold in the valley has the empty cluster and the
+  thin grasps inside its band. The flag rule needs the user's decision, e.g. judge by the ground truth, or a band
+  in mm.
+- The gripper thresholds are not in the write-once group (`config.WRITE_ONCE_PATHS`), so a new calibration version
+  can change them.
+- **Pending (the user, 2026-11-24): record the post-handoff distances in the handoff check.** The check runs
+  `tests/reference/test_handoff.py -k vm` inside the sim image, and `SIM_RUN` mounts no host tests. So a change to
+  the test takes effect only after an image rebuild, or after a step-script change that mounts the host tests. Not
+  started.
+
 **Base-rollout time budget (for Phase 1, measured 2026-11-24).** The records hold no per-call or per-component
 wall-clock times (the event log is logical), so this combines the records' call counts, per-episode times from the
 markers, and step `200`'s L4 benchmarks (`phase0/step2/03f311c.../bench-xvla.json`):
