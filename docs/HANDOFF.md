@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; pilot code done; pilot boot next)
+# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; pilot ran: check (iii) mismatch and memory kills; max-effort checkpoint)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,38 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, ~17:00Z): amendments 56-59 written; pilot code and step done and tested; boot next
+## START HERE (2026-11-24, ~19:30Z): pilot stopped: check (iii) MISMATCH and workers killed at the memory limit
+
+**Max-effort checkpoint (nothing debugged).** The pilot boot (host source `b6a0e4b`, boot `f8d1a6ee`) ran
+17:08-19:16Z; the step `710-pilot` ended with **exit 1** at 19:13:44Z ("pilot incomplete": 345 of 1,638 jobs done,
+1,292 pending, 1 leased, 0 failed) and the VM is **TERMINATED**. Pilot phase VM $0.987 (line $2.50); ledger total
+$11.02. The spend phase `pilot` is **left open** (not closed): whether and how to resume is the user's call.
+Everything is downloaded: `outputs/pilot/reports/` (checks.json, checks log, supervisor summary, golden pass,
+plan SHA-256s, step exits, timing), `outputs/pilot/base/{records/runs,records/events,results}/pilot/` (345 each),
+partial report `outputs/pilot/report-partial.json`.
+- **Golden set + image cross-check: passed** on the boot.
+- **Check (i) `/features`: passed** (10 points; `/features` equal to the probe features; `/sample` reproduces the
+  record): trunk features usable offline; the DAgger router half is screened (amendment 56).
+- **Check (ii) `xvla_only`: passed** (3 episodes: t3/i41, t4/i4, t5/i17).
+- **Check (iii) record `off`: MISMATCH on 1 of 3.** t5/i45 and t1/i12 equal bit for bit; **`base/t8/i30`** re-run
+  with record `off` differs: `runs: column steps differs first at row 0`, `steps: 396 rows vs 378`, `events: event 1
+  differs` (the re-run succeeded at step 378; the record has 396 steps). Unexplained: by amendment 56 this stops
+  all screened re-runs until explained. **Not investigated** (max-effort checkpoint).
+- **Workers killed (exit 137) at the 4 GiB per-worker limit.** Supervisor sizing: 8 workers, limit 4,294,967,296 B,
+  `max_jobs` 2, servers 19.05 GB of 67.4 GB. Peak worker memory 3.78-4.07 GB; every worker used its 3 restarts,
+  7 gave up (`gave_up` 1,2,4,5,6,7,8); events: 157 recycles, 31 reaped, 24 restarts, 7 not restarted. Throughput
+  from the result markers: 144 jobs in the first 30 min (12.5 VM-s/job, vs the 7 estimated), then 20 and 32 VM-s/job
+  as workers dropped. **Not investigated.**
+- **Report on the partial data:** 0 points labelled (jobs are shuffled, so no point has all 11 runs); costs empty
+  (`timing.jsonl` has no `phase_ended`: the step failed inside `run_phase`). No amendment 58 decision possible.
+
+**Next:** wait for the user: (1) the max-effort checkpoint on the t8/i30 record-off mismatch; (2) the memory-limit
+sizing before any resume (fewer workers or a higher limit); (3) whether to resume the pilot within the approved
+$2.50 (~$1.36 of VM left below the stop point $2.3467) or re-plan. The 345 done jobs stay in the queue DB on the
+VM's disk and in the bucket. Item 6 (pause rule: delete the VM and disk if not needed by ~09:45Z 2026-11-25) still
+applies.
+
+## Earlier 2026-11-24 (~17:00Z): amendments 56-59 written; pilot code and step done and tested; pilot booted
 
 Resumed at ~16:50Z under the same rules (pilot boot approved up to $2.50; stop without debugging on any mismatch;
 keep the VM stopped when idle; stopping rule). Items 1-3 of the list below are **done**:
