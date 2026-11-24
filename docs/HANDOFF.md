@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24, early: stage B running)
+# Handoff: state of the harness build (2026-11-24: stage B done through step 6, freeze waits for the user)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -131,7 +131,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | π0.5 diagnosis (step 095, 2026-11-23): numerical, not a bug (HARNESS.md); host-package freeze (amendment 36); approved rules (joint memory, grasp check) | done, uncommitted; option for π0.5 open; spend $0.86 | |
 | Phase 0 stage B on the L4 (images and host source `03f311c`, 2026-11-23): rebuild, image load, re-run rows, verdict, step 2 | 010-090 done, every re-run row passed (π0.5 batch invariance included); **200 failed** (UnboundLocalError in `vlar_ops/step2.py`:390, not debugged); VM stopped 14:48Z; spend $1.70 | `03f311c` |
 | Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
-| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | step 2 (`200`, `210`) done; parity (`300`) passed 2026-11-23 22:26Z; base rollouts (`400`) running, 161 of 500 at 2026-11-24 01:46Z; `500` queued behind it; `600` (freeze) only with the user's approval after the step-6 summary | ops `0a0cd4c`, images `03f311c` |
+| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | step 2 (`200`, `210`) done; parity (`300`) passed 2026-11-23 22:26Z; base rollouts (`400`) done 2026-11-24 08:41Z, X-VLA parity 398/500 vs 405 (McNemar p 0.47); step 6 (`500`) done 08:48Z: m = 2.0, handoff check passed, grasp check flagged; `600` (freeze) waits for the user's approval; spend $7.43 | ops `0a0cd4c`, images `03f311c` |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
 **Tests after the container definitions (Mac, 2026-11-22).** Main venv 158 passed, 13 skipped (`tests/test_containers.py` 19); simulator env 125 passed, 17 skipped; `uv pip install --dry-run` of every lock for cp313 linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4.
@@ -349,31 +349,64 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-24, 01:46Z): stage B is running on the L4 unattended (RUNNING since the 21:17Z start, no
-preemption). `200` done 21:57Z (calibration file written), `210` done 22:04Z, `300` (parity) passed 22:26Z and queued
-`400`. `400` (base rollouts, cap 12 h, ends 10:26Z at the latest) has run since 22:26Z: 161 of 500 episodes done at
-01:46Z (markers in `results/base/`), 0.75-0.8 per minute over the last 60-90 min, so it should finish about
-08:45-09:15Z. Spend guard $4.09 (VM $3.79 over 7.89 h, disk $0.30); about $7.50 by the end of `400` at about
-$0.46/h. `500` is queued behind `400` (pre-approved by the
-user, 2026-11-23), copied straight into `phase0/queue/` so `CURRENT` stays `0a0cd4c`: on a parity pass `300` queues
-`400`, `400` sorts before `500`, and `500` writes the time limits, uploads `phase0/step6/calibration-summary.{txt,json}`
-and stops the VM with exit 75. `600` (the freeze) only with the user's explicit approval after they read that
-summary.** **If `300` or `400` fails**, the VM stops with `500` still queued, and `500` does not check that the base
-rollouts are complete: delete `phase0/queue/500-calibrate.sh` before starting the VM again (the watcher never
-starts it). **Pre-approved recovery (the user, 2026-11-24 ~01:50Z), done without waiting for the user, no debugging:**
-if `400` hits its 12-h cap (history outcome `time_cap`, STATE reason "hit its time cap"): move
-`phase0/queue/500-calibrate.sh` to `phase0/held/`, copy `phase0/failed/400-base.sh` back into `phase0/queue/` (its
-jobs are idempotent, so it resumes the remaining episodes), move `500` back from `held/` into `phase0/queue/`, start
-the VM, and watch again. If `400` fails for any other reason: remove `500` from the queue and stop; report only. If
-the VM was preempted (VM stopped, STATE still "running"): start it again. In every case `500`'s step-6 summary
-stops the VM for the user's review; never queue `600`. **After `500` (for Phase 1 planning):** measure from the
-base rollouts' logs where each episode's time went (GPU time per call type: `/act`, `/sample` probes, `/features`;
-simulation; rendering; image encoding; uploads) and record it here: the pilot decides from it whether to record
-probes only at sampled decision points. **X-VLA parity (SPEC §11 step 5; the user, 2026-11-24):** once `400` has all
-500 markers, run `ops/xvla_parity.py` on a copy of `results/base/` (usage in its docstring; paired against
-`References/progress.jsonl` at 520 steps, exact McNemar; a report, not a gate), upload `xvla-parity.{json,txt}` to
-`phase0/step6/` beside the step-6 summary, give the user both together, and reference it here. **Before Phase 1
-queues real work (the user, 2026-11-23):** run a single smoke job on the frozen harness
+**NOW (2026-11-24, 08:55Z): stage B is done through step 6. The L4 is STOPPED (TERMINATED 08:48Z) and waits for
+the user's decision on the freeze (`600`).** `400` done 08:41:41Z (36925 s; all 500 episodes; no failure, time cap
+or preemption, so the pre-approved recovery was not needed). `500` ended with exit 75 at 08:48:34Z as designed and
+stays queued: a re-run with the same records and calibration file ends done, so a `600` queued behind it runs.
+Spend guard $7.43 (VM $7.03 over 14.93 h, disk $0.40). All results are in `phase0/step6/`:
+- `calibration-summary.{txt,json}` (calibration file `1d61294a7f51`, records `888916b00172`: 500 base, 100 π0.5
+  parity runs): **margin m = 2.0**, 93.6% of π0.5's 94 successful parity episodes finish within their task's limit
+  (candidates 1.25: 9.6%, 1.5: 35.1%, 1.75: 71.3%). Per-task limits 30.2-62.3 s (task 0 57.1, 1 51.8, 2 38.9, 3 39.0,
+  4 34.5, 5 30.2, 6 42.6, 7 39.6, 8 62.3, 9 45.9); π0.5 successes over the limit only in task 4 (5 of 9 fit) and
+  task 8 (6 of 8).
+- Relative handoff check (`logs/results/03f311c.../handoff-relative-l4.*`): **passed** (3 passed; the base rollouts'
+  ordinary first-target distances in `first_targets.json`: n = 4941, median 23.6 mm, p99 83.6 mm).
+- **Grasp check: FLAGGED** (`grasps.json`): 9.1% of 55,915 settled commanded-closed steps lie within 3.13 mm of the
+  9.00 mm shut threshold (limit 2%); shut 25.9%, partly open 74.1%, open 0.0%.
+- **X-VLA parity (SPEC §11 step 5):** `xvla-parity.{json,txt}` (`ops/xvla_parity.py`): 398/500 against the
+  reference's 405/500 at 520 steps; paired 367 both, 31 only ours, 38 only the reference, 64 neither; exact McNemar
+  p = 0.47: within sampling error. Per task, ours vs reference: 30/36, 34/36, 45/44, 46/46, 35/34, 44/42, 34/35, 43/40,
+  39/43, 48/49.
+
+**Freeze review (the user, 2026-11-24):** margin 2.0 and the time limits are approved; the handoff check, X-VLA
+parity (398 vs 405, p = 0.47) and π0.5 parity are accepted. **Before the freeze, fix the grasp thresholds offline on
+the Mac (no VM):** (1) plot the raw finger widths at settled closed-gripper steps of the base rollouts, overall and
+per task; (2) ground truth where feasible: restore a few hundred base-rollout snapshots across all tasks in the Mac's
+simulator and decide whether an object is held (both fingers in contact with an object, or an object lifted from
+its resting place), and report how the current thresholds classify held and not-held cases; (3) propose shut and
+open thresholds at the clearest separation, with the resulting grasp-check numbers and misclassification rates on
+the ground truth, or, if nothing separates cleanly (thin objects overlapping "closed on nothing"), say so and give
+the best achievable rates. **Show the user before writing a new calibration version.** Also (the user): record the
+actual post-handoff distances in the handoff check from now on. **To queue `600` once approved:** `gcloud storage cp ops/vm/phase0/steps/600-freeze.sh gs://$BUCKET/vla-router/phase0/queue/` (the script is
+unchanged since `0a0cd4c`), then `gcloud compute instances start $VM_NAME --zone $ZONE` and watch. Do NOT use the
+summary's printed `31_phase0_queue.sh` command: it would move `CURRENT` off `0a0cd4c`. Pause rule: delete the VM and
+its disk if it is still stopped at 08:48Z on 2026-11-25.
+
+**Base-rollout time budget (for Phase 1, measured 2026-11-24).** The records hold no per-call or per-component
+wall-clock times (the event log is logical), so this combines the records' call counts, per-episode times from the
+markers, and step `200`'s L4 benchmarks (`phase0/step2/03f311c.../bench-xvla.json`):
+- Fleet: 500 episodes in 36,925 s on 8 workers = **73.9 s of VM time per episode**; mean 312 steps and 31.5 decision
+  points (10.9 chunk, 20.6 mid).
+- Calls (record `full`; `episode._chunk_samples`, `_measure_point`): a chunk point makes `/act` (it also returns the
+  features) and one `/sample` with K-1 = 4 seeds; a mid point makes one probe `/sample` with K = 5 seeds (it also
+  returns the features). `/features` is never called in full recording. Totals: 5,441 `/act`, 5,441 chunk `/sample`,
+  10,323 probe `/sample`, 0 `/features`.
+- Per worker (gaps between a worker's consecutive markers, n = 492): mean 527 s, median 437 s per episode. A least-
+  squares fit gives wall = 0.08 s x steps + 15.7 s x decision points + 6.8 s (R^2 0.993). So the decision points take
+  about 94% of a worker's time (including waiting at the X-VLA server), per-step work (simulation, rendering the used
+  observations, encoding images for `/act`) about 5%, and the per-episode constant (start, uploads, marker) about 1%.
+- X-VLA GPU time per batch at the fixed geometry (batch 4, deterministic): `/act` 1.42 s, `/sample` 5.66 s (20 rows),
+  `/features` 0.30 s. `/sample` costs about 0.28 s per row at every size, so batching saves nothing on it. With every
+  batch full, per episode: probe `/sample` 29.2 s, chunk `/sample` 15.4 s, `/act` 3.9 s, total 48.5 s of the 73.9 s.
+  So the GPU was busy at least 66% of the time; `/sample` is at least 92% of its work and the probes alone about 60%.
+- **For the pilot:** throughput is bound by X-VLA `/sample` on the one GPU, mostly the mid-point probes. Recording
+  probes at a sampled fraction f of mid points cuts the GPU work by about 0.6 x (1 - f). Simulation, rendering, image
+  encoding and uploads are not the bottleneck, but these records cannot separate them. Timing them would need timers
+  in the worker and the servers (a code change, not made).
+- **For the pilot (the user, 2026-11-24):** investigate why worker `w8` finished only 15 episodes (the others
+  66-75), and whether more workers would raise the GPU utilization above its 66% lower bound.
+
+**Before Phase 1 queues real work (the user, 2026-11-23):** run a single smoke job on the frozen harness
 under the post-freeze ops code and confirm its marker's `meta.ops_waiver` (and `boot_id`, `golden_pass`):
 `serve`'s waiver wiring has only been tested with stubs. Earlier notes: The VM runs `0a0cd4c`'s ops code
 (`phase0/src/CURRENT`) on images `03f311c`. At 21:49Z step `200` had passed the geometry rule: batch size 4,
