@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-23, late evening)
+# Handoff: state of the harness build (2026-11-24, early: stage B running)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -131,7 +131,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | π0.5 diagnosis (step 095, 2026-11-23): numerical, not a bug (HARNESS.md); host-package freeze (amendment 36); approved rules (joint memory, grasp check) | done, uncommitted; option for π0.5 open; spend $0.86 | |
 | Phase 0 stage B on the L4 (images and host source `03f311c`, 2026-11-23): rebuild, image load, re-run rows, verdict, step 2 | 010-090 done, every re-run row passed (π0.5 batch invariance included); **200 failed** (UnboundLocalError in `vlar_ops/step2.py`:390, not debugged); VM stopped 14:48Z; spend $1.70 | `03f311c` |
 | Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
-| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | stage B ready to queue after commit, rebuild and the user's approval | |
+| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | step 2 (`200`, `210`) done; parity (`300`) passed 2026-11-23 22:26Z; base rollouts (`400`) running, 161 of 500 at 2026-11-24 01:46Z; `500` queued behind it; `600` (freeze) only with the user's approval after the step-6 summary | ops `0a0cd4c`, images `03f311c` |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
 **Tests after the container definitions (Mac, 2026-11-22).** Main venv 158 passed, 13 skipped (`tests/test_containers.py` 19); simulator env 125 passed, 17 skipped; `uv pip install --dry-run` of every lock for cp313 linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4.
@@ -349,9 +349,12 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-23, ~22:30Z, session stopped at the user's usage limit): stage B is running on the L4 unattended;
-the ops-digest rule is committed and pushed (top of this file). At 21:59Z: `200` done at 21:57Z (calibration file
-written), `210` running, `300` queued; spend $2.28 (disk $0.25). `500` is queued behind `400` (pre-approved by the
+**NOW (2026-11-24, 01:46Z): stage B is running on the L4 unattended (RUNNING since the 21:17Z start, no
+preemption). `200` done 21:57Z (calibration file written), `210` done 22:04Z, `300` (parity) passed 22:26Z and queued
+`400`. `400` (base rollouts, cap 12 h, ends 10:26Z at the latest) has run since 22:26Z: 161 of 500 episodes done at
+01:46Z (markers in `results/base/`), 0.75-0.8 per minute over the last 60-90 min, so it should finish about
+08:45-09:15Z. Spend guard $4.09 (VM $3.79 over 7.89 h, disk $0.30); about $7.50 by the end of `400` at about
+$0.46/h. `500` is queued behind `400` (pre-approved by the
 user, 2026-11-23), copied straight into `phase0/queue/` so `CURRENT` stays `0a0cd4c`: on a parity pass `300` queues
 `400`, `400` sorts before `500`, and `500` writes the time limits, uploads `phase0/step6/calibration-summary.{txt,json}`
 and stops the VM with exit 75. `600` (the freeze) only with the user's explicit approval after they read that
