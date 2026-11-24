@@ -356,3 +356,27 @@ def test_long_episode_subjects_take_one_long_episode_per_task():
     assert pilot.long_episode_subjects(rows, tasks=(3,), seed="s", exclude=["base/t3/i1"]) == ["base/t3/i3"]
     with pytest.raises(pilot.PilotError, match="task 4"):
         pilot.long_episode_subjects(rows, tasks=(4,), seed="s", exclude=["base/t4/i1"])
+
+
+def test_fit_table_answers_whether_7_or_8_workers_fit_at_the_limit():
+    GiB = 1024 ** 3
+    sup = {"sizing": {"mem_total": 67_416_563_712, "servers": 19_052_474_925, "limit": 22 * 256 * 1024 ** 2,
+                      "workers": 6, "max_jobs": 2},
+           "peak_memory_bytes": {"vlar-pi05": 14_645_838_479, "vlar-xvla": 5_553_392_713,
+                                 "vlar-worker-1": 4_500_000_000, "vlar-worker-2": 4_100_000_000}}
+    f = pilot.fit_table(sup)
+    assert f["servers_peak"] == 14_645_838_479 + 5_553_392_713 and f["rule_max_workers"] == 6
+    assert f["counts"][6]["rule_fits"] and not f["counts"][7]["rule_fits"] and not f["counts"][8]["rule_fits"]
+    assert f["counts"][7]["limits_fit_ram"] and not f["counts"][8]["limits_fit_ram"]
+    assert f["counts"][8]["worker_peaks_fit_ram"]            # 8 x 4.5 GB + 20.2 GB + 4 GiB < 67.4 GB
+    assert f["counts"][8]["worker_peaks_bytes"] == 8 * 4_500_000_000 + f["servers_peak"] + 4 * GiB
+
+
+def test_check_timing_per_step_and_warm_up():
+    iii = {"record_off": [
+        {"subject": "a", "loads": 4, "outcome": {"steps": 400}, "seconds": {"search": 3.0, "warm_up": 2.0, "episode": 40.0}},
+        {"subject": "b", "loads": 2, "outcome": {"steps": 100}, "seconds": {"search": 1.0, "warm_up": 0.0, "episode": 10.0}},
+        {"subject": "c", "loads": 2, "outcome": {"steps": 100}}]}                  # a bb7112f report: no seconds
+    t = pilot.check_timing(iii)
+    assert t["timed"] == 2 and t["episode_s_per_step"] == pytest.approx(0.1)
+    assert t["warm_up_s_per_load"] == pytest.approx(1.0) and t["search_s_per_episode"] == pytest.approx(2.0)

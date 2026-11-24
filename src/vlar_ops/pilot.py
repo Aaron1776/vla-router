@@ -315,7 +315,11 @@ def replicated_episode_check(cfg, clients: Mapping[str, Any], read_bytes: Callab
                              read_snapshot: Callable[[str], Any], staging: Path, header: Mapping[str, Any], job: Job,
                              variant: str, *, make_sim: Callable[[int], Any]) -> dict:
     """(ii) or (iii) on a fresh simulator brought to the base run's load count (`base_loads`), so the re-run's setup is
-    the base run's; afterwards its fixtures must still be the base run's."""
+    the base run's; afterwards its fixtures must still be the base run's. `seconds`: wall time of the load-count search
+    (a fresh simulator and n setups), the warm-up (a fresh simulator and n - 2 setups) and the episode itself (the
+    user, 2026-11-24: the first direct measure of a screened run's cost, alone on the servers)."""
+    import time
+
     from vlar_harness.collect import Runner
     from vlar_harness.snapshot import SnapshotStore
 
@@ -324,23 +328,29 @@ def replicated_episode_check(cfg, clients: Mapping[str, Any], read_bytes: Callab
     first = read_snapshot(SnapshotStore.make_id(job.subject, 0))
     target, scene = first.sim["model_fields"], int(first.episode["scene_seed"])
     near: dict = {}
+    t0 = time.monotonic()
     n = base_loads(make_sim, task, init, scene, target, nearest=near)
+    seconds = {"search": time.monotonic() - t0}
     if n is None:
         return {"subject": job.subject, "variant": variant, "passed": False, "tables": [], "outcome": {},
-                "ran_as": {}, "loads": None, "nearest": near, "fixtures_equal_base": None,
+                "ran_as": {}, "loads": None, "nearest": near, "fixtures_equal_base": None, "seconds": seconds,
                 "problems": [f"no load count up to {MAX_LOADS} reproduces the base run's model fields at step 0 "
                              f"(nearest: {near})"]}
     episodes = vm_worker.ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
     try:
+        t0 = time.monotonic()
         warm_up(episodes.sim(task), n)
+        seconds["warm_up"] = time.monotonic() - t0
         runner = Runner(cfg, episodes, read_bytes, staging, p_escalate=0.0, header=header)
+        t0 = time.monotonic()
         rep = episode_check(lambda j: runner(j)[0], read_bytes, job, variant)
+        seconds["episode"] = time.monotonic() - t0
         same = fields_equal(model_fields(episodes.sim(task), FIXTURE_FIELDS), target, FIXTURE_FIELDS)
     finally:
         episodes.close()
     if not same:
         rep = {**rep, "passed": False, "problems": rep["problems"] + ["the re-run's fixtures are not the base run's"]}
-    return {**rep, "loads": n, "fixtures_equal_base": same}
+    return {**rep, "loads": n, "fixtures_equal_base": same, "seconds": seconds}
 
 
 def long_episode_subjects(rows: Sequence[Mapping[str, Any]], *, tasks: Sequence[int], seed: str,
@@ -738,11 +748,13 @@ def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: 
     with and without b3, base parent (b1 needs 2 seeds) and exploration parent (3), and b4's share. The boot, the
     golden check and the pilot's checks are outside the windows and reported apart by the caller."""
     jobs = [{"kind": m["job"]["kind"], "wall": float(m["finished_at"]) - float(m["meta"]["claimed_at"]),
-             "end": float(m["finished_at"]), "start": float(m["meta"]["claimed_at"]), "boot": m["meta"].get("boot_id")}
+             "end": float(m["finished_at"]), "start": float(m["meta"]["claimed_at"]), "boot": m["meta"].get("boot_id"),
+             "steps": (m.get("result") or {}).get("summary", {}).get("steps")}
             for m in markers if m.get("meta", {}).get("claimed_at") is not None]
     windows = branch_windows(timing, jobs)
     vm_s: dict[str, float] = defaultdict(float)
     worker_s: dict[str, float] = defaultdict(float)
+    steps: dict[str, int] = defaultdict(int)
     n: dict[str, int] = defaultdict(int)
     for a, b, boot, _ in windows:
         inside = [j for j in jobs if (j["boot"] == boot if boot is not None and j["boot"] is not None
@@ -751,6 +763,7 @@ def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: 
         for j in inside:
             vm_s[j["kind"]] += (b - a) * j["wall"] / total if total else 0.0
             worker_s[j["kind"]] += j["wall"]
+            steps[j["kind"]] += int(j["steps"] or 0)
             n[j["kind"]] += 1
     per_run = {k: vm_s[k] / n[k] for k in n}
     r = lambda k: per_run.get(k, float("nan"))                                             # noqa: E731
@@ -760,10 +773,52 @@ def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: 
     usd = {k: v * hourly_usd / 3600 for k, v in point.items()}
     return {"windows_s": [b - a for a, b, _, _ in windows], "window_ends": [src for *_, src in windows],
             "jobs_timed": sum(n.values()), "jobs_untimed": len(markers) - len(jobs), "vm_s_per_run": per_run,
-            "worker_s_per_run": {k: worker_s[k] / n[k] for k in n}, "usd_per_run": {k: v * hourly_usd / 3600
+            "worker_s_per_run": {k: worker_s[k] / n[k] for k in n},
+            "steps_per_run": {k: steps[k] / n[k] for k in n},
+            "vm_s_per_step": {k: vm_s[k] / steps[k] for k in n if steps[k]}, "usd_per_run": {k: v * hourly_usd / 3600
                                                                                     for k, v in per_run.items()},
             "runs": dict(n), "vm_s_per_point": point, "usd_per_point": usd,
             "b4_share_of_base_point": 3 * r("b4_max") / point["base_without_b3"] if point["base_without_b3"] else None}
+
+
+def check_timing(iii: Mapping[str, Any]) -> dict[str, Any]:
+    """The corrected check (iii)'s record-off episodes as screened runs, alone on the servers: per episode its load
+    count, steps and seconds (search, warm-up, episode; reports from bb7112f have no per-episode seconds)."""
+    rows = [{"subject": r["subject"], "loads": r.get("loads"), "steps": (r.get("outcome") or {}).get("steps"),
+             "seconds": r.get("seconds")} for r in iii.get("record_off", [])]
+    timed = [r for r in rows if r["seconds"] and "episode" in r["seconds"] and r["steps"]]
+    out: dict[str, Any] = {"episodes": rows, "timed": len(timed)}
+    if timed:
+        out["episode_s_per_step"] = sum(r["seconds"]["episode"] for r in timed) / sum(r["steps"] for r in timed)
+        out["warm_up_s_per_load"] = (sum(r["seconds"]["warm_up"] for r in timed)
+                                     / max(1, sum(r["loads"] - 2 for r in timed)))
+        out["search_s_per_episode"] = sum(r["seconds"]["search"] for r in timed) / len(timed)
+    return out
+
+
+def fit_table(summary: Mapping[str, Any], counts: Sequence[int] = (6, 7, 8), *, usable: float = 0.95,
+              server_margin: float = 1.25, host_reserve: int = 4 * 1024 ** 3) -> dict[str, Any]:
+    """Would `counts` workers at the run's per-worker limit fit (the user, 2026-11-24: the exploration, DAgger and
+    evaluation estimates assumed 8-worker throughput)? Per count: by the sizing rule (servers' resident memory at
+    start x 1.25, a 4 GiB host reserve, 95% of RAM), with every limit filled beside the servers' measured peaks, and
+    with every worker at the largest measured worker peak (all in RAM, no margin)."""
+    sz, peaks = summary["sizing"], summary.get("peak_memory_bytes") or {}
+    mem, start, limit = int(sz["mem_total"]), int(sz["servers"]), int(sz["limit"])
+    servers = {k: v for k, v in peaks.items() if k in ("vlar-xvla", "vlar-pi05")}
+    srv = sum(servers.values()) or start
+    wk = max((v for k, v in peaks.items() if k.startswith("vlar-worker")), default=None)
+    rows = {}
+    for n in counts:
+        rule, full = n * limit + start * server_margin + host_reserve, n * limit + srv + host_reserve
+        row = {"rule_bytes": rule, "rule_fits": rule <= mem * usable, "limits_at_server_peak_bytes": full,
+               "limits_fit_ram": full <= mem}
+        if wk is not None:
+            row.update({"worker_peaks_bytes": n * wk + srv + host_reserve,
+                        "worker_peaks_fit_ram": n * wk + srv + host_reserve <= mem})
+        rows[n] = row
+    return {"mem_total": mem, "limit": limit, "servers_at_start": start, "servers_peak": srv, "server_peaks": servers,
+            "worker_peak_max": wk, "rule_max_workers": int((mem * usable - start * server_margin - host_reserve) // limit),
+            "counts": rows}
 
 
 def branch_windows(timing: Sequence[Mapping], jobs: Sequence[Mapping]) -> list[tuple[float, float, Optional[str], str]]:
@@ -874,7 +929,10 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
                 "passed": iii["passed"], "record_off": [{k: r.get(k) for k in ("subject", "loads", "passed", "problems",
                                                                                "fixtures_equal_base", "outcome")}
                                                         for r in iii["record_off"]]},
-            "supervisor": {k: sup.get(k) for k in ("peak_memory_bytes", "restarts", "recycles", "refused", "gave_up",
+            "memory_fit": fit_table(sup) if sup.get("sizing") else None,
+            "check_iii_timing": check_timing(iii) if iii else None,
+            "supervisor": {k: sup.get(k) for k in ("sizing", "peak_memory_bytes", "restarts", "recycles", "refused",
+                                                   "gave_up",
                                                    "counts")},
             "supervisor_events": {e: sum(1 for x in sup.get("events", []) if x.get("outcome") == e)
                                   for e in sorted({x.get("outcome") for x in sup.get("events", [])})},
