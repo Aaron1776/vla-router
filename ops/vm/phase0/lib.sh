@@ -68,11 +68,20 @@ write_batching_env() {   # the servers' geometry from the write-once group
 OPS_RUN=(-v "${R}/src/vlar_ops:/opt/vla-router/src/vlar_ops:ro" -e "VLAR_OPS_SOURCE=$(cat "${R}/.src" 2>/dev/null)")
 SIM_RUN=(--rm --gpus all --network host -v /etc/vlar:/etc/vlar:ro -v "${P0D}:${P0D}" -e MUJOCO_GL=egl
          -e PYOPENGL_PLATFORM=egl "${OPS_RUN[@]}")
+# The freeze's dated image-digest supplements (amendment 54) from the bucket: a disk restored before they were written
+# has the calibration directory without them (startup.sh syncs it only onto a fresh disk). The golden check and every
+# worker of a frozen harness compare them with /etc/vlar/image-digests.json and refuse if they are missing or differ.
+fetch_freeze_supplements() {
+  [[ -n "${VLAR_STORAGE_URL:-}" ]] || return 0
+  mkdir -p "${CAL_DIR}"
+  gcloud storage cp "${VLAR_STORAGE_URL}/calibration/freeze-supplement-*.json" "${CAL_DIR}/" >/dev/null 2>&1 || true
+}
 # The golden-set self-check (§15) against the running production servers: writes /var/lib/vlar/golden-pass.json,
 # which every worker of a frozen harness requires for this boot. Extra docker options first, then `--` and extra
 # `vlar-ops golden check` options.
 golden_check() {
   local docker_extra=() check_extra=()
+  fetch_freeze_supplements
   while (( $# )) && [[ "$1" != -- ]]; do docker_extra+=("$1"); shift; done
   [[ "${1:-}" == -- ]] && shift; check_extra=("$@")
   docker run --rm --gpus all --network host -v /etc/vlar:/etc/vlar:ro -v /var/lib/vlar:/var/lib/vlar \

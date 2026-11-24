@@ -176,6 +176,7 @@ def test_serve_records_the_boot_its_golden_pass_and_the_waiver(tmp_path, monkeyp
     monkeypatch.setattr(reference, "verify_lerobot", lambda files: None)
     monkeypatch.setattr(P, "record_header", lambda c: {"ops_digest": "run"})
     monkeypatch.setattr(vm_worker, "check_servers", lambda *a, **k: {})
+    monkeypatch.setattr(vm_worker, "image_check", lambda c: {})          # amendment 54, tested in test_freezesupp
     monkeypatch.setattr(vm_worker, "ProductionEpisodes", lambda *a, **k: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(collect, "Runner", lambda *a, **k: SimpleNamespace(refuse=lambda job: None,
                                                                             job_dir=lambda job: tmp_path / "x"))
@@ -206,6 +207,13 @@ def test_serve_records_the_boot_its_golden_pass_and_the_waiver(tmp_path, monkeyp
     assert "without p_escalate" in seen["refuse"](Job("j", "explore", "episode", "s", 1, 0, 0, {}))
     assert seen["refuse"](Job("j", "explore", "episode", "s", 1, 0, 0, {"p_escalate": 0.1})) is None
     assert seen["refuse"](Job("j", "base", "episode", "s", 1, 0, 0, {})) is None
+
+    def other_images(c):
+        raise vm_worker.StartupError("frozen harness, images not the frozen ones: in: sim")
+    monkeypatch.setattr(vm_worker, "image_check", other_images)        # under the waiver too (amendment 54)
+    with pytest.raises(vm_worker.StartupError, match="images not the frozen ones"):
+        vm_worker.serve(ops, worker_id="w", clients={"xvla": None, "pi05": None}, p_escalate=0.1)
+    monkeypatch.setattr(vm_worker, "image_check", lambda c: {})
 
     def refuse(c, e, storage, ops_source):
         raise W.WaiverRefused("data digest differs")

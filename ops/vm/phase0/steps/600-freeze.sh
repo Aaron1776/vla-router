@@ -28,7 +28,8 @@ stop_servers() { systemctl stop vlar-xvla vlar-pi05; }
 wait_servers || { stop_servers; fail "model servers not answering /info after 10 minutes"; }
 golden_check -v "${CAL_DIR}:${CAL_DIR}" -- --mark-checked \
   || { stop_servers; sync_calibration; fail "the golden set does not replay bit for bit: no freeze (§15)"; }
-docker run --rm -v "${CAL_DIR}:${CAL_DIR}" "${CAL_ENV[@]}" "${OPS_RUN[@]}" "vlar-sim:${C}" \
+docker run --rm -v "${CAL_DIR}:${CAL_DIR}" -v /etc/vlar/image-digests.json:/etc/vlar/image-digests.json:ro \
+  "${CAL_ENV[@]}" "${OPS_RUN[@]}" "vlar-sim:${C}" \
   vlar-ops finish freeze --golden "${GOLD}" || { stop_servers; fail "freeze failed"; }
 docker run --rm -v /etc/vlar:/etc/vlar:ro "${CAL_ENV[@]}" "${OPS_RUN[@]}" "vlar-sim:${C}" python -c \
   'from vlar_harness import provenance; from vlar_harness.config import load_config; c = load_config(); assert c.frozen; provenance.verify_freeze(c); print("freeze verified")' \

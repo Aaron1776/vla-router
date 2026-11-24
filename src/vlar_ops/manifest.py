@@ -9,7 +9,9 @@
 - checks every Parquet part against dataset v1's schema, and every `runs` row's schema version, harness version,
   config hash, phase and job id against its job's marker;
 - checks nothing from different harness versions is mixed (§15): one harness version, one source digest and one
-  set of image digests across all markers; without a freeze record also one ops digest (amendment 46). Several config hashes are allowed (named options, e.g. the π0.5 parity
+  set of image digests across all markers; without a freeze record also one ops digest (amendment 46); with one,
+  every marker's image digests must equal the frozen images (the record's, else its dated supplement's beside it,
+  `vlar_ops.freezesupp`, amendment 54). Several config hashes are allowed (named options, e.g. the π0.5 parity
   run's scene seeds) and listed with their options; several git commits are allowed (code outside the harness
   package changes the commit, not the harness) and listed; markers from a harness with uncommitted changes are
   listed as a warning;
@@ -138,6 +140,7 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
 
     # Provenance: nothing from different harness versions mixed (§15).
     frozen = json.loads(Path(freeze).read_text()) if freeze else None
+    frozen_images = _frozen_images(Path(freeze), problems) if freeze else None
     barrier = SINGLE if frozen is None else tuple(f for f in SINGLE if f != "ops_digest")
     seen: dict[str, Counter] = {f: Counter() for f in barrier}
     ops_digests: Counter = Counter()
@@ -152,6 +155,8 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
             continue
         for f in barrier:
             seen[f][_canon(prov.get(f))] += 1
+        if frozen_images and prov.get("image_digests") != frozen_images:
+            problems.append(f"{mkey}: image digests are not the frozen images (amendment 54)")
         ops_digests[prov.get("ops_digest")] += 1
         if not prov.get("ops_digest"):
             problems.append(f"{mkey}: no ops digest in the provenance (amendment 46)")
@@ -238,8 +243,9 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
         "manifest_version": MANIFEST_VERSION, "dataset": DATASET, "schema_version": SCHEMA_VERSION,
         **single, "git_commits": sorted((c for c in commits if c), key=str),
         "configs": configs, "calibrations": dict(calibrations),
-        "freeze": None if frozen is None else {k: frozen.get(k) for k in ("harness_version", "calibration_hash",
-                                                                          "calibration_lineage", "ops_digest")},
+        "freeze": None if frozen is None else {**{k: frozen.get(k) for k in ("harness_version", "calibration_hash",
+                                                                             "calibration_lineage", "ops_digest")},
+                                               "image_digests": frozen_images},
         "data_digests": data_digests,
         "phases": {p: dict(sorted(c.items())) for p, c in sorted(phases.items())},
         "tables": tables, "warnings": warnings,
@@ -251,6 +257,20 @@ def build(root: Path | str, *, quick: bool = False, move_unlisted: Optional[Path
     }
     (root / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n")
     return manifest
+
+
+def _frozen_images(freeze: Path, problems: list[str]) -> Optional[dict]:
+    """The image digests the freeze pins, from the record or its dated supplement beside it (amendment 54)."""
+    from . import freezesupp as FS
+    try:
+        images = FS.frozen_image_digests(freeze)
+    except FS.SupplementError as e:
+        problems.append(f"freeze image digests: {e}")
+        return None
+    if not images:
+        problems.append(f"the freeze pins no image digests: put its {FS.PREFIX}<date>.json beside it (amendment 54)")
+        return None
+    return images
 
 
 def _tunable_problems(mkey: str, m: dict) -> list[str]:

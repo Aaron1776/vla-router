@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen, Phase 0 complete)
+# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen; post-freeze items 1-4 done)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -7,6 +7,98 @@ fails if they reappear in a tracked file.
 For a session that starts without the previous conversation. Read this file at startup; read `docs/SPEC.md` (the
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
+
+## START HERE (2026-11-24, ~10:30Z): the user's post-freeze list; items 1-4 done, item 5 next
+
+**The user's list (2026-11-24), in order; ask before spending; no VM until item 5** (the user's full text is
+the source; this is the summary): 1 image digests as a dated supplement (xhigh); 2 probe neutrality and clock
+charges (high); 3 gripper signals from raw widths at 3.0 mm (high); 4 post-freeze ops changes with tests, zone move
+deferred (xhigh); 5 the waiver smoke job, one boot (xhigh; max for unexplained mismatches); 6 proposals for the
+user's approval before the pilot: pilot design, budget re-plan at $0.472/VM-h against ~$30 left to $40, common random
+numbers as an amendment, the shared-trunk estimate, the trunk-data rule, fold leakage and §6 inputs (xhigh); 7 once
+billing shows Nov 24, reconcile the ledger with the billing console, image builds included, flag > $0.50; 8 pause
+rule: if no VM work before ~09:45Z 2026-11-25, confirm the bucket holds `freeze.json`, every calibration version and
+all records, then delete the VM and disk and record it in the ledger (a new disk runs `020`, the GPU re-run rows and
+a golden replay before producing data); 9 a preemption restarter, design only (preemption only, never after a guard
+or manual stop, spend check first, at most 3 restarts a day, least-privilege account).
+
+**Item 1, done (amendment 54).** The supplement is `vla-router/calibration/freeze-supplement-2026-11-24.json` in the
+bucket (SHA-256 `bc3ba2c3...`; copy in the git-ignored `outputs/freeze/`), uploaded with `--no-clobber` and read back
+equal. It names `freeze.json` by SHA-256 `5e2826f6...` and pins sim `sha256:20d19481...`, pi05 `39acf6e7...`, xvla
+`83896f24...` (commit `03f311c`). Step `600` wrote no digests (golden pass, history). So they come from all 600 result
+markers, 500 base and 100 parity, written 22:08Z-08:40Z: all identical. The build's own `image-digests.json` is
+identical too. Code: `vlar_ops/freezesupp.py`; `vm_worker.image_check`, run by `golden_check` and by `serve` after
+the freeze/waiver check; `lib.sh` `fetch_freeze_supplements` runs before every golden check (an old disk lacks the
+file). The manifest's mixing check, given a freeze, now requires every record's image digests to equal the frozen
+images. `600-freeze.sh` now mounts `/etc/vlar/image-digests.json`, so a later freeze records its images.
+**The boot cross-check has not run yet:** the next boot's golden check does it (item 5).
+**Item 2, confirmed from the spec and tests.**
+- Seeds: probes use seed name `probe`, k = 0..K-1 (`episode.py` `_measure_point`). Chunk samples use `sample`, and
+  the fresh chunk `sample_fresh`, both k = 1..K-1. All are distinct from `/act`'s seeds
+  (`test_seeds_of_all_calls_are_distinct`).
+- Routing: `/sample` has its own batcher (`xvla_server.py`: `act`, `sample` and `features` are separate), and one
+  batch runs on the device at a time (`self.lock`). The geometry is fixed: `/act` 4 rows, `/sample` 4 x 20 rows. So
+  the batch shape never depends on probes, only the batch-mates do, which the L4 invariance rows cover bit for bit.
+  X-VLA runs float32; only π0.5 runs bfloat16, and probes never reach it.
+- Clock: overhead is charged from the event log per profile (`clock.event_s`, `Charges.point_s`): `none` pays
+  nothing; `router` and `cascader_nospread` pay `/features` at mid points; `cascader_chunkspread` pays
+  `/sample`-`/act` at chunk points, `/features` at mid points, and the fresh chunk; `cascader_full` pays
+  `/sample`-`/act` at chunk points and `/sample` K at mid points. Tests: `test_profile_overheads_per_point_kind`,
+  `test_fresh_chunk_samples_are_charged_only_where_they_are_used`, `test_live_deciders_make_only_their_own_calls`.
+- The on/off test is `tests/reference/test_measurements.py::test_measuring_changes_nothing_that_executes`. It
+  compares trajectory bytes and events against `record="full"` and each live profile. It uses **stand-in models**
+  (`FakeXVLAService`) in the real simulator: it ran on the Mac, and on the L4 in `030`'s sim-reference row (106
+  passed), still with the stand-ins. **There is no real-model version:** item 5's probe-neutrality run is it.
+**Item 3, confirmed: nothing uses 9.004 mm.**
+- Records hold raw widths only (`points.prev_gripper_qpos`, `steps.gripper_qpos`); no fractions are stored
+  (amendment 35).
+- `observe()` refuses until frozen, so no live signal was ever computed at 9.004 mm.
+- Spread and drift `grip_disagree_frac` use the commanded gripper, not widths.
+- One gap, closed: `vlar_train.data.from_records` checked only `status: calibrated`, which the lineage versions
+  (9.004 mm) also have. It now requires the frozen file (test in `test_train.py`).
+**Item 4, done.**
+- `runner.sh` `pull_queue` mirrors the bucket's queue exactly (rsync with `--delete-unmatched-destination-objects`).
+  Checked on the real bucket: an empty queue has no objects, so rsync fails ("Did not find existing container") and
+  keeps the stale copy. The runner therefore decides from the parent listing: no `queue/` entry clears the local
+  copy. If the bucket cannot be read after 3 tries, no step starts and the state is `failed`.
+- Tests: 4 new in `test_phase0_runner.py`. Mutation: the old pull fails 3 of them. One test also shows that after
+  `010`-`600` the bucket queue is empty and neither the old disk nor a fresh one runs anything.
+- `550` refuses a frozen file and writes nothing (stubbed-lib test), and the writer refuses `550`'s exact update
+  (test).
+- Recovery rule corrected in `ops/README.md`: take a step out by removing it from the bucket's queue. This applies
+  from the first boot whose `CURRENT` has this runner; a new `CURRENT` is a new ops digest, so the waiver applies.
+- Zone move deferred.
+**Tests (Mac, before the commit):** see the commit message. Spend unchanged at **$7.53** (no VM this session). Bucket
+writes this session: the supplement only.
+
+**Item 5, prepared (not built, nothing queued; next session, xhigh).**
+- **w8's 15 episodes, from the bucket's logs:** w8 ran 15 episodes (orders 7-120) at the normal rate, the last done
+  at 00:48:00Z. It then claimed order 125, `base/t1/i15`, and never finished or renewed it. The step log's `leased`
+  count stayed at 8 until ~03:50Z, then 7 for the rest of the run. That is `LEASE_S` = 3 h after the claim, so the
+  lease expired unrenewed. w3 then ran `base/t1/i15` to the end (03:55:57Z, 254 steps, normal).
+- So the w8 process died or froze completely (its renewal thread stopped too) at ~00:48Z. Workers are `Restart=no`.
+  A Python exception would have gone through `fail` and back to pending at once.
+- The cause (crash, kill, OOM) is only on the stopped disk: the `vlar-worker@8` journal, the kernel log, and
+  `queue.sqlite`'s row for that job (`attempts`, `last_error`). The smoke step should dump these first, read-only.
+- **Design (the user's order):**
+  1. Servers up, golden check: the first real image cross-check. Any mismatch: stop, no debugging.
+  2. Re-run two of w8's base episodes (e.g. `base/t2/i34` and `base/t8/i19`) and one other worker's (`base/t1/i15`,
+     the job w8 left). Run them through `vlar-ops worker` under a separate storage root (e.g.
+     `vla-router/smoke/<date>/`), never the dataset's, with the two `phase0/src` archives copied there so the waiver
+     finds them. Compare steps, events and points bit for bit with `records/*/base/<job_id>.parquet`. Check the
+     markers' `meta.ops_waiver`, `boot_id` and `golden_pass`.
+  3. The golden set has no π0.5 call (base rollouts never escalate): run a 1-call `run_branch` from one golden
+     snapshot twice and compare.
+  4. Probe neutrality: one golden snapshot, X-VLA continuing, live `cascader_full` (`observe` at every point) vs
+     profile `none` with no measure client; trajectories and events bit for bit.
+- **Code needed:** `vlar_ops/smoke.py` and its commands, a step in a new folder (e.g. `ops/vm/postfreeze/`, so
+  `test_phase0_runner.py`'s step list stays Phase 0's), and Mac tests with stand-in models (as
+  `tests/reference/test_golden.py`).
+- **Queue:** from a clean commit with `31_phase0_queue.sh`, which moves `CURRENT`, so the new ops code runs under
+  the waiver.
+- **Estimate:** one boot of about 1 VM hour, about $0.50 plus disk. Ask the user before starting the VM.
+**Items 6-9: not started.** Item 7: Nov 24's billing is not complete until the day ends. Item 8's deadline:
+~09:45Z on 2026-11-25. If item 5 runs first on this disk, the pause clock restarts from that stop.
 
 ## Done 2026-11-23 (late evening): the ops-digest rule (amendment 49, refining 46), committed and pushed
 
@@ -349,6 +441,7 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
+(Superseded by "START HERE (2026-11-24, ~10:30Z)" at the top for items 1-4 of the post-freeze list.)
 **NOW (2026-11-24, 09:50Z): HARNESS v1.0 IS FROZEN; PHASE 0 IS COMPLETE. The L4 is STOPPED (TERMINATED 09:48Z,
 queue empty). Next: the post-freeze list below, at xhigh, before Phase 1.** The start succeeded on its third try
 (09:39Z, still `us-central1-a`; no zone fallback). `500` done (18 s: records and calibration unchanged), `550` done

@@ -107,6 +107,11 @@ mirrors `logs/`, `done/`, `failed/`, `history.jsonl` (each step with the spend g
 `STATE.json` to `gs://$BUCKET/vla-router/phase0/`. When the queue is empty, a step fails, a gate fails (exit 76) or a
 step needs the user (exit 75; it stays queued), the runner stops the servers and workers, syncs everything, writes
 the reason to `STATE.json` and stops the VM (STOPPED, disk kept). Steps may queue further steps.
+Before each step the VM's copy of the queue is made an exact mirror of the bucket's, removals included (post-freeze
+item 1, 2026-11-24). So **to take a step out of the queue, remove or move it in the bucket's queue**: the VM's disk
+keeps its own copy across stops, but the next pull deletes it. If the bucket's queue cannot be read (3 tries), no step
+starts and the VM stops. This holds from the first boot whose host source (`phase0/src/CURRENT`) has the new
+`runner.sh`. Older runners copied without deleting, so a removed step could still run from the VM's copy.
 
 ```bash
 source ops/gcp/env.sh

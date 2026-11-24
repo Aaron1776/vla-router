@@ -107,6 +107,7 @@ def test_the_pass_marker_gates_a_frozen_harness(tmp_path, monkeypatch):
         pass
     monkeypatch.setattr(C, "load_config", lambda **kw: Frozen())
     monkeypatch.setattr(provenance, "verify_freeze", lambda cfg: None)
+    monkeypatch.setattr(vm_worker, "image_check", lambda cfg: {})        # amendment 54, tested in test_freezesupp
     monkeypatch.setattr(reference, "verify_lerobot", lambda files: (_ for _ in ()).throw(Reached()))
     marker = tmp_path / "golden-pass.json"
     ops = {"local_root": str(tmp_path), "golden_marker": str(marker)}

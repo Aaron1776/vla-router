@@ -24,9 +24,10 @@ from vlar_ops.queue import JobQueue
 from vlar_ops.storage import LocalStorage
 from vlar_ops.worker import run_worker
 
+IMG = {"commit": "a" * 40, "sim": "sha256:" + "1" * 64, "pi05": "sha256:" + "2" * 64, "xvla": "sha256:" + "3" * 64}
 PROV = {"harness_version": "1.0.0", "config_name": "harness-v1", "config_hash": "c" * 64,
         "config_options": {"scene_seed": "project"}, "calibration_hash": "1" * 64, "source_digest": "s" * 64,
-        "ops_digest": "o" * 64, "commit": "a" * 40, "harness_dirty": False, "image_digests": {}}
+        "ops_digest": "o" * 64, "commit": "a" * 40, "harness_dirty": False, "image_digests": IMG}
 
 
 def runner_for(staging, header):
@@ -140,12 +141,12 @@ def test_calibration_hashes_must_be_in_the_freeze_lineage(tmp_path):
     root = make_dataset(tmp_path, provs=(PROV, later))
     freeze = tmp_path / "freeze.json"
     freeze.write_text(json.dumps({"harness_version": "1.0.0", "calibration_hash": "3" * 64, "ops_digest": "o" * 64,
-                                  "source_digest": "s" * 64, "calibration_lineage": ["1" * 64, "2" * 64]}))
+                                  "source_digest": "s" * 64, "image_digests": IMG, "calibration_lineage": ["1" * 64, "2" * 64]}))
     m = manifest.build(root, freeze=freeze)
     assert m["calibrations"] == {"1" * 64: 1, "2" * 64: 1} and m["freeze"]["calibration_hash"] == "3" * 64
     assert not any("calibration" in w for w in m["warnings"])
     freeze.write_text(json.dumps({"harness_version": "1.0.0", "calibration_hash": "3" * 64, "ops_digest": "o" * 64,
-                                  "source_digest": "s" * 64, "calibration_lineage": ["2" * 64]}))
+                                  "source_digest": "s" * 64, "image_digests": IMG, "calibration_lineage": ["2" * 64]}))
     with pytest.raises(manifest.ManifestError, match="not the frozen file's nor in its lineage"):
         manifest.build(root, freeze=freeze)
     root2 = make_dataset(tmp_path / "b", provs=({**PROV, "calibration_hash": None},))
@@ -233,7 +234,7 @@ FROZEN_CAL, PRE_CAL = "3" * 64, "1" * 64
 def _freeze(tmp_path, ops):
     path = tmp_path / "freeze.json"
     path.write_text(json.dumps({"harness_version": "1.0.0", "source_digest": "s" * 64, "ops_digest": ops,
-                                "calibration_hash": FROZEN_CAL, "calibration_lineage": [PRE_CAL]}))
+                                "calibration_hash": FROZEN_CAL, "calibration_lineage": [PRE_CAL], "image_digests": IMG}))
     return path
 
 
@@ -339,3 +340,43 @@ def test_tunables_must_be_in_the_job_specs(tmp_path):
                 "dp_sampling": {"fraction": 0.2, "seed": 5}}
     assert manifest._tunable_problems("m", {"job": {"kind": "b2_one_call", "phase": "branches",
                                                     "spec": {"settings": settings}}, "meta": {}}) == []
+
+
+# ---------------------------------------------------------------- amendment 54: the frozen images
+
+def _bare_freeze(tmp_path):
+    """A freeze record like v1.0's: no image digests of its own."""
+    path = tmp_path / "freeze.json"
+    path.write_text(json.dumps({"harness_version": "1.0.0", "source_digest": "s" * 64, "ops_digest": "o" * 64,
+                                "calibration_hash": "3" * 64, "calibration_lineage": ["1" * 64],
+                                "frozen_at": "2026-11-24T09:46:21+00:00", "image_digests": {}}))
+    return path
+
+
+def _supplement(freeze, images=IMG):
+    from vlar_ops import freezesupp as FS
+    m = {"finished_at": 0.0, "job": {"phase": "base", "job_id": "j"}, "meta": {"provenance": {"image_digests": images}}}
+    freeze.with_name(FS.name_for("2026-11-24")).write_text(json.dumps(FS.make(freeze, [m], date="2026-11-24")))
+
+
+def test_after_the_freeze_every_record_must_be_on_the_frozen_images(tmp_path):
+    """The mixing check: records that agree with each other but not with the images the freeze pins are refused, and
+    a freeze that pins no images (no supplement beside a bare record) refuses every dataset."""
+    root = make_dataset(tmp_path, provs=(PROV, PROV))
+    freeze = _bare_freeze(tmp_path)
+    with pytest.raises(manifest.ManifestError, match="pins no image digests"):
+        manifest.build(root, freeze=freeze)
+    _supplement(freeze)
+    m = manifest.build(root, freeze=freeze)
+    assert m["freeze"]["image_digests"] == IMG and m["image_digests"] == IMG
+    other = {**IMG, "xvla": "sha256:" + "4" * 64}
+    root2 = make_dataset(tmp_path / "other", provs=({**PROV, "image_digests": other},) * 2)
+    with pytest.raises(manifest.ManifestError, match="image digests are not the frozen images") as e:
+        manifest.build(root2, freeze=freeze)
+    assert "mixed" not in str(e.value)                     # the records agree with each other; only the freeze differs
+    root3 = make_dataset(tmp_path / "none", provs=({**PROV, "image_digests": {}},))
+    with pytest.raises(manifest.ManifestError, match="image digests are not the frozen images"):
+        manifest.build(root3, freeze=freeze)
+    freeze.write_text(freeze.read_text().replace("1.0.0", "1.0.1"))          # the supplement names another freeze
+    with pytest.raises(manifest.ManifestError, match="another freeze record"):
+        manifest.build(root, freeze=freeze)

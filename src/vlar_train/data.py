@@ -150,6 +150,12 @@ def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> P
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
     cfg = cfg or load_config()
+    if not getattr(cfg, "frozen", False):
+        # The lineage versions are calibrated too: step 2's hold the empty-gripper shut threshold 9.004 mm, the
+        # frozen file 3.0 mm (amendment 50). Gripper fractions are computed here from raw widths, so only the frozen
+        # file's thresholds may be used.
+        raise DataError("training data needs the frozen calibration file (VLAR_CALIBRATION; v1.0 b80124b2), not "
+                        "an earlier version: their gripper thresholds differ")
     g = cfg["measurement"]["gripper_thresholds"]
     tl = cfg["time_limit"]
     if tl.get("status") != "calibrated" or g.get("status") != "calibrated":

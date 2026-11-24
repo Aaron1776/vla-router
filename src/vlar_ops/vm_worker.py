@@ -7,7 +7,8 @@ Start several on the VM (ops/vm/vlar-worker@.service); the model servers batch a
    passed the golden-set self-check (§15, `vlar_ops.golden`) on this boot: `run_phase` runs it before any worker
    and writes the pass marker this checks. It also refuses to run without the calibration file
    (VLAR_CALIBRATION) and its complete write-once group (upload size, π0.5 latency, batch geometry: Phase 0 step 2,
-   amendment 35), so no record is ever made under placeholder values that would change outcomes;
+   amendment 35), so no record is ever made under placeholder values that would change outcomes. A frozen harness
+   runs only on the frozen images (`image_check`, amendment 54; the golden-set self-check runs it too);
 2. checks the pinned reference files it runs: the authors' X-VLA client and LeRobot's LIBERO and π0.5 files;
 3. waits for both model servers' /info and checks they run the configured fixed batch geometry with the
    deterministic settings (amendment 24): a server started otherwise (Phase 0 step 2's unpadded latency runs)
@@ -140,6 +141,20 @@ def parse_options(pairs: Sequence[str]) -> dict[str, str]:
     return out
 
 
+def image_check(cfg) -> Optional[dict]:
+    """A frozen harness runs only on the frozen images (amendment 54): the running images' digests
+    (`/etc/vlar/image-digests.json`) must equal the freeze record's, else its dated supplement's. None if not frozen."""
+    if not cfg.frozen:
+        return None
+    from vlar_harness import provenance
+
+    from . import freezesupp as FS
+    try:
+        return FS.check_running(provenance.freeze_path(cfg), provenance.image_digests())
+    except (FS.SupplementError, provenance.FreezeError, OSError, ValueError) as e:
+        raise StartupError(f"frozen harness, images not the frozen ones: {e}") from e
+
+
 def golden_check(ops_cfg: Mapping[str, Any], golden_json: Path, *, marker: Optional[Path] = None,
                  clients: Optional[Mapping[str, Any]] = None, make_sim: Optional[Callable[[int], Any]] = None,
                  server_wait_s: float = 600.0) -> dict:
@@ -152,6 +167,7 @@ def golden_check(ops_cfg: Mapping[str, Any], golden_json: Path, *, marker: Optio
 
     from . import golden
     cfg = load_config()
+    image_check(cfg)
     if clients is None:
         from vlar_harness.servers.clients import PI05Client, XVLAClient
         srv = cfg["servers"]
@@ -217,6 +233,7 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
             waiver = W.check(cfg, e, open_storage(ops_cfg["storage_url"]), ops_source=os.environ.get("VLAR_OPS_SOURCE"))
         except W.WaiverRefused as r:
             raise provenance.FreezeError(f"{e} The ops-only waiver (amendment 49) does not apply: {r}") from e
+    image_check(cfg)
     from . import golden
     golden_pass = None
     if cfg.frozen:

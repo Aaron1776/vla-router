@@ -43,6 +43,25 @@ def test_golden_check_options_and_the_ops_mount(tmp_path):
     assert not any("vlar_harness" in m for m in mounts)        # the harness stays the image's (v1.0)
 
 
+def test_the_golden_check_fetches_the_freeze_supplements_first(tmp_path):
+    # Amendment 54: the image digests the freeze pins live in a dated supplement in the bucket's calibration folder;
+    # a disk restored before it was written lacks it, so every golden check (each boot's, before any worker) fetches it.
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    log = tmp_path / "calls"
+    for tool in ("docker", "gcloud"):
+        (bin_ / tool).write_text(f'#!/bin/bash\necho "{tool} $*" >> "{log}"\n')
+        (bin_ / tool).chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "VLAR_PHASE0_DIR": str(tmp_path / "p0"),
+           "VLAR_STORAGE_URL": "gs://b/vla-router"}
+    r = subprocess.run(["bash", "-c", f'source "{LIB}"; C=abc; CAL_DIR="{tmp_path}/cal"; golden_check -v /a:/a -- --x'], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    calls = log.read_text().splitlines()
+    assert calls[0] == f"gcloud storage cp gs://b/vla-router/calibration/freeze-supplement-*.json {tmp_path}/cal/"
+    assert calls[1].startswith("docker run") and len(calls) == 2
+
+
 def test_a_frozen_harness_checks_its_golden_set_before_any_worker():
     lib = LIB.read_text()
     body = lib[lib.index("run_phase() {"):]
@@ -68,6 +87,9 @@ def test_the_step_chain():
         < s600.index("verify_freeze")
     assert "user's explicit approval" in s600.split("source ")[0]
     assert "queue/" not in s600                                   # Phase 0 ends: the VM stops when the queue is empty
+    # Amendment 54: v1.0's freeze recorded no image digests; a later freeze's container sees the loaded images'.
+    freeze_cmd = s600.replace("\\\n", " ").split("vlar-ops finish freeze --golden")[0].rsplit("docker run", 1)[1]
+    assert "-v /etc/vlar/image-digests.json:/etc/vlar/image-digests.json:ro" in freeze_cmd
 
 
 def test_every_container_running_ops_code_mounts_the_host_copy():
@@ -79,3 +101,48 @@ def test_every_container_running_ops_code_mounts_the_host_copy():
             if "vlar-ops" in cmd or "provenance" in cmd:
                 assert "OPS_RUN" in cmd or "SIM_RUN" in cmd or cmd.startswith('docker run "${SIM_RUN'), (path.name, cmd)
     assert '"${OPS_RUN[@]}"' in LIB.read_text().split("SIM_RUN=(")[1].split(")")[0]
+
+
+def _run_550(tmp_path, frozen):
+    """Step 550 with lib.sh's functions stubbed: every calfile/sync call is logged."""
+    log = tmp_path / "calls"
+    stub = tmp_path / "lib.sh"
+    stub.write_text(f"""
+fail() {{ echo "FAIL $*" >> "{log}"; exit 1; }}
+need_images() {{ :; }}
+calibration_frozen() {{ return {0 if frozen else 1}; }}
+calfile() {{ echo "calfile $*" >> "{log}"
+  case "$1" in write) echo 0.003 > "{tmp_path}/shut" ;; get) cat "{tmp_path}/shut" 2>/dev/null || echo 0.009004 ;; esac; }}
+sync_calibration() {{ echo sync >> "{log}"; }}
+P0D="{tmp_path}"; VLAR_PHASE0_URL=gs://b/p0
+""")
+    script = (STEPS / "550-gripper.sh").read_text()
+    assert script.count("source /opt/vla-router/ops/vm/phase0/lib.sh") == 1
+    (tmp_path / "550.sh").write_text(script.replace("source /opt/vla-router/ops/vm/phase0/lib.sh", f'source "{stub}"'))
+    r = subprocess.run(["bash", str(tmp_path / "550.sh")], capture_output=True, text=True)
+    return r.returncode, log.read_text().splitlines()
+
+
+def test_550_refuses_a_frozen_calibration_and_writes_nothing(tmp_path):
+    (tmp_path / "frozen").mkdir()
+    rc, calls = _run_550(tmp_path / "frozen", frozen=True)
+    assert rc == 1 and calls[-1] == "FAIL the calibration file is frozen: gripper thresholds not written"
+    assert not any(c.startswith(("calfile write", "sync")) for c in calls)
+    rc, calls = _run_550(tmp_path, frozen=False)                # the same stubs reach the write when not frozen
+    assert rc == 0 and any(c.startswith("calfile write") for c in calls) and "sync" in calls
+
+
+def test_the_calibration_writer_refuses_550s_update_once_frozen(tmp_path):
+    """The second guard, below the step's: `config.write_calibration` refuses any change to a frozen file, the
+    gripper thresholds included (they are not write-once, so only the freeze protects them)."""
+    pytest.importorskip("yaml")
+    import shutil
+
+    import vlar_harness.config as C
+    cfg_dir = tmp_path / "configs"
+    shutil.copytree(Path(C.CONFIG_DIR), cfg_dir)
+    cal = tmp_path / "calibration.yaml"
+    cal.write_text("schema: " + str(C.CALIBRATION_SCHEMA) + "\nconfig: harness-v1\nfrozen: true\nvalues: {}\n")
+    with pytest.raises(C.ConfigError, match="frozen"):
+        C.write_calibration({"measurement": {"gripper_thresholds": {"shut_width_m": 0.003}}}, cal, config_dir=cfg_dir)
+    assert "0.003" not in cal.read_text()

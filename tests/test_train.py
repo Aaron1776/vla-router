@@ -125,3 +125,21 @@ def test_records_plumbing():
     assert c["grip_shut_frac"][0] == 0.5 and c["grip_partial_frac"][0] == 0.5      # one shut, one holding (4 cm)
     assert c["tracking_valid"][0] == 0 and c["track_pos_err"][0] == 0                # pi0.5's segment: zero and flagged
     assert c["fresh_spread_pos_std_mean"][0] == 0                                    # not measured -> 0
+
+
+def test_training_data_needs_the_frozen_calibration(tmp_path):
+    """Gripper fractions come from raw widths with the calibration's thresholds; the lineage versions say 9.004 mm,
+    the frozen file 3.0 mm (amendment 50), so `from_records` refuses anything but the frozen file."""
+    from types import SimpleNamespace
+
+    from vlar_train import data as D
+    cal = {"measurement": {"gripper_thresholds": {"status": "calibrated", "shut_width_m": 0.009004,
+                                                  "open_width_m": 0.0715459}},
+           "time_limit": {"status": "calibrated", "per_task_s": {}}}
+
+    class Cfg(dict):
+        frozen = False
+    with pytest.raises(D.DataError, match="frozen calibration"):
+        D.from_records(tmp_path, tmp_path / "labels.json", cfg=Cfg(cal))
+    with pytest.raises(D.DataError, match="frozen calibration"):
+        D.from_records(tmp_path, tmp_path / "labels.json", cfg=SimpleNamespace())

@@ -85,8 +85,18 @@ sync_files() {   # mirror logs, step outcomes and history to the bucket (never b
   return 0
 }
 
-pull_queue() {   # new steps from the bucket's queue (the bucket is the queue's source of truth)
-  gcloud storage rsync -q "$VLAR_PHASE0_URL/queue" "$D/queue" >/dev/null 2>&1 || true
+pull_queue() {   # mirror the bucket's queue exactly, removals included: the bucket is the queue's source of truth
+  # A step taken out of the bucket's queue must not run from the VM's copy (the disk keeps it across stops). An empty
+  # queue has no objects, so `rsync` cannot read it ("Did not find existing container"): the parent's listing tells
+  # an empty queue (no queue/ entry: clear the copy) from an unreadable bucket (return 1: the caller starts nothing).
+  local listing
+  listing="$(gcloud storage ls "$VLAR_PHASE0_URL/" 2>/dev/null)" || return 1
+  if grep -qxF "$VLAR_PHASE0_URL/queue/" <<<"$listing"; then
+    gcloud storage rsync --delete-unmatched-destination-objects -q "$VLAR_PHASE0_URL/queue" "$D/queue" \
+      >/dev/null 2>&1 || return 1
+  else
+    find "$D/queue" -mindepth 1 -maxdepth 1 -type f -delete
+  fi
 }
 
 move_step() {    # move_step <file> <done|failed>: locally and in the bucket
@@ -177,7 +187,9 @@ say "phase 0 runner started; queue $VLAR_PHASE0_URL/queue"
 } > "$D/logs/system-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || true
 while true; do
   [[ -e "$STOP_FLAG" ]] && finish stopped "the spend guard's STOP flag is up (hard limit); no step started"
-  pull_queue
+  pulled=0
+  for _ in 1 2 3; do pull_queue && { pulled=1; break; }; sleep "${VLAR_PULL_RETRY_S:-15}"; done
+  (( pulled )) || finish failed "the bucket's queue could not be read (3 tries): no step started, since the VM's copy may hold steps taken out of it"
   next="$(ls "$D/queue" 2>/dev/null | grep -E '\.sh$' | LC_ALL=C sort | head -n 1)"
   [[ -z "$next" ]] && finish idle "out of queued work: every queued step is done"
   run_step "$next"
