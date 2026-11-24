@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen; post-freeze items 1-4 done)
+# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen; post-freeze items 1-4 done; item 5 run)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,76 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, ~10:30Z): the user's post-freeze list; items 1-4 done, item 5 next
+## START HERE (2026-11-24, ~12:10Z): items 5-9 of the user's second list
+
+**The user's list (2026-11-24, second message; the user's full text is the source).** 5 smoke job, one boot up to
+$1 (xhigh; max for an unexplained mismatch); 6 proposals for approval before the pilot (xhigh); 7 billing
+reconciliation (not a gate) and the guard's non-VM charges now; 8 pause rule; 9 preemption restarter, design only.
+Ask before spending beyond that.
+
+**Item 5.**
+- Before the boot: **36057d4 changed no data digest** (common `4951f7f0`, base `5da609ed`, explore `663181c9`,
+  branch `50cf9c27`, the same as `7c0ddf0`; `vlar_harness` and the configs untouched). `385f4d0` keeps them too.
+- Code (`385f4d0`): `vlar_ops/smoke.py` (`vlar-ops smoke plan|probe|branch|compare`), the step
+  `ops/vm/postfreeze/700-smoke.sh` (order: w8's evidence to `phase0/w8-evidence/`; servers, image check, golden
+  replay, exit 76 on any mismatch; probe; branch; three base re-runs into `smoke/<date>/` under the waiver;
+  compare; reports to `smoke/<date>/reports/`). The golden-pass marker now records the image check (so every
+  record's `meta.golden_pass` carries it). Tests: `tests/reference/test_smoke.py` (stand-ins; mutants caught).
+- base/t1/i15 in the dataset (checked from the Mac): exactly one record per table and one marker, w3's (worker
+  `w3`, 254 steps, success); all 32 objects (26 snapshots, images, 4 tables, marker) written at 03:55Z; the marker
+  lists exactly those 26 snapshots. Nothing from w8 (it claimed the job at ~00:48Z).
+- **Bucket unreadable at boot:** `startup.sh` reads `src/CURRENT` and the source archive with 3 tries 20 s apart
+  (new in `385f4d0`; before, one try); still unreadable, `fail` records a failed boot where it can and runs
+  `shutdown -h now` (VM STOPPED). The runner's `pull_queue` likewise tries 3 times 15 s apart, then `finish failed`
+  stops the servers and the VM. Neither waits idle.
+- Queued from `385f4d0` with `31_phase0_queue.sh` (`CURRENT` moved to `385f4d0`); VM started 12:04:19Z (first try).
+- **RESULT (boot `a90eeb79`, 12:04-12:22Z, 1,216 s; ~$0.16 VM): everything executed matches.** Reports:
+  `smoke/2026-11-24/reports/` in the bucket.
+  - Golden set: 5/5 bit for bit; **the image cross-check ran and passed** (marker's `image_check`: images
+    `03f311c`, sim `20d19481`, pi05 `39acf6e7`, xvla `83896f24`, as in the supplement).
+  - Probe neutrality, real models: `base/t8/i10/dp33`, 190 steps to the step limit; live `cascader_full` observed
+    at 19 points, probes at 12, 18 `/sample` calls (84 seeds) vs profile `none` with no measurement client:
+    steps, events and outcome equal bit for bit, both equal to the golden record (sim time 106.6 s vs 38.6 s).
+  - π0.5 repeat: `b2_one_call` from `base/t5/i16/dp13`, seed index 1: 10 π0.5 steps, success at 162; two runs
+    identical (steps, events, outcome).
+  - Re-runs (`base/t2/i34`, `base/t8/i19` by w8 originally; `base/t1/i15` by w3): **every record table, image
+    and snapshot state equal bit for bit**; markers carry `ops_waiver` (freeze ops `c55d17fc` -> `42c1a857`,
+    source `385f4d0`), this boot's `boot_id` and its `golden_pass` with the image check. The only differences are
+    provenance: the runs table's and snapshot headers' `calibration_hash` (originals `aa38aac7`, the step-2 version
+    in the freeze's lineage, amendment 35; re-runs the frozen `b80124b2`) and the snapshot headers' `ops_digest`.
+    The step itself ended `gate_failed` because the VM's comparator did not strip the snapshot header (the snapshot
+    meta is `$dict`-encoded) and counted `calibration_hash` as data; fixed on the Mac (lineage check added; tests,
+    mutation caught) and re-run there on the bucket's files: passed (`reports/compare-mac.json`). No VM re-run needed.
+  - **w8: out-of-memory kill.** Kernel log: global OOM at 00:49:31Z killed w8's worker (8.2 GB resident); unit exit
+    137 at 00:49:32Z. Also at 22:17:51Z during parity (another worker, 9.1 GB). 8 workers x 5-9 GB + servers > 64
+    GB; workers cache one simulator per task met. Fix proposed in `docs/PROPOSALS-2026-11-24.md` §6; **8 workers
+    will run out of memory again in Phase 1 without it.** Queue row for `base/t1/i15`: done, attempts 0, no error
+    (a kill leaves no error). Evidence in `phase0/w8-evidence/` (journals, kernel log, `kern.log*`, `queue.sqlite`).
+
+**Item 7, done now:** the ledger did not count the $2.20 of image builds and other non-VM charges. **Added to its
+total** (not thresholds lowered) with the new `vlar-ops spend charge --usd 2.20` (an adjustment of kind `charge`; a
+later `reconcile` sets the total to the billing figure, which includes them, so nothing is counted twice). Ledger
+$7.56 -> **$9.76** at 11:55Z. Reconcile when Nov 24's billing appears, and before the total passes ~$25.
+
+**Items 6 and 9: proposals in `docs/PROPOSALS-2026-11-24.md`, for the user's approval.** Headline: the §10 plan as
+written ($18.1 of evaluation alone) leaves almost nothing for branches; with the shared trunk and common random
+numbers (-37% on evaluation) and probes only at sampled points in exploration and DAgger, f ≈ 0.014 (~660 labelled
+points). The pilot (150 points from base snapshots, ~$1.6) measures rescue and harm per task, tasks 4 and 8 apart,
+with a stop rule.
+
+**Item 8 (the user's decision):** VM STOPPED since 12:22:53Z; the disk's last sync (logs 12:22:43Z, history
+12:23:00Z) came after its last step, and w8's evidence is in the bucket, so deleting is safe. No VM work can start
+before the user approves item 6 and the memory fix exists. Delete the VM and disk now (then `spend disk-deleted`), or
+keep them until ~09:45Z 2026-11-25. Spend **$9.94** (VM $7.28, disk $0.45, charges $2.20). The bucket holds `freeze.json`, `freeze-supplement-2026-11-24.json`, the golden set, all four calibration
+versions (`aa38aac7`, `1d61294a`, `236439b4`, `b80124b2`) and all records (500 base x 4 tables, 100 parity x 3
+tables, 600 markers), checked 12:10Z.
+
+**Next (xhigh):** the user's answers on `docs/PROPOSALS-2026-11-24.md` (pilot design and stop rule, the budget
+re-plan, the common-random-numbers / shared-trunk amendment, the worker memory fix and supervisor, the restarter
+design) and on item 8. Then implement the approved worker memory bound and supervisor with tests before any
+multi-worker VM work, then the pilot. Item 7's reconcile when Nov 24's billing appears (before ~$25).
+
+## Done 2026-11-24 (~10:30Z): post-freeze items 1-4 (the user's first list)
 
 **The user's list (2026-11-24), in order; ask before spending; no VM until item 5** (the user's full text is
 the source; this is the summary): 1 image digests as a dated supplement (xhigh); 2 probe neutrality and clock

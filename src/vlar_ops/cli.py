@@ -251,10 +251,13 @@ def cmd_smoke(a: argparse.Namespace) -> None:
         print(out.read_text().splitlines()[0])
         return
     if a.cmd == "compare":
+        from vlar_harness import provenance
         from vlar_harness.config import load_config
         from . import golden
+        hcfg = load_config()
+        lineage = provenance.read_freeze(provenance.freeze_path(hcfg)).get("calibration_lineage", [])
         rep = smoke.compare(open_storage(cfg["storage_url"]), open_storage(a.smoke_url), subjects,
-                            boot=golden.boot_id(), calibration_hash=load_config().calibration_hash)
+                            boot=a.boot or golden.boot_id(), calibration_hash=hcfg.calibration_hash, lineage=lineage)
     else:
         rep = smoke.run_on_servers(cfg, Path(a.golden), a.cmd)
     out.write_text(json.dumps(rep, indent=1, default=str))
@@ -386,6 +389,7 @@ def main(argv: list[str] | None = None) -> None:
     sm.add_argument("--subjects", help="plan, compare: comma-separated episode ids (base/t2/i34,...)")
     sm.add_argument("--golden", help="probe, branch: golden.json")
     sm.add_argument("--smoke-url", help="compare: the re-runs' storage root")
+    sm.add_argument("--boot", help="compare: the boot the re-runs ran on (default this boot)")
     sm.add_argument("--out", required=True, help="plan: the plan file; else the JSON report")
     sm.add_argument("--ops-config")
     sm.set_defaults(fn=cmd_smoke)

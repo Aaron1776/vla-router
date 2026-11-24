@@ -141,7 +141,18 @@ is enough depends on how often escalation helps, which is what the pilot measure
   limits and margin are environment properties calibrated on all tasks (§5). The shared trunk adds none: a fold's
   decider runs only on its own test task's trunk episodes, and trunk records never enter training.
 
-## 6. Silent worker death (w8): proposed fix, held until w8's cause is known
+## 6. Silent worker death (w8): cause found, proposed fix
+
+**Cause (from the disk's journals, `phase0/w8-evidence/`):** a global out-of-memory kill. At 00:49:31Z the kernel
+killed w8's worker (python, 8.2 GB resident); its unit exited 137 a second later. The same happened at 22:17:51Z
+during the parity step (another worker, 9.1 GB; that step's next round re-ran its job). At both moments the 8
+workers held 5-9 GB each beside the two servers, together more than the VM's 64 GB. A worker keeps one simulator per
+task it has met (`ProductionEpisodes.sims`), so its memory grows toward ~10 tasks' worth: **8 workers will run out
+of memory again in Phase 1.** A worker-count increase is therefore off. Memory bound, proposed (no change to
+`ProductionEpisodes`, which is in the common data digest): run each worker with `--max-jobs N` (exists) and let the
+supervisor below restart it when it exits with work left, so a process never accumulates many tasks; or claim jobs
+task-affinely (a worker takes jobs of at most 2-3 tasks; a queue change, not in any data digest); plus a per-worker
+`docker --memory` limit so an overrun kills that worker, not a random one. The pilot measures memory per worker.
 
 - **Heartbeat leases:** `LEASE_S` 3 h → 10 min, renewed every 60 s by the existing `keep_lease` thread. A dead or
   frozen process (its renewal thread stops too, as w8's did) loses its job within 10 minutes instead of 3 hours; a
@@ -151,7 +162,7 @@ is enough depends on how often escalation helps, which is what the pilot measure
   tail; (ii) a unit still active whose job's lease has expired (alive but frozen) is stopped (`docker stop`, then
   kill) and restarted; (iii) every restart is recorded in the step log and `history.jsonl`. Exit status 3 (refused
   job) is never restarted.
-- **Worker count:** unchanged until w8's cause is known (its evidence is the smoke step's first action).
+- **Worker count:** not increased (memory, above).
   `servers.workers` is in the frozen write-once group, so a change needs a dated supplement. The padded sizes
   (`max_batch` 4, 20 sample rows) do not depend on the worker count; if a change ever alters any padded batch size,
   the bit-exact batch checks are re-run first (float32 alone does not make results shape-independent).

@@ -112,11 +112,53 @@ def collect(sim, root, meta):
 @pytest.fixture(scope="module")
 def pair(sim, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("smoke")
+    # as on the VM: the originals under a lineage calibration and the freeze's ops code, the re-run under the
+    # frozen calibration and newer ops code (provenance only: every executed value must still be equal)
     orig = collect(sim, tmp / "orig", {"provenance": {"ops_digest": "frozen-ops"}})
+    relabel(orig, "cal-0", "frozen-ops")
     good = {"provenance": {"ops_digest": "new-ops"}, "ops_waiver": {"freeze_ops_digest": "frozen-ops"},
             "boot_id": BOOT, "golden_pass": {"passed": True, "boot_id": BOOT, "calibration_hash": CAL,
                                              "image_check": {"sim": "sha256:x"}}}
-    return orig, collect(sim, tmp / "smoke", good), good
+    rerun = collect(sim, tmp / "smoke", good)
+    relabel(rerun, CAL, "new-ops")
+    return orig, rerun, good
+
+
+def relabel(storage, cal, ops):
+    """Rewrite one collection's provenance (the runs table's calibration hash, every snapshot header) and the
+    marker's hashes, as records made under another calibration version and ops code would have it."""
+    import hashlib
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from vlar_ops.plan import job_id
+    from vlar_ops.queue import result_key
+    mkey = result_key("base", job_id(SUBJECT, "episode", 1))
+    marker = json.loads(storage.get_bytes(mkey))
+    for art in marker["result"]["artifacts"]:
+        data = storage.get_bytes(art["key"])
+        if art["key"].startswith("records/runs/"):
+            t = pq.read_table(io.BytesIO(data))
+            t = t.set_column(t.column_names.index("calibration_hash"), "calibration_hash",
+                             pa.array([cal] * t.num_rows, pa.string()))
+            buf = io.BytesIO()
+            pq.write_table(t, buf)
+            data = buf.getvalue()
+        elif art["key"].startswith("snapshots/"):
+            z = dict(np.load(io.BytesIO(data), allow_pickle=False))
+            meta = json.loads(z["__meta__"].tobytes().decode())
+            for k, v in meta["$dict"]:
+                if k == "header":
+                    v["$dict"] = [kv for kv in v.get("$dict", []) if kv[0] not in ("calibration_hash", "ops_digest")]
+                    v["$dict"] += [["calibration_hash", cal], ["ops_digest", ops]]
+            z["__meta__"] = np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8)
+            buf = io.BytesIO()
+            np.savez_compressed(buf, **z)
+            data = buf.getvalue()
+        else:
+            continue
+        storage.put_bytes(art["key"], data)
+        art["sha256"], art["size"] = hashlib.sha256(data).hexdigest(), len(data)
+    storage.put_bytes(mkey, json.dumps(marker).encode())
 
 
 def test_plan_from_markers_gives_the_original_jobs(pair, tmp_path):
@@ -134,10 +176,36 @@ def test_plan_from_markers_gives_the_original_jobs(pair, tmp_path):
 def test_the_same_job_twice_compares_equal(pair):
     from vlar_ops import smoke
     orig, rerun, _ = pair
-    rep = smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL)
+    rep = smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL, lineage=["cal-0"])
     assert rep["passed"], rep
     (j,) = rep["jobs"]
     assert j["provenance_differs_in"] == ["ops_digest"] and j["artifacts"] > 4
+    assert j["snapshot_header_differs_in"] == ["calibration_hash", "ops_digest"]
+    assert j["calibration"] == {"original": ["cal-0"], "rerun": [CAL]}
+    # an original outside the freeze's lineage is not v1.0
+    bad = smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL, lineage=["cal-9"])
+    assert not bad["passed"] and any("lineage" in p for p in bad["jobs"][0]["problems"])
+
+
+def test_a_snapshot_changed_outside_its_header_is_caught(pair):
+    from vlar_ops import smoke
+    from vlar_harness.dataset import snapshot_key
+    orig, rerun, _ = pair
+    key = snapshot_key(f"{SUBJECT}/dp03")
+    saved = rerun.get_bytes(key)
+    z = dict(np.load(io.BytesIO(saved), allow_pickle=False))
+    meta = json.loads(z["__meta__"].tobytes().decode())
+    pairs = dict((k, i) for i, (k, _) in enumerate(meta["$dict"]))
+    meta["$dict"][pairs["event_log"]][1].pop()                     # one event fewer in the stored prefix
+    z["__meta__"] = np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8)
+    buf = io.BytesIO()
+    np.savez_compressed(buf, **z)
+    try:
+        rerun.put_bytes(key, buf.getvalue())
+        rep = smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL, lineage=["cal-0"])
+        assert any(f"{key}: snapshot meta differs outside its header" in p for p in rep["jobs"][0]["problems"])
+    finally:
+        rerun.put_bytes(key, saved)
 
 
 def test_a_changed_record_is_caught_with_its_column(pair):
@@ -156,7 +224,7 @@ def test_a_changed_record_is_caught_with_its_column(pair):
         buf = io.BytesIO()
         pq.write_table(pa.Table.from_pylist(rows, schema=t.schema), buf)
         rerun.put_bytes(key, buf.getvalue())
-        rep = smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL)
+        rep = smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL, lineage=["cal-0"])
         assert not rep["passed"]
         assert any("column eef_pos differs first at row 7" in p for p in rep["jobs"][0]["problems"])
     finally:
@@ -185,6 +253,6 @@ def test_a_marker_without_the_waiver_this_boot_or_its_golden_pass_is_caught(pair
         meta["golden_pass"]["image_check"] = None
     try:
         rerun.put_bytes(key, json.dumps(m).encode())
-        assert not smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL)["passed"]
+        assert not smoke.compare(orig, rerun, [SUBJECT], boot=BOOT, calibration_hash=CAL, lineage=["cal-0"])["passed"]
     finally:
         rerun.put_bytes(key, saved)

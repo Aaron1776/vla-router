@@ -205,8 +205,12 @@ def _bits(v):
     return v
 
 
-def table_difference(a: bytes, b: bytes) -> Optional[str]:
-    """None if two Parquet files hold the same values bit for bit, else the first differing column and row."""
+PROVENANCE_COLUMNS = ("calibration_hash",)   # runs table: the calibration file in effect, checked apart
+
+
+def table_difference(a: bytes, b: bytes, skip: Sequence[str] = ()) -> Optional[str]:
+    """None if two Parquet files hold the same values bit for bit (columns in `skip` aside), else the first differing
+    column and row."""
     import pyarrow.parquet as pq
     ta, tb = pq.read_table(io.BytesIO(a)), pq.read_table(io.BytesIO(b))
     if ta.schema != tb.schema:
@@ -214,6 +218,8 @@ def table_difference(a: bytes, b: bytes) -> Optional[str]:
     if ta.num_rows != tb.num_rows:
         return f"{ta.num_rows} rows vs {tb.num_rows}"
     for name in ta.column_names:
+        if name in skip:
+            continue
         for r, (x, y) in enumerate(zip(ta[name].to_pylist(), tb[name].to_pylist())):
             if _bits(x) != _bits(y):
                 return f"column {name} differs first at row {r}"
@@ -226,6 +232,28 @@ def _npz(data: bytes) -> dict:
         return {k: z[k] for k in z.files}
 
 
+def column_values(data: bytes, column: str) -> list:
+    import pyarrow.parquet as pq
+    t = pq.read_table(io.BytesIO(data))
+    return t[column].to_pylist() if column in t.column_names else []
+
+
+def _plain(v):
+    """The snapshot encoder's `{"$dict": [[k, v], ...]}` as a dict (keys and values recursively)."""
+    if isinstance(v, dict) and "$dict" in v:
+        return {_key(k): _plain(x) for k, x in v["$dict"]}
+    if isinstance(v, dict):
+        return {k: _plain(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_plain(x) for x in v]
+    return v
+
+
+def _key(k):
+    k = _plain(k)
+    return json.dumps(k, sort_keys=True) if isinstance(k, (dict, list)) else k
+
+
 def npz_difference(a: bytes, b: bytes, *, snapshot: bool) -> tuple[Optional[str], list[str]]:
     """(first difference, header keys that differ). A snapshot's `__meta__` is compared without its provenance
     header, whose ops digest legitimately differs under the waiver."""
@@ -236,7 +264,9 @@ def npz_difference(a: bytes, b: bytes, *, snapshot: bool) -> tuple[Optional[str]
     for k in sorted(za):
         x, y = za[k], zb[k]
         if snapshot and k == "__meta__":
-            ma, mb = json.loads(x.tobytes().decode()), json.loads(y.tobytes().decode())
+            ma, mb = (_plain(json.loads(m.tobytes().decode())) for m in (x, y))
+            if not isinstance(ma, dict) or not isinstance(mb, dict):
+                return "snapshot meta is not a mapping", header_keys
             ha, hb = ma.pop("header", {}), mb.pop("header", {})
             header_keys = sorted(h for h in set(ha) | set(hb) if ha.get(h) != hb.get(h))
             if ma != mb:
@@ -246,7 +276,10 @@ def npz_difference(a: bytes, b: bytes, *, snapshot: bool) -> tuple[Optional[str]
     return None, header_keys
 
 
-def compare_job(orig, smoke, phase: str, jid: str, *, boot: Optional[str], calibration_hash: Optional[str]) -> dict:
+def compare_job(orig, smoke, phase: str, jid: str, *, boot: Optional[str], calibration_hash: Optional[str],
+                lineage: Sequence[str] = ()) -> dict:
+    """`lineage`: the calibration versions the freeze record names; an original record may carry any of them (they
+    count as v1.0, amendment 35), the re-run must carry the frozen `calibration_hash`."""
     problems: list[str] = []
     mo_b, ms_b = orig.get_bytes(result_key(phase, jid)), smoke.get_bytes(result_key(phase, jid))
     if mo_b is None or ms_b is None:
@@ -274,7 +307,7 @@ def compare_job(orig, smoke, phase: str, jid: str, *, boot: Optional[str], calib
     arts_s = {a["key"]: a for a in ms["result"]["artifacts"]}
     if set(arts_o) != set(arts_s):
         problems.append(f"artifact keys differ: {sorted(set(arts_o) ^ set(arts_s))[:5]}")
-    same_bytes, header_keys = 0, set()
+    same_bytes, header_keys, cal_seen = 0, set(), {"original": set(), "rerun": set()}
     for key in sorted(set(arts_o) & set(arts_s)):
         a, b = orig.get_bytes(key), smoke.get_bytes(key)       # the objects themselves, not the markers' word
         if a is None or b is None:
@@ -287,13 +320,21 @@ def compare_job(orig, smoke, phase: str, jid: str, *, boot: Optional[str], calib
             same_bytes += 1
             continue
         if key.startswith("records/"):
-            d = table_difference(a, b)
+            d = table_difference(a, b, skip=PROVENANCE_COLUMNS)
+            for who, data in (("original", a), ("rerun", b)):
+                cal_seen[who].update(column_values(data, "calibration_hash"))
         else:
             d, hk = npz_difference(a, b, snapshot=key.startswith("snapshots/"))
             header_keys.update(hk)
         if d:
             problems.append(f"{key}: {d}")
+    allowed = set(lineage) | {calibration_hash}
+    if not cal_seen["original"] <= allowed:
+        problems.append(f"original records' calibration {sorted(cal_seen['original'])} is not in the freeze's lineage")
+    if cal_seen["rerun"] - {calibration_hash}:
+        problems.append(f"re-run records' calibration {sorted(cal_seen['rerun'])} is not the frozen one")
     return {"job_id": jid, "subject": mo["job"]["subject"], "passed": not problems, "problems": problems,
+            "calibration": {k: sorted(v) for k, v in cal_seen.items()},
             "artifacts": len(arts_o), "identical_bytes": same_bytes, "provenance_differs_in": prov_diff,
             "snapshot_header_differs_in": sorted(header_keys), "summary": ms["result"].get("summary"),
             "worker": {"original": ometa.get("worker_id"), "rerun": meta.get("worker_id")},
@@ -301,9 +342,9 @@ def compare_job(orig, smoke, phase: str, jid: str, *, boot: Optional[str], calib
 
 
 def compare(orig, smoke, subjects: Sequence[str], *, boot: Optional[str], calibration_hash: Optional[str],
-            phase: str = "base") -> dict:
-    jobs = [compare_job(orig, smoke, phase, job_id(s, "episode", 1), boot=boot, calibration_hash=calibration_hash)
-            for s in subjects]
+            lineage: Sequence[str] = (), phase: str = "base") -> dict:
+    jobs = [compare_job(orig, smoke, phase, job_id(s, "episode", 1), boot=boot, calibration_hash=calibration_hash,
+                        lineage=lineage) for s in subjects]
     return {"passed": all(j["passed"] for j in jobs), "jobs": jobs}
 
 
