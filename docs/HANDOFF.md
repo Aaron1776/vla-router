@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: stage B done through step 6, freeze waits for the user)
+# Handoff: state of the harness build (2026-11-24: freeze approved and running on the L4)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -349,8 +349,16 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-24, 08:55Z): stage B is done through step 6. The L4 is STOPPED (TERMINATED 08:48Z) and waits for
-the user's decision on the freeze (`600`).** `400` done 08:41:41Z (36925 s; all 500 episodes; no failure, time cap
+**NOW (2026-11-24): the freeze is approved and queued: `550-gripper.sh` (amendments 50-51) and `600-freeze.sh`
+were copied into the bucket's queue from `harness-v1`, so `CURRENT` stays `0a0cd4c`, and the L4 was started.** On
+boot the runner runs `500` (still queued; same records and calibration file, so it ends done), then `550` (a new
+calibration version: shut 3.0 mm, the ground-truth note), then `600` (golden set, freeze, verify, golden check again);
+the queue then runs empty and the VM stops. If the golden check fails: stop, report, no debugging (the user).
+**Finding: removing a step from the bucket's queue does not remove the VM's copy.** `pull_queue` is a
+`gcloud storage rsync` without deletion, and the VM's local queue survives a stop. So the earlier advice ("delete
+`phase0/queue/500-calibrate.sh` before starting the VM") would not have stopped `500` (it never came to that). To
+take a step out of the queue, it must also be removed on the VM (or replaced in the bucket queue).
+Below: the state at 08:55Z, before the review. `400` done 08:41:41Z (36925 s; all 500 episodes; no failure, time cap
 or preemption, so the pre-approved recovery was not needed). `500` ended with exit 75 at 08:48:34Z as designed and
 stays queued: a re-run with the same records and calibration file ends done, so a `600` queued behind it runs.
 Spend guard $7.43 (VM $7.03 over 14.93 h, disk $0.40). All results are in `phase0/step6/`:
@@ -377,12 +385,18 @@ its resting place), and report how the current thresholds classify held and not-
 open thresholds at the clearest separation, with the resulting grasp-check numbers and misclassification rates on
 the ground truth, or, if nothing separates cleanly (thin objects overlapping "closed on nothing"), say so and give
 the best achievable rates. **Show the user before writing a new calibration version.** Also (the user): record the
-actual post-handoff distances in the handoff check from now on. **To queue `600` once approved:** `gcloud storage cp ops/vm/phase0/steps/600-freeze.sh gs://$BUCKET/vla-router/phase0/queue/` (the script is
-unchanged since `0a0cd4c`), then `gcloud compute instances start $VM_NAME --zone $ZONE` and watch. Do NOT use the
-summary's printed `31_phase0_queue.sh` command: it would move `CURRENT` off `0a0cd4c`. Pause rule: delete the VM and
-its disk if it is still stopped at 08:48Z on 2026-11-25.
+actual post-handoff distances in the handoff check from now on. **The user's decisions on the review (SPEC §17,
+amendments 50-52):** shut 3.0 mm, open unchanged at 71.55 mm, as a new calibration version; the 5%-band rule retired
+and replaced by the ground-truth validation (numbers in the version's note; files in
+`vla-router/phase0/step6/grasp-review/`); no post-handoff distance recording. Freeze approved with these thresholds.
+**How `600` is queued:** `gcloud storage cp ops/vm/phase0/steps/{550-gripper,600-freeze}.sh gs://$BUCKET/vla-router/phase0/queue/`
+(`600` unchanged since `0a0cd4c`), then `gcloud compute instances start $VM_NAME --zone $ZONE` and watch. Never the
+summary's printed `31_phase0_queue.sh` command: it would move `CURRENT` off `0a0cd4c`. `550` was dry-run on the Mac
+against a copy of the bucket's calibration file (same `vlar_harness` as the images): only the shut threshold changes,
+the write-once group is complete, the time limits are kept. Pause rule: delete the VM and its disk if it is still
+stopped for a day.
 
-**Grasp-threshold review (2026-11-24, on the Mac; nothing written to the calibration file; waiting for the user).**
+**Grasp-threshold review (2026-11-24, on the Mac; decided by the user, see above).**
 Files in `outputs/grasp/` (git-ignored): plots `grasp_widths.png` and `grasp_ground_truth.png`, `truth.json`,
 `sample.json`, and the scripts (run from the repo root; `eligible.py` reads local copies of `records/`).
 - Widths: 55,915 settled commanded-closed steps. A spike at 1.0 mm and a tail to 2.3 mm (empty gripper), a valley
