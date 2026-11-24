@@ -180,12 +180,81 @@ def test_a_running_job_renews_its_lease(tmp_path):
     import time
     storage, q = setup(tmp_path)
     job = q.claim("A", lease_s=0.2)
-    with q.keep_lease(job, "A", lease_s=0.2, every_s=0.05) as lease:
-        time.sleep(0.6)                                        # three lease lengths
+    ticks = iter(range(10 ** 6))
+    with q.keep_lease(job, "A", progress=lambda: next(ticks), lease_s=0.2, every_s=0.05) as lease:
+        time.sleep(0.6)                                        # three lease lengths, progressing all the time
         other = q.claim("B")
         assert other is None or other.job_id != job.job_id
-    assert lease["renewals"] >= 5 and not lease["lost"]
+    assert lease["renewals"] >= 5 and not lease["lost"] and lease["stalls"] == 0
     assert q.complete(job, {"ok": 1}, worker_id="A")
+
+
+def test_a_stuck_job_is_not_renewed_and_another_worker_takes_it(tmp_path):
+    import time
+    storage, q = setup(tmp_path)
+    job = q.claim("A", lease_s=0.2)
+    with q.keep_lease(job, "A", progress=lambda: 7, lease_s=0.2, every_s=0.05) as lease:
+        time.sleep(0.35)                                       # no progress: the lease runs out
+        assert q.claim("B").job_id == job.job_id
+    assert lease["renewals"] == 0 and lease["stalls"] >= 4
+    from vlar_ops.queue import LeaseLost
+    with pytest.raises(LeaseLost):
+        q.complete(job, {"ok": 1}, worker_id="A")
+
+
+def test_progress_resumes_renewal_and_counts_uploads(tmp_path):
+    import time
+
+    from vlar_ops.worker import Progress, upload
+    storage, q = setup(tmp_path)
+    job = q.claim("A", lease_s=0.3)
+    state = {"steps": 0}
+    prog = Progress(lambda: state["steps"])
+    with q.keep_lease(job, "A", progress=prog.token, lease_s=0.3, every_s=0.05) as lease:
+        time.sleep(0.12)
+        stalled = lease["stalls"]
+        state["steps"] = 1                                     # the episode advanced
+        time.sleep(0.12)
+        assert lease["renewals"] >= 1 and stalled >= 1
+        before = lease["renewals"]
+        runner, _ = files_runner(tmp_path)
+        arts, _ = runner(job)
+        upload(storage, arts, on_put=prog.bump)                # uploads count as progress too
+        assert prog.uploads == len(arts)
+        time.sleep(0.12)
+        assert lease["renewals"] > before
+    assert q.complete(job, {"ok": 1}, worker_id="A")
+
+
+def test_tracked_episodes_token_follows_the_running_episode():
+    from vlar_ops.vm_worker import TrackedEpisodes
+
+    class Ep:
+        def __init__(self):
+            self.events, self.trajectory = [], []
+    made = []
+    t = TrackedEpisodes(lambda task: made.append(Ep()) or made[-1])
+    assert t.token() is None
+    ep = t(3)
+    assert ep is made[0]                                       # the episode itself, unchanged
+    first = t.token()
+    ep.trajectory.append({})
+    assert t.token() != first
+    second = t.token()
+    ep.events.append({})
+    assert t.token() != second
+    t(3)
+    assert t.token()[0] == id(made[1])
+
+
+def test_worker_exit_status_tells_recycling_from_done():
+    from vlar_ops.cli import worker_exit
+    zero = {"done": 0, "done_local": 0, "retry": 0, "failed": 0, "refused": 0, "lost": 0}
+    assert worker_exit({**zero, "done": 5}, 5) == 4            # took its --max-jobs jobs
+    assert worker_exit({**zero, "done": 3, "failed": 1, "lost": 1}, 5) == 4
+    assert worker_exit({**zero, "done": 2}, 5) == 0            # nothing left to claim (or the stop flag)
+    assert worker_exit({**zero, "done": 2}, None) == 0
+    assert worker_exit({**zero, "done": 5, "refused": 1}, 5) == 3
 
 
 def test_renewal_notices_a_lost_lease_and_the_worker_counts_it(tmp_path, monkeypatch):

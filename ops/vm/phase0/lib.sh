@@ -102,29 +102,26 @@ wait_servers() {   # both production servers answer /info (they load the weights
 }
 
 # run_phase <phase> <worker args>: the production servers and the calibrated number of workers until no job of the
-# phase is left; up to three rounds (a worker that died leaves its lease, which `queue resume` releases).
+# phase is left. `vlar-ops supervise` sizes each worker's memory limit from the running servers, writes worker.env
+# (--max-jobs, docker --memory), starts the workers, restarts any that die or freeze (at most 3 times each) and starts
+# again those that took their --max-jobs jobs (PROPOSALS-2026-11-24 §0.6).
 run_phase() {
-  local phase="$1" args="$2" n round counts
+  local phase="$1" args="$2" n counts
   n="$(calfile get servers.workers)"; [[ "${n}" =~ ^[0-9]+$ ]] || fail "no worker count in the calibration file"
   [[ -s /etc/vlar/batching.env ]] || write_batching_env
-  printf 'VLAR_WORKER_ARGS=%s\n' "${args}" > /etc/vlar/worker.env
   systemctl start vlar-xvla vlar-pi05 || fail "model servers did not start"
   wait_servers || { systemctl stop vlar-xvla vlar-pi05; fail "model servers not answering /info after 10 minutes"; }
   if calibration_frozen; then        # §15: a frozen harness replays its golden set before any worker starts
     golden_check || { systemctl stop vlar-xvla vlar-pi05; fail "golden-set self-check failed: no worker started (§15)"; }
   fi
-  for round in 1 2 3; do
-    vlar-ops queue resume >/dev/null
-    for i in $(seq 1 "${n}"); do systemctl start "vlar-worker@${i}"; done
-    while systemctl list-units 'vlar-worker@*' --state=active --no-legend | grep -q .; do
-      sleep 120; echo "$(date -u +%FT%TZ) ${phase}: $(vlar-ops queue status --phase "${phase}" | tail -n 1)"
-    done
-    vlar-ops queue sync >/dev/null
-    counts="$(vlar-ops queue status --phase "${phase}" | tail -n 1)"
-    python3 -c 'import json,sys; c=json.loads(sys.argv[1]); sys.exit(0 if c["pending"]+c["leased"]+c["done_local"]==0 else 1)' "${counts}" && break
-  done
+  vlar-ops queue resume >/dev/null
+  vlar-ops supervise --phase "${phase}" --workers "${n}" --worker-args "${args}" --worker-env /etc/vlar/worker.env \
+    --history "${P0D}/history.jsonl" --step "${phase}" \
+    || { systemctl stop 'vlar-worker@*' vlar-xvla vlar-pi05; fail "${phase}: supervisor stopped (see the step log)"; }
+  vlar-ops queue sync >/dev/null
+  counts="$(vlar-ops queue status --phase "${phase}" | tail -n 1)"
   systemctl stop vlar-xvla vlar-pi05
   echo "${phase}: ${counts}"
   python3 -c 'import json,sys; c=json.loads(sys.argv[1]); sys.exit(0 if c["pending"]+c["leased"]+c["done_local"]+c["failed"]==0 else 1)' "${counts}" \
-    || fail "${phase} incomplete after 3 rounds: ${counts}"
+    || fail "${phase} incomplete: ${counts}"
 }

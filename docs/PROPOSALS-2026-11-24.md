@@ -1,9 +1,216 @@
 # Proposals for the user's approval (2026-11-24): items 6 and 9 of the post-freeze list
 
-Nothing here is approved or implemented. Numbers marked *est.* are estimates from the measurements named; the pilot
+**Status (2026-11-24, later): the user's decisions are in §0, which supersedes §2-§4 and §6 where they differ.** Originally: nothing here was approved or implemented. Numbers marked *est.* are estimates from the measurements named; the pilot
 replaces them with measured values. Prices: $0.472 per VM hour (g2-standard-16 Spot with its L4); the spend ledger
 reads **$9.76** (VM $7.12, disk $0.44, the $2.20 of image builds and other non-VM charges added with `spend charge`),
 so about **$30 remains to the $40 soft limit** (the hard stop stays at $45; $5 is kept for storage and the download).
+
+
+## 0. Decisions and revised plan (the user, 2026-11-24)
+
+**Decisions.** 3a (common random numbers, shared trunk) approved: amendment 55 in SPEC §17, with a 20-episode live
+audit per decider and round. 3b approved in principle, keeping outcome-stratified selection possible (§0.3 says how,
+on the frozen harness). Pilot and stop rule approved, with the additions in §0.4. Worker fixes approved: `--max-jobs`
+with supervisor restarts plus per-worker memory limits, and progress-gated leases. All are required before the pilot
+boots. Task-affine claiming only if the pilot shows that restart overhead matters. Restarter (§7) approved; build it
+before the first long unattended Phase 1 run. Keep the VM and disk until ~09:45Z 2026-11-25. Pilot boot approved
+up to $2.50 once the worker fixes are tested and this section is written.
+
+### 0.1 Budget, revised
+
+Prices as in §1: $0.472 per VM hour; disk ~$0.33 per day while the VM exists. Ledger **$9.94** (VM $7.28, disk
+$0.45, charges $2.20), so **$30.06 remains to $40**. Per-run VM-s are §1's estimates; the pilot replaces them.
+
+**(a) Evaluation at q = 0.7.** The profile costs assume ~5 escalations per learned-decider episode, so q = 0.4 was
+optimistic. The trunk plan at q = 0.7, first escalation 40% into the episode, with scripted baselines at their upper
+bound (escalating from the first point):
+
+| Item | VM-s | $ |
+| --- | --- | --- |
+| Trunk: 500 × 76 | 38,000 | 4.98 |
+| Pre-DAgger suffixes: router 500 × 0.7 × 0.6 × 16, `cascader_full` × 80 | 3,360 + 16,800 | 2.64 |
+| Post-DAgger suffixes: router, `cascader_full`, `cascader_nospread` | 23,520 | 3.08 |
+| Fixed-schedule (≤ whole episode, router profile) | ≤ 8,000 | 1.05 |
+| Random × 2 (same) | ≤ 16,000 | 2.10 |
+| π0.5 alone: 500 × 12.7 | 6,350 | 0.83 |
+| Audit (amendment 55): 20 fully live episodes per decider and round | 1,920 + 2,240 | 0.55 |
+| **Evaluation** | | **15.23** |
+
+The proposal's ~$15.0 plus the audit. Contingencies paid from the reserve: `xvla_only` run separately if the trunk
+check fails ($0.46); `/features` recomputed at trunk snapshots if `/sample` features differ from `/features`
+(~$0.7 *est.*). `cascader_chunkspread` (post-DAgger, ~$0.40-1.15 for q 0.2-0.7, with its audit) and the λ sweep
+(router and `cascader_full` at 2 more λ: ~$1.5-5.3) are funded only from what a lower measured q saves. Once the
+pre-DAgger evaluation has measured q for the router and `cascader_full`, the post-DAgger block is re-projected at
+that q. The difference from its $6.52 line funds chunkspread first, then the λ sweep if enough is left.
+For reference, at q = 0.4 the evaluation is $12.78 (saving $2.45); at q = 0.2, $11.14.
+
+**(b) Preemption reserve: a real 10%** of planned VM spend: **$2.58**.
+
+**(c) Branch 3 dropped from Phase 1 and from DAgger branch collection** (`branches.enabled` without
+`b3_three_calls`, §12 reduction step 2; a tunable, so the data digest is unchanged, amendment 49). It stays in the
+pilot, which reports b3 against b1. Its share goes into more points. Per point without b3: base parents 8 runs
+(b1 needs 2 more seeds), exploration and DAgger parents 9 runs. At 7 VM-s per run (*est.*), $0.0073 and $0.0083 per
+point. **Training already supports a missing head 3**, checked in the code and now tested. The planner leaves a
+disabled branch out of the entry's `shares` (`branchplan.branch_plan`; `tests/test_plan.py`). Labels exist only for
+the entry's branches (`labels.point_labels`). `vlar_train.data` fills absent labels with NaN, and `PointSet.targets`
+turns them into mask 0. `train._loss` multiplies each head's BCE by the mask and divides by the mask's sum. λ uses
+heads 1 and 2 only (`run.py`). New test: `test_absent_branch_labels_are_masked_out_of_training` (a head-3 label at
+masked rows changes nothing, bit for bit).
+
+**(d) Per-phase stop lines.** Each phase gets an allocation and a stop line on the ledger's VM spend since the phase
+began. The workers check it before each claim (the existing stop flag, raised by the spend service for that phase)
+and the runner checks it before each step. Disk is tracked on its own line. A branch phase stops cleanly at any point
+(tiered job order, §12), so its line equals its allocation. Rollout and evaluation phases may overrun by 8%, and
+the pilot up to its cap. Together these use the reserve, since 10% each would exceed it.
+
+| Phase (in order) | Allocation | Stop line |
+| --- | --- | --- |
+| Pilot | 1.60 | 2.50 (the user's cap) |
+| Phase 1: exploration screening (§0.3) | 0.98 | 1.06 |
+| Phase 1: exploration re-runs and branches, base and exploration points | 3.24 | 3.24 |
+| Phase 2 training (on the Mac) | 0 | |
+| Pre-DAgger evaluation: trunk, router, `cascader_full`, π0.5 alone, audits | 8.71 | 9.41 |
+| DAgger rollouts: `cascader_full` half record `full`; router half screened (§0.3) | 3.14 | 3.39 |
+| DAgger re-runs and branches | 1.62 | 1.62 |
+| Post-DAgger evaluation and baselines, audits | 6.52 | 7.04 |
+| Disk (~$0.33/day; ~55 VM-h over ~5 days) | 1.65 | pause rule |
+| Reserve (10% of planned VM spend) | 2.58 = 0.90 pilot headroom + 1.55 overrun shares + 0.13 unassigned | |
+| **Total** | **30.06** | |
+
+The pilot's overrun share ($0.90, up to its cap) is the user's approval; if the pilot comes in at $1.6, the
+difference stays in the reserve. The lines need code: a phase name and line in the spend service, checked as the
+hard limit is now. The pilot can use it.
+
+**(e) The DAgger round in labelled-point equivalents.** Apart from its own labels, the round costs DAgger rollouts
+$3.14 plus the post-DAgger router and `cascader_full` suffixes $2.64 plus their audits $0.25, **$6.04 in all**.
+Post-DAgger `cascader_nospread` and the baselines are needed either way. That is **~590 Phase 1 points** at Phase
+1's mixed price ($0.0102), or ~820 base-parent points, against **~317 Phase 1 points in the whole plan**. Its own
+150 points cost $1.62 (~160 Phase 1 points), and its reserve share is ~$0.77. Without the round, Phase 1 could have
+~1,070 points instead of 317 (n ≈ 107 per task instead of 47 in all). §10's before/after-DAgger comparison would
+then be lost.
+
+**Branches and points at this budget.** $30.06 − fixed lines (pilot, rollouts, evaluation, disk: $22.61) − reserve
+$2.58 = **$4.86 for branches and re-runs**: two thirds to Phase 1, one third to DAgger (the §3 ratio).
+- Phase 1: ~159 base points + ~159 exploration points (re-run cost shared by k = 2 points per re-run episode; ~79
+  exploration episodes re-run): **~317 points**, ~32 per task.
+- DAgger: ~75 `cascader_full`-parent + ~75 router-parent points (~37 router episodes re-run): **~149 points**, ~15
+  per task.
+- **~466 labelled points in all, ~47 per task.**
+
+### 0.2 What this means for the stop rule (before the pilot)
+
+With ~47 points per task, ≥ 20 positives per task needs a positive rate of **43% of all points** under uniform
+sampling. A positive needs p_1 ≤ 2/3. At a base point in a successful episode, b1's first seed is the parent itself,
+a success, so p_1 ≤ 2/3 also needs one of the 2 new seeds to fail. Positives therefore come mostly from the ~20%
+of points in failed parents, and uniform sampling will almost certainly fail the stop rule. With stratified sampling
+taking 2/3 of each task's points from failed parents, the failed-parent positive rate π^F must reach **≥ 64%**
+(if positives elsewhere are rare). ≥ 100 per fold (8 × 47 = 376 points) needs 27% overall, or π^F ≥ 40% stratified.
+So the per-task threshold binds before the per-fold one. **The thresholds (20 per task, 100 per fold) were set
+against §3's 660 points. At ~466 they are near the edge even with stratification. This is a decision for the user,
+before or after the pilot:** keep them, lower them, or move points from elsewhere (e.g. the DAgger round, (e)).
+
+### 0.3 Probes only at sampled points, with outcome-stratified selection kept possible (decision 3)
+
+**Neither proposed method runs on the frozen harness.** The harness has two record modes, `off` and `full`
+(`episode.RECORD_MODES`). `collect.Runner` writes snapshots and `points` rows only under `full`. Recording probes
+at a candidate subset would therefore need a new record mode in `Episode._needs` and `Runner._episode`. That is a
+harness change: a v1.1 freeze, a new golden set and the VM re-run rows. A run recorded `off` leaves no snapshots,
+so there is nothing to replay probes from either. Replaying from a `full` run's snapshots saves nothing, because
+that run already recorded every probe.
+
+**What does run on the frozen harness: screen, then re-run whole episodes.**
+1. **Screen.** Every exploration episode runs with record `off` and profile `none` (scripted random escalation,
+   no measurement calls): ~15 VM-s instead of 74 (*est.*), **$0.98** for 500. It records the run, steps and events,
+   so the outcome is known when it ends.
+2. **Select.** After screening, choose the episodes and points to branch with a recorded seed, uniform or stratified
+   by outcome (§0.5), k points per chosen episode (k = 2 planned).
+3. **Re-run.** Each chosen episode runs again with the same rollout seed and record `full`. This is the §7 episode
+   exactly: snapshots and full measurement at every point, which also serves §13. It costs 74 VM-s per chosen
+   episode, i.e. 37 VM-s per point at k = 2. The re-run must equal the screened run bit for bit (steps, events,
+   outcome): probe neutrality on the real models (item 5) says it does. Every re-run is compared with its screened
+   run (free), and any difference stops the re-runs (max-effort checkpoint).
+- **DAgger:** the `cascader_full` half makes all the measurement calls for its own decisions anyway, so it records
+  `full` from the start ($2.62). The router half is screened with record `off` under its live router ($0.52) and
+  its chosen episodes are re-run with record `full`. The router's mid-point features then come from the `/sample`
+  probe, not `/features`, so the re-run reproduces the screened run only if the two are equal bit for bit (the
+  pilot's check, §0.4). Otherwise the router half also records `full` from the start: +$2.1, the same mismatch §9's
+  plan has.
+- **Cost against the alternatives:** exploration plus DAgger rollouts **$5.30** (screening $0.98 + exploration
+  re-runs $0.77 + DAgger $3.14 + router re-runs $0.39), against $10.09 recording `full` everywhere and $4.9 for
+  §3b as first proposed (which needed the harness change). Base parents need nothing: they are already `full`, and
+  their outcomes are known.
+
+### 0.4 Pilot (§4): additions
+
+Unchanged otherwise: 150 base points, 11 runs each with b3 kept, ~$1.6, stopped at $2.50.
+- **Projected positives per task and per fold, under both sampling schemes.** From the pilot's per-task rates in
+  each stratum, π_t^F (points in failed parents) and π_t^S (in successful ones), with 95% intervals. The pilot
+  samples both strata in every task and records the weights. At the budgeted n_t (~47 per task: Phase 1 + DAgger):
+  uniform E[pos_t] = n_t (φ_t π_t^F + (1 − φ_t) π_t^S), with φ_t the task's base failure rate; stratified
+  E[pos_t] = n_t (s π_t^F + (1 − s) π_t^S), with s = 2/3 (capped by the failed points available). Per fold: the
+  sum over its 8 training tasks. The stop rule is evaluated for both. Exploration and DAgger parents are projected
+  with base rates, as no others exist yet (stated in the report).
+- **Measured cost per branch type:** VM-s per run for b1, b2, b3 and b4 (from the GPU/VM-time ratio and each job's
+  wall time and calls), per point with and without b3, and b4's share of each point's cost.
+- **Cheap checks the revised plan rests on:** (i) `/sample` probe features against `/features` on the same
+  restored base snapshots, bit for bit (amendment 55 (5); §0.3's router re-runs); (ii) routed always-local against
+  `xvla_only`, 3 episodes, bit for bit (amendment 55 (2)); (iii) 3 base episodes re-run with record `off` against
+  their `full` records, bit for bit (§0.3's screening); (iv) peak memory per worker and restart overhead under
+  `--max-jobs` (§0.6). Together well under $0.05.
+
+### 0.5 Proposed amendment (draft, not approved): outcome-stratified decision-point sampling with weighted training
+
+1. **Strata:** (parent kind, task, parent outcome). The outcome is success at 520 steps without a time cutoff for
+   scripted parents (base, exploration screening), and success under the parent's own live profile for DAgger
+   parents. It is known once the parent episode ends.
+2. **Selection:** in each stratum, eligible points (budget ≥ 10 steps) are drawn uniformly with a recorded seed.
+   Base parents are drawn by point. Re-run parents (exploration, DAgger router half) are drawn by episode, then k
+   points within it. Per task, a share s of the points (proposed 2/3) comes from failed parents, capped by the
+   failed points available.
+3. **Weights:** each point's inclusion probability π_i is recorded in its branch-plan entry (for re-run parents,
+   P(episode) × P(point | episode)). w_i = 1/π_i, normalised to mean 1 within each fold's training rows and,
+   separately, its validation rows.
+4. **Training:** BCE per head × mask × w_i, divided by Σ mask × w_i. Early stopping uses the same weighted loss on
+   the validation task. λ: the estimated gain (b2 − b1 where the decider escalates) and the escalation rate are
+   weighted means over validation points. Points from the same episode share weights and are not treated as
+   independent in any interval (cluster bootstrap by episode).
+5. **Reporting:** label statistics (rescue and harm rates, mean p_2 − p_1) re-weighted to the population, and the
+   effective sample size (Σw)²/Σw² per fold. Evaluation is unchanged: live (with amendment 55), on every initial
+   state.
+6. **Bias note:** at a base point b1's first seed is the parent rollout, so the stratum is correlated with b1's
+   label. Within a stratum points are uniform, so weighted estimates are unbiased for the population. Unweighted
+   training would be biased toward rescue.
+7. **Leakage:** none new. Selection uses only the parent's own outcome, and folds still drop the test task's points.
+8. **Code:** `branchplan` records the stratum and π_i per entry. `vlar_train.data` reads w_i. `train._loss`,
+   validation loss and `lam` take weights. Tests: weights all 1 reproduce unweighted training bit for bit, and
+   synthetic strata re-weight to the known population rates. The data digest is unchanged (selection and weights
+   are in branch-plan entries; training is not covered).
+
+### 0.6 Worker fixes (decision 5): implemented with tests (see `docs/HANDOFF.md` for the commit)
+
+- **Progress-gated leases:** `LEASE_S` 10 min, renewed every 60 s, but only when the job has made progress since the
+  last renewal. Progress means the episode's step count or event count changed, or an artifact was uploaded. A
+  worker stuck on a request that never returns stops renewing and loses the job within ~11 minutes.
+- **`--max-jobs` recycling with supervisor restarts** in `run_phase`. A worker that took its N jobs exits with a
+  distinct status, and the supervisor starts it again while work remains (not counted as a restart). A worker that
+  died (any other non-zero status; 137 = out of memory) has its job counted as a failed attempt. It is then
+  restarted, at most 3 times per worker per phase. A worker that is alive but holds an expired lease is stopped,
+  its job counted, and restarted. So is one whose job another worker has meanwhile claimed: a progressing worker
+  never loses a lease. Exit 3 (refused job) is never restarted. Every event goes to the step log and
+  `history.jsonl`.
+- **Per-worker memory limit:** `docker run --memory` (swap equal), sized when the phase starts from the servers'
+  measured memory (`docker stats`, after the golden check): limit = (0.95 × RAM − 1.25 × servers − 4 GiB host) /
+  workers, rounded down to 256 MiB, and refused below 3 GiB. `--max-jobs` defaults to (limit − 2 GiB) / 0.75 GiB,
+  the tasks' simulators that fit (*est.* from w8: 8-9 GB at up to 10 tasks). With servers at ~12 GiB and 8 workers
+  that is ~5 GiB and 4 jobs per process. The pilot logs peak memory per worker and restart overhead, which replace
+  the estimates. If restarts every ~4 branch jobs cost too much, there are two options: task-affine claiming (the
+  user's fallback), or evicting cached simulators between jobs from the ops loop. Eviction changes no code in the
+  data digest; the smoke re-runs on fresh workers matched cached-simulator records bit for bit.
+- Code: `vlar_ops/queue.py` (`keep_lease(progress=)`, `leases`, `reap`), `worker.py` (`Progress`),
+  `vm_worker.py` (`TrackedEpisodes`, `RECYCLE_EXIT` 4), `supervisor.py`, `cli.py` (`vlar-ops supervise`, worker
+  exit statuses), `ops/vm/phase0/lib.sh` `run_phase`, `ops/vm/vlar-worker@.service` (`$VLAR_WORKER_DOCKER_ARGS`).
+  Tests: `tests/test_supervisor.py`, `tests/test_worker.py` (stuck job loses its lease; progress and uploads renew
+  it; tracked-episode token; exit statuses).
 
 ## 1. Measured speeds this plan rests on
 

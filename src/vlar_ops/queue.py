@@ -9,6 +9,11 @@ that never reached the bucket, and marks done every job whose result is in the b
 Leases (amendment 40): `complete`, `fail` and `release` change a job only while the caller still holds its lease
 (`lease_owner`), and a worker renews its lease while a job runs (`keep_lease`). A job that outlived its lease and was
 claimed by another worker therefore cannot be reset, failed or marked done by the first one.
+
+Progress-gated leases (the user, 2026-11-24; PROPOSALS §0.6): a lease lasts LEASE_S (10 minutes) and is renewed every
+RENEW_EVERY_S (60 s), but only when the job's progress token changed since the last renewal. A worker frozen, or
+stuck on a request that never returns, stops renewing and loses the job within LEASE_S + RENEW_EVERY_S. `reap`
+counts a dead or frozen worker's jobs as failed attempts (the supervisor, vlar_ops.supervisor).
 """
 
 from __future__ import annotations
@@ -28,8 +33,8 @@ from .plan import Job, Plan
 from .storage import Storage
 
 RESULTS_PREFIX = "results"
-LEASE_S = 3 * 3600.0
-RENEW_EVERY_S = 600.0
+LEASE_S = 600.0
+RENEW_EVERY_S = 60.0
 
 
 class LeaseLost(RuntimeError):
@@ -173,19 +178,44 @@ class JobQueue:
             return self._db.execute("UPDATE jobs SET lease_expires=? WHERE job_id=? AND status='leased' AND "
                                     "lease_owner=?", (time.time() + lease_s, job.job_id, worker_id)).rowcount == 1
 
+    def leases(self, worker_id: str) -> list[tuple[Job, float]]:
+        """The jobs `worker_id` holds, with their lease expiry times."""
+        rows = self._db.execute("SELECT body, lease_expires FROM jobs WHERE status='leased' AND lease_owner=?",
+                                (worker_id,)).fetchall()
+        return [(Job.from_json(b), float(e)) for b, e in rows]
+
+    def owner(self, job_id: str) -> tuple[Optional[str], Optional[str]]:
+        """(status, lease owner) of a job, (None, None) if unknown."""
+        row = self._db.execute("SELECT status, lease_owner FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
+    def reap(self, worker_id: str, reason: str) -> list[tuple[str, str]]:
+        """Count every job `worker_id` still holds as a failed attempt (back to pending, or failed after max_attempts),
+        for a worker that died or was stopped while frozen. Returns [(job_id, new status)]."""
+        return [(job.job_id, self.fail(job, f"worker {worker_id}: {reason}", worker_id=worker_id))
+                for job, _ in self.leases(worker_id)]
+
     @contextmanager
-    def keep_lease(self, job: Job, worker_id: str, lease_s: Optional[float] = None, every_s: Optional[float] = None):
-        """Renew the lease every `every_s` (default RENEW_EVERY_S) to now + `lease_s` (default LEASE_S) while the block
-        runs, so a long job never outlives its lease, from a thread with its own database connection. Yields a dict
-        whose "lost" turns true if a renewal found the lease gone."""
+    def keep_lease(self, job: Job, worker_id: str, *, progress: Callable[[], Any], lease_s: Optional[float] = None,
+                   every_s: Optional[float] = None):
+        """Every `every_s` (default RENEW_EVERY_S), renew the lease to now + `lease_s` (default LEASE_S) if
+        `progress()` returned something different from the last check; otherwise leave it to run out. Runs in a
+        thread with its own database connection. Yields a dict: "lost" turns true if a renewal found the lease gone,
+        "renewals" and "stalls" count the checks with and without progress."""
         lease_s = LEASE_S if lease_s is None else lease_s
         every_s = RENEW_EVERY_S if every_s is None else every_s
-        state, stop = {"lost": False, "renewals": 0}, threading.Event()
+        state, stop = {"lost": False, "renewals": 0, "stalls": 0}, threading.Event()
 
         def loop():
             q = JobQueue(self.db_path, self.storage, self.local_dir, self.max_attempts)
+            last = progress()
             try:
                 while not stop.wait(every_s):
+                    now = progress()
+                    if now == last:
+                        state["stalls"] += 1
+                        continue
+                    last = now
                     if q.renew(job, worker_id, lease_s):
                         state["renewals"] += 1
                     else:
@@ -289,10 +319,12 @@ def default_worker_id() -> str:
 
 def run_worker(queue: JobQueue, handler: Callable[[Job], Mapping[str, Any]], *,
                should_stop: Callable[[], bool], worker_id: Optional[str] = None,
-               meta: Optional[Callable[[], Mapping[str, Any]]] = None) -> int:
+               meta: Optional[Callable[[], Mapping[str, Any]]] = None,
+               progress: Callable[[], Any] = lambda: None) -> int:
     """Claim and run jobs until the queue is empty or `should_stop()` (spend guard) says stop.
 
-    The stop check happens before each claim, so in-progress jobs always finish.
+    The stop check happens before each claim, so in-progress jobs always finish. Leases are renewed only when
+    `progress()` changes (default: never, so a job keeps only the lease its claim gave it).
     """
     wid = worker_id or default_worker_id()
     n = 0
@@ -302,7 +334,7 @@ def run_worker(queue: JobQueue, handler: Callable[[Job], Mapping[str, Any]], *,
             break
         started = time.time()
         try:
-            with queue.keep_lease(job, wid):
+            with queue.keep_lease(job, wid, progress=progress):
                 result = handler(job)
         except Exception:
             queue.fail(job, traceback.format_exc(), worker_id=wid)

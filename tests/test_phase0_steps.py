@@ -66,7 +66,7 @@ def test_a_frozen_harness_checks_its_golden_set_before_any_worker():
     lib = LIB.read_text()
     body = lib[lib.index("run_phase() {"):]
     assert body.index("wait_servers") < body.index("calibration_frozen") < body.index("golden_check") \
-        < body.index('systemctl start "vlar-worker@')
+        < body.index("vlar-ops supervise")
     unit = (REPO / "ops" / "vm" / "vlar-worker@.service").read_text()
     assert "-v /opt/vla-router/src/vlar_ops:/opt/vla-router/src/vlar_ops:ro" in unit
 

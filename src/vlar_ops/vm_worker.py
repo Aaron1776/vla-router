@@ -39,9 +39,10 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from .queue import JobQueue
 from .spend import StopFlag
 from .storage import open_storage
-from .worker import run_worker
+from .worker import Progress, run_worker
 
 REFUSED_EXIT = 3
+RECYCLE_EXIT = 4      # took its --max-jobs jobs: the supervisor starts it again while work is left (§0.6)
 XVLA_CLIENT_FILE = "evaluation/libero/libero_client.py"
 
 
@@ -207,6 +208,22 @@ def tunables_refusal(job, p_escalate: float) -> Optional[str]:
     return None
 
 
+class TrackedEpisodes:
+    """`make_episode` for the Runner that remembers the episode it made last, so the lease thread can see it
+    advance. Ops code outside the data digest's roots: it returns ProductionEpisodes' episode unchanged."""
+
+    def __init__(self, make_episode: Callable[[int], Any]):
+        self.make_episode, self.episode = make_episode, None
+
+    def __call__(self, task_id: int):
+        self.episode = self.make_episode(task_id)
+        return self.episode
+
+    def token(self) -> Optional[tuple]:
+        ep = self.episode
+        return None if ep is None else (id(ep), len(ep.events), len(ep.trajectory))
+
+
 def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, str] = {},
           phases: Optional[Sequence[str]] = None, max_jobs: Optional[int] = None,
           clients: Optional[Mapping[str, Any]] = None, make_sim: Optional[Callable[[int], Any]] = None,
@@ -263,7 +280,8 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     storage = open_storage(ops_cfg["storage_url"])
     queue = JobQueue(root / "queue.sqlite", storage, root / "local")
     episodes = ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
-    runner = Runner(cfg, episodes, storage.get_bytes, root / "staging" / _safe(worker_id), p_escalate=p_escalate,
+    tracked = TrackedEpisodes(episodes)
+    runner = Runner(cfg, tracked, storage.get_bytes, root / "staging" / _safe(worker_id), p_escalate=p_escalate,
                     header=header)
     meta = {"worker_id": worker_id, "provenance": header, "p_escalate": p_escalate,
             "ops_source": os.environ.get("VLAR_OPS_SOURCE"), "boot_id": golden.boot_id(),
@@ -276,7 +294,8 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     try:
         return run_worker(queue, storage, runner, worker_id, stop=stop.is_set, max_jobs=max_jobs, phases=phases,
                           refuse=lambda job: runner.refuse(job) or tunables_refusal(job, p_escalate), meta=meta,
-                          cleanup=lambda job: shutil.rmtree(runner.job_dir(job), ignore_errors=True))
+                          cleanup=lambda job: shutil.rmtree(runner.job_dir(job), ignore_errors=True),
+                          progress=Progress(tracked.token))
     finally:
         episodes.close()
         queue.close()

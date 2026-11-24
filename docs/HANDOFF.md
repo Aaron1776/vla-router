@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen; post-freeze items 1-4 done; item 5 run)
+# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen; smoke run passed; proposals decided; worker fixes in)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,85 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, ~12:10Z): items 5-9 of the user's second list
+## START HERE (2026-11-24, later): the user's decisions on the proposals; worker fixes done; next is the pilot code
+
+**The user's decisions (2026-11-24, third message; the user's full text is the source; recorded in
+`docs/PROPOSALS-2026-11-24.md` §0):** 3a approved (amendment 55, with a 20-episode live audit per decider and round);
+budget revisions (a)-(e) written into PROPOSALS before the pilot; 3b approved if outcome-stratified selection stays
+possible; pilot and stop rule approved, plus projected positives under uniform and stratified sampling (stratified
+drafted as an amendment with weighted training) and measured cost per branch type; worker fixes: `--max-jobs` with
+supervisor restarts plus per-worker memory limits (task-affine claiming only if the pilot shows restart overhead
+matters), progress-gated leases, required before the pilot boots; restarter (§7) approved, built before the first
+long unattended Phase 1 run; parity check: confirm the worker killed at 22:17:51Z during parity left exactly one
+record per parity episode (as for `base/t1/i15`); keep the VM and disk until ~09:45Z 2026-11-25, then delete per
+the pause rule if the pilot has not booted; reconcile billing once Nov 24 appears; **pilot boot approved up to
+$2.50** once the worker fixes are in and tested and the budget revisions are written (stop and ask beyond that).
+Effort: xhigh; max for any unexplained mismatch.
+
+**Done this session (uncommitted until the user asks):**
+- **Amendment 55** in SPEC §17 (and a pointer in §10): common random numbers across rounds, shared trunk, offline
+  prefix, live suffix, the features rule, the audit, snapshot retention.
+- **PROPOSALS §0:** evaluation at q = 0.7 is **$15.23** with the audit; reserve $2.58 (10%); b3 dropped from Phase 1
+  and DAgger (training already masks an absent head: new test `test_absent_branch_labels_are_masked_out_of_training`);
+  per-phase stop lines (table); DAgger round ≈ $6.04 ≈ 590 Phase 1 points; **~466 labelled points in all** (~317
+  Phase 1, ~149 DAgger). New line not in the earlier plan: disk ~$1.65.
+- **Worker fixes (code and tests):** `LEASE_S` 10 min, renewed every 60 s **only on progress** (the episode's event or
+  trajectory count, or an upload; `queue.keep_lease(progress=)`, `worker.Progress`, `vm_worker.TrackedEpisodes`);
+  exit 4 after `--max-jobs`; `vlar-ops supervise` (`vlar_ops/supervisor.py`), called by `lib.sh` `run_phase`. It
+  sizes each worker's `docker --memory` from the running servers, writes `worker.env` (`--max-jobs`,
+  `VLAR_WORKER_DOCKER_ARGS`), restarts dead or frozen workers (jobs reaped as failed attempts, ≤ 3 restarts per
+  worker per phase), recycles, never restarts a refusal or under STOP, logs to the step log and `history.jsonl`,
+  and reports peak memory per worker. Common data digest unchanged (`test_datadigest` passes).
+
+**Findings that need the user (in PROPOSALS §0.2-§0.3):**
+1. **3b cannot run as proposed on the frozen harness.** Record modes are only `off` and `full`, and `collect.Runner`
+   writes snapshots and points only under `full`. So neither a candidate subset nor a replay from snapshots works
+   without a harness change. Proposed instead: **screen then re-run** (exploration record `off` with profile `none`;
+   choose points after the outcome is known; re-run the chosen episodes with record `full`; compare each re-run
+   with its screen bit for bit). Exploration + DAgger rollouts $5.30. Needs approval.
+2. **The stop rule's thresholds (20 positives per task, 100 per fold) were set for ~660 points.** At ~466 they need
+   43% positives per point under uniform sampling, or ≥ 64% in failed parents under stratified sampling. Keep,
+   lower, or move points (e.g. from the DAgger round).
+
+**Parity record check (the user's item; done after the user re-authenticated `gcloud`): exactly one record per
+parity episode.**
+- The worker killed at 22:17:51Z was **w3**: global out-of-memory kill of pid 25466, 9.1 GiB resident (`kern.log`).
+  w3's last marker is at 22:17:49Z and it wrote none after.
+- The job it held was **`pi05_parity/t1/i6`** (`5e56b4f1...`). The step log shows `leased: 8` with 7 live workers
+  at 22:19-22:21Z and `leased: 1` at 22:23:40Z. Round 2 (`queue resume`) gave the job to w1, which finished it at
+  22:24:59Z. Its marker and all three record objects were created at 22:24:59Z. The queue row: done, attempts 0,
+  no error.
+- All 100 parity markers: each (task, initial state) appears once, matching the plan. Each marker lists 3
+  artifacts, and all 300 bucket objects match their marker's SHA-256 and size, with none unlisted. Every runs
+  table has one row, and that run's id is the only one in its steps and events tables. The queue holds 100
+  parity rows, all done with attempts 0.
+- Bucket versioning is off, so overwritten generations would not show. Content was checked instead (SHA-256
+  against the markers).
+
+**Server memory, from the same kernel process table:** 0.6 GiB and 5.9 GiB resident (≈ 6.5 GiB together; parity
+ran `pi05_only`). Workers 4.0-9.1 GiB. With 8 workers, the supervisor's rule gives ≈ 6 GiB each and `--max-jobs` 5.
+
+**Next (xhigh), in order:**
+1. ~~Parity record check~~ **done**, below.
+2. **Per-phase stop lines (§0.1 (d)) in the spend service:** phase name and line, a phase STOP for workers, a check
+   between steps. The pilot's $2.50 cap is its first use.
+3. **Pilot code:**
+   - the pilot branch plan: 150 base points, up to 10 per task from failed episodes, the strata weights recorded,
+     b3 kept;
+   - a post-freeze step `ops/vm/postfreeze/710-pilot.sh` through `run_phase` (so through the supervisor);
+   - the report: rescue and harm per task (re-weighted), tasks 4 and 8 apart, projected positives under both
+     schemes, VM-s per branch type and b4's share;
+   - the cheap checks in §0.4: `/sample` vs `/features` features, trunk vs `xvla_only`, record `off` re-runs,
+     memory, restart overhead.
+   - Then queue it and boot (≤ $2.50).
+4. If the pilot has not booted by ~09:45Z 2026-11-25: delete the VM and disk per the pause rule (`spend
+   disk-deleted`). Billing reconcile once Nov 24 appears. Restarter before the first long Phase 1 run.
+
+**Tests (Mac, this session):** main venv 341 passed, 29 skipped; simulator env (all of `tests`) 528 passed, 21 skipped (the
+same 21), run before the stalled-worker rule; that rule's modules re-run there afterwards: 57 passed.
+Spend unchanged at **$9.94** (no VM, no bucket writes).
+
+## Done 2026-11-24 (~12:10Z): items 5-9 of the user's second list
 
 **The user's list (2026-11-24, second message; the user's full text is the source).** 5 smoke job, one boot up to
 $1 (xhigh; max for an unexplained mismatch); 6 proposals for approval before the pilot (xhigh); 7 billing

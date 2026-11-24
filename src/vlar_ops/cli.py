@@ -136,7 +136,30 @@ def cmd_worker(a: argparse.Namespace) -> None:
     except vm_worker.StartupError as e:
         sys.exit(f"worker {wid} not started: {e}")
     print(json.dumps({"worker": wid, **stats}))
-    sys.exit(vm_worker.REFUSED_EXIT if stats["refused"] else 0)
+    sys.exit(worker_exit(stats, a.max_jobs))
+
+
+
+def cmd_supervise(a: argparse.Namespace) -> None:
+    from . import supervisor as S
+    cfg = _ops_config(a.ops_config)
+    try:
+        summary = S.supervise(cfg, phase=a.phase, workers=a.workers, worker_args=a.worker_args,
+                              worker_env=Path(a.worker_env), history=Path(a.history) if a.history else None,
+                              step=a.step, max_jobs=a.max_jobs, max_restarts=a.max_restarts, poll_s=a.poll_s)
+    except S.SizingError as e:
+        sys.exit(f"supervise: {e}")
+    print(json.dumps({"supervised": a.phase, "gave_up": summary["gave_up"]}))   # run_phase checks the counts
+
+
+def worker_exit(stats: dict, max_jobs: int | None) -> int:
+    """3: refused a job (never restarted); 4: took its --max-jobs jobs (the supervisor starts it again while work is
+    left, PROPOSALS §0.6); 0: nothing left to claim, or the stop flag."""
+    from . import vm_worker
+    if stats["refused"]:
+        return vm_worker.REFUSED_EXIT
+    taken = sum(stats[k] for k in ("done", "done_local", "retry", "failed", "lost"))
+    return vm_worker.RECYCLE_EXIT if max_jobs is not None and taken >= max_jobs else 0
 
 
 def cmd_dataset(a: argparse.Namespace) -> None:
@@ -334,6 +357,20 @@ def main(argv: list[str] | None = None) -> None:
     w.add_argument("--server-wait-s", type=float, default=600.0, help="how long to wait for the model servers")
     w.add_argument("--ops-config")
     w.set_defaults(fn=cmd_worker)
+
+    su = sub.add_parser("supervise", help="size, start and supervise the workers of one phase (run_phase; "
+                                          "vlar_ops/supervisor.py)")
+    su.add_argument("--phase", required=True)
+    su.add_argument("--workers", type=int, required=True)
+    su.add_argument("--worker-args", required=True, help="VLAR_WORKER_ARGS without --max-jobs")
+    su.add_argument("--max-jobs", type=int, help="default: from the memory limit")
+    su.add_argument("--worker-env", default="/etc/vlar/worker.env")
+    su.add_argument("--history")
+    su.add_argument("--step", default="")
+    su.add_argument("--max-restarts", type=int, default=3)
+    su.add_argument("--poll-s", type=float, default=15.0)
+    su.add_argument("--ops-config")
+    su.set_defaults(fn=cmd_supervise)
 
     d = sub.add_parser("dataset", help="write or verify the dataset's MANIFEST.json and DATACARD.md (§13)")
     d.add_argument("action", choices=["manifest", "verify"])

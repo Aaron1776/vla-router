@@ -143,3 +143,27 @@ def test_training_data_needs_the_frozen_calibration(tmp_path):
         D.from_records(tmp_path, tmp_path / "labels.json", cfg=Cfg(cal))
     with pytest.raises(D.DataError, match="frozen calibration"):
         D.from_records(tmp_path, tmp_path / "labels.json", cfg=SimpleNamespace())
+
+
+def test_absent_branch_labels_are_masked_out_of_training(ps):
+    """Branch 3 dropped from collection (PROPOSALS-2026-11-24 §0.1 (c)): where a point has no b3 label, head 3 gets
+    mask 0, so whatever value stands there changes nothing, bit for bit; the other heads still train."""
+    m = F.masks(ps.task, 0)
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    y, ym = ps.targets("router")
+    tr, va = m["train"], m["val"]
+    absent = np.zeros(len(y), dtype=bool)
+    absent[::2] = True                                        # half the points have no b3 label
+    ym = ym.copy()
+    ym[absent, 2] = 0.0
+    y0, y1 = y.copy(), y.copy()
+    y0[absent, 2], y1[absent, 2] = 0.0, 1.0
+    a = train(x[tr], y0[tr], ym[tr], x[va], y0[va], ym[va], seed=seed_for(0, "router"), cfg=FAST)
+    b = train(x[tr], y1[tr], ym[tr], x[va], y1[va], ym[va], seed=seed_for(0, "router"), cfg=FAST)
+    assert np.array_equal(a.predict(x[va]), b.predict(x[va])) and a.val_loss == b.val_loss
+    # from the label side: a NaN label (branch not run) becomes target 0 with mask 0
+    nan = D.PointSet(ps.cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s,
+                     {**ps.y, "router": np.where(absent[:, None] & (np.arange(4) == 2), np.nan, ps.y["router"])},
+                     ps.excluded)
+    yt, mt = nan.targets("router")
+    assert (mt[absent, 2] == 0).all() and (yt[absent, 2] == 0).all() and (mt[~absent] == ym[~absent]).all()
