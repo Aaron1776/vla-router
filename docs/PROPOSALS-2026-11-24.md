@@ -18,6 +18,9 @@ up to $2.50 once the worker fixes are tested and this section is written.
 
 ### 0.1 Budget, revised
 
+*Superseded in part by SPEC §17 amendment 61 (2026-11-24): both evaluation rounds run after the DAgger round on
+another billing account; their $15.23 goes to Phase 1 and DAgger labels ($13.40 + $6.70), reserve recomputed ($2.58).*
+
 Prices as in §1: $0.472 per VM hour; disk ~$0.33 per day while the VM exists. Ledger **$9.94** (VM $7.28, disk
 $0.45, charges $2.20), so **$30.06 remains to $40**. Per-run VM-s are §1's estimates; the pilot replaces them.
 

@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; pilot check (iii) explained; resume coded)
+# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; check (iii) explained; pilot resume running; amendment 61)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,43 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, ~21:40Z): check (iii) explained (fixture placement vs load count); resume coded; boot next
+## START HERE (2026-11-24, ~22:30Z): pilot resume running; amendment 61 logged; fresh session does the report and re-plan
+
+This session stopped at the stopping rule (half of context). **The pilot resume is running on the VM** (started
+21:41:55Z, host source `bb7112f`; 400 of 1,638 markers at 22:07Z, ~9.7 VM-s per job). The runner stops the VM when
+the step ends (all jobs, the phase's stop point $2.3467, or a failure); the spend line $2.50 is a hard cap. This
+session's watchers end with it: check the VM with `ops/gcp/32_watch_vm.sh` (exits once stopped) and
+`gcloud storage ls <storage>/results/pilot/ | wc -l`.
+
+**The user's planning decision (sixth message, before the pilot report): SPEC §17 amendment 61** (read it): both
+evaluation rounds after the DAgger round, one block, on another billing account (handoff confirmed); pre-DAgger
+deciders saved permanently; the coupon pays pilot, Phase 1, training, the DAgger round and disk until the handoff.
+Freed $15.23 → labels $20.11 (Phase 1 $13.40, DAgger $6.70; reserve recomputed $2.58), then a 7-8-worker throughput
+test if the pilot's memory fits, then a pilot extension only if keep/drop/stop is close (both paid from the label
+line when they run). Amendment 58's budgets re-declared: current ~194 points per task, DAgger dropped ~227 (at the
+plan's estimated prices; `vlar_ops.pilot.PLAN_USD`, `declared_budgets`); rule and thresholds unchanged.
+
+**Next (fresh session, xhigh; max for an unexplained mismatch):**
+1. When the VM is stopped: download `<storage>/pilot/reports/` → `outputs/pilot/reports`, `records/{runs,events}/pilot`
+   and `results/pilot` → `outputs/pilot/base/...`, and `phase0/logs/710-pilot.log` (the corrected check's total
+   time: `pilot check checks-iii.json exit N after S s`). `vlar-ops spend status` for the phase's VM $.
+2. Read `checks-summary.txt` and `checks-iii.json` first: a mismatch at the replicated load count is unexplained
+   (max-effort checkpoint, no debugging). Note each subject's `loads`.
+3. `pilot report` (sim venv, `PYTHONPATH=src`, `VLAR_CALIBRATION=outputs/freeze/cal/calibration.yaml`,
+   `--phase-vm-usd`). Report: labels/positives, re-weighted rates (t4/t8 apart), projections and the amendment 58
+   decision at ~194/~227 and at measured prices (flag if they differ), costs per run/per step/per point,
+   `check_iii_timing` (this boot: total only, plus loads and steps; convert to screening cost per episode with
+   parallel workers using b1_continue's VM-s per step under load), `memory_fit` (servers' start and peak resident
+   memory; whether 7 or 8 workers at 5.5 GiB fit; boot 1's summary is `outputs/pilot/pilot-supervisor-boot1.json`),
+   restart overhead, total pilot spend. Keep the pilot phase open unless the user says otherwise.
+4. Then amendment 61 (4): the revised budget (phase lines, stop points, projected points per task under both
+   sampling schemes) and the other account's cost sheet (~$15 planned, ~$20 likely upper bound, ~$26 cap, + up to
+   ~$6.5 optional chunkspread and λ sweep). Pause rule unchanged (delete VM + disk if idle past ~09:45Z Nov 25
+   unless the next work is booting).
+5. Pending proposal for the user: Phase 1 screened re-runs need each run's load count recorded and replayed
+   (HARNESS.md finding); on hold until decided.
+
+## Earlier 2026-11-24 (~21:40Z): check (iii) explained (fixture placement vs load count); resume coded; booted
 
 The user's decisions (fifth message, 2026-11-24; their text is the source): (1) investigate check (iii) offline, no VM;
 if the check was set up differently from the base run, fix it to replicate the base run exactly and re-run it on the

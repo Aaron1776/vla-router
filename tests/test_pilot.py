@@ -257,10 +257,14 @@ def test_costs_apportion_each_branch_window_by_job_wall_time():
 
 def test_measured_budgets_reproduce_the_plan_at_its_estimated_prices():
     est = {"base_without_b3": 8 * 7 * 0.472 / 3600, "explore_without_b3": 9 * 7 * 0.472 / 3600}
-    b = pilot.measured_budgets(est, hourly_usd=0.472)
-    assert b["current"] == pytest.approx(47, abs=0.5) and b["moved"] == pytest.approx(107, abs=0.5)
+    old = pilot.measured_budgets(est, hourly_usd=0.472, phase1_usd=3.24, dagger_branch_usd=1.62, dagger_round_usd=6.04)
+    assert old["current"] == pytest.approx(47, abs=0.5) and old["moved"] == pytest.approx(107, abs=0.5)
+    b = pilot.measured_budgets(est, hourly_usd=0.472)                     # amendment 61's re-declared budgets
+    assert b["current"] == pytest.approx(194, abs=0.5) and b["moved"] == pytest.approx(227, abs=0.5)
+    assert pilot.declared_budgets(0.472) == pytest.approx(b)
+    assert sum(pilot.PLAN_USD.values()) + 1.60 + 0.98 + 1.65 + 0.1 * 25.8273 == pytest.approx(30.06, abs=0.01)
     dear = pilot.measured_budgets({k: 2 * v for k, v in est.items()}, hourly_usd=0.472)
-    assert dear["current"] < 30 and dear["moved"] < 70
+    assert dear["current"] < 120 and dear["moved"] < 140
 
 
 def test_restart_overhead_separates_recycles_from_claiming():

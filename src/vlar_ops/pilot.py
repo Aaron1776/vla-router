@@ -847,13 +847,27 @@ def branch_windows(timing: Sequence[Mapping], jobs: Sequence[Mapping]) -> list[t
     return out
 
 
+def declared_budgets(hourly_usd: float) -> dict[str, float]:
+    """Amendment 58's two budgets in points per task at the plan's estimated prices (amendment 61: ~194 and ~227)."""
+    est = {"base_without_b3": 8 * EST_VM_S_PER_RUN * hourly_usd / 3600,
+           "explore_without_b3": 9 * EST_VM_S_PER_RUN * hourly_usd / 3600}
+    return dict(measured_budgets(est, hourly_usd=hourly_usd))
+
+
+# SPEC §17 amendment 61 (the user, 2026-11-24): evaluation after the DAgger round on another account; its $15.23
+# goes to labels (2:1), reserve recomputed. Amendment 58's budgets: Phase 1 and DAgger labels with the DAgger round
+# ("current"); the DAgger round's rollouts and labels moved into Phase 1 ("moved"). Was 3.24 / 1.62 / 6.04.
+PLAN_USD = {"phase1": 13.4048, "dagger_branch": 6.7024, "dagger_round": 3.14}
+EST_VM_S_PER_RUN = 7.0
+
+
 def measured_budgets(c: Mapping[str, float], *, rerun_vm_s: float = 74.0, hourly_usd: float,
-                     phase1_usd: float = 3.24, dagger_branch_usd: float = 1.62, dagger_round_usd: float = 6.04,
-                     tasks: int = 10) -> dict[str, float]:
-    """Points per task the measured prices buy (PROPOSALS §0.1 (e)): Phase 1 n base and n exploration points,
-    n = $3.24 / (c_b + c_e + r/2) (an exploration re-run serves k = 2 points); DAgger m points in each half,
-    m = $1.62 / (2 c_e + r/2) (the router half's re-runs); moved: the DAgger round's $6.04 and its branches' $1.62
-    into Phase 1 points at Phase 1's price. r: the re-run's cost (74 VM-s, est.; the pilot does not measure it)."""
+                     phase1_usd: float = PLAN_USD["phase1"], dagger_branch_usd: float = PLAN_USD["dagger_branch"],
+                     dagger_round_usd: float = PLAN_USD["dagger_round"], tasks: int = 10) -> dict[str, float]:
+    """Points per task the prices buy (PROPOSALS §0.1 (e), amendment 61): Phase 1 n base and n exploration points,
+    n = Phase 1 $ / (c_b + c_e + r/2) (an exploration re-run serves k = 2 points); DAgger m points in each half,
+    m = DAgger label $ / (2 c_e + r/2) (the router half's re-runs); moved: the DAgger round's coupon money (its
+    rollouts) and its label money into Phase 1 points at Phase 1's price. r: the re-run's cost (74 VM-s, est.)."""
     r = rerun_vm_s * hourly_usd / 3600
     cb, ce = c["base_without_b3"], c["explore_without_b3"]
     n = phase1_usd / (cb + ce + r / 2)
@@ -900,7 +914,7 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
     rd = Path(reports_dir)
     read_jsonl = lambda f: [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []  # noqa
     cost = costs(markers, read_jsonl(rd / "timing.jsonl"), hourly_usd=hourly_usd)
-    budgets = {"current": 47.0, "moved": 107.0}
+    budgets = declared_budgets(hourly_usd)
     if all(math.isfinite(v) for v in cost["usd_per_point"].values()):
         mb = measured_budgets(cost["usd_per_point"], hourly_usd=hourly_usd)
         budgets.update({"measured_current": mb["current"], "measured_moved": mb["moved"]})
