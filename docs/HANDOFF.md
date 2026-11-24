@@ -55,7 +55,18 @@ phase open; pause rule stands (delete VM + disk if the resume won't boot before 
   `outputs/build-logs/resume-progress.log` (from 345). Offline estimate at first-boot prices: ~70 complete points
   (69 points already have their 5 tier-1 jobs; they go first).
 
-**Next:** when it stops: download reports + records, `pilot report`, read
+- **The user's two additions for the pilot report (2026-11-24, after the boot):** (1) time the corrected (iii)'s
+  record-off episodes, warm-up included, as the first direct measure of screening cost, and convert it to cost
+  per episode with parallel workers; (2) the servers' actual resident memory during the run and whether 7 or 8
+  workers at the new limit fit (exploration, DAgger and evaluation estimates assumed 8-worker throughput).
+  Committed `5a7ce65` (Mac side; the VM runs `bb7112f`): `report` now has `check_iii_timing` (per-episode seconds
+  only from reports made by `5a7ce65`+; this boot's check has only the step log's total, `pilot check
+  checks-iii.json ... after N s` in `phase0/logs/710-pilot.log`, plus loads and steps per episode), `memory_fit`
+  (`fit_table` on `pilot-supervisor.json`: sizing rule, limits beside the servers' peaks, worker peaks), costs
+  per step by branch type. The first boot's supervisor summary is saved as
+  `outputs/pilot/pilot-supervisor-boot1.json` (the reports download overwrites it).
+
+**Next:** when it stops (also download `phase0/logs/710-pilot.log` for the check's total time): download reports + records, `pilot report`, read
 `checks-summary.txt`/`checks-iii.json` first (a mismatch at the replicated count is unexplained: max-effort
 checkpoint), then report. **Proposal for the user (not done):** Phase 1's screened re-runs (amendment 56) need each
 run's load count recorded (marker) and replayed by the re-run; on hold until decided.
