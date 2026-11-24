@@ -146,7 +146,9 @@ def test_markers_carry_the_meta_and_staging_is_cleaned(tmp_path):
                cleanup=lambda job: cleaned.append(job.job_id))
     for jid in q.done_ids():
         marker = json.loads(storage.get_bytes(result_key("base", jid)))
+        claimed = marker["meta"].pop("claimed_at")               # the job's start, for its wall time
         assert marker["meta"] == {"worker_id": "w", "provenance": {"harness_version": "x"}}
+        assert claimed <= marker["finished_at"]
     assert sorted(cleaned) == sorted(q.done_ids())
 
 

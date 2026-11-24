@@ -161,11 +161,15 @@ class Supervisor:
         self.peak: dict[str, int] = {}
         self.events: list[dict] = []
 
-    def _event(self, i: int, action: str, status: Optional[int], detail: str = "") -> None:
+    def _event(self, i: int, action: str, status: Optional[int], detail: str = "", *, quiet: bool = False) -> None:
+        """Every event goes to the summary; all but `quiet` ones (recycles) also to the step log and history."""
         at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock()))
         rec = {"step": self.step, "outcome": f"worker-{action}", "exit": -1 if status is None else int(status),
-               "seconds": 0, "at": at, "worker": f"w{i}", "phase": self.phase, "detail": detail}
+               "seconds": 0, "at": at, "at_s": round(self.clock(), 3), "worker": f"w{i}", "phase": self.phase,
+               "detail": detail}
         self.events.append(rec)
+        if quiet:
+            return
         self.out(f"{at} supervisor {self.phase}: w{i} {action} (exit {status}){': ' + detail if detail else ''}")
         if self.history is not None:
             with open(self.history, "a") as f:
@@ -238,6 +242,7 @@ class Supervisor:
             if status == RECYCLE_EXIT:
                 if work > 0:                       # it took jobs, so recycling always ends
                     self.recycles[i] += 1
+                    self._event(i, "recycled", status, f"recycle {self.recycles[i]}", quiet=True)
                     self._start(i)
                 continue
             if status == 0:                        # found nothing to claim; jobs may have come back since
@@ -261,7 +266,7 @@ class Supervisor:
             self.sleep(self.poll_s)
         summary = {"phase": self.phase, "restarts": dict(self.restarts), "recycles": dict(self.recycles),
                    "refused": sorted(self.refused), "gave_up": sorted(self.gave_up),
-                   "peak_memory_bytes": self.peak, "counts": self.q.counts(self.phase)}
+                   "peak_memory_bytes": self.peak, "counts": self.q.counts(self.phase), "events": self.events}
         self.out(json.dumps(summary))
         return summary
 

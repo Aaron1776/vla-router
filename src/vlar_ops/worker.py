@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
@@ -83,13 +84,15 @@ def run_worker(queue: JobQueue, storage: Storage, runner: Callable, worker_id: s
             print(f"worker {worker_id}: refused job {job.job_id} ({job.phase}): {reason}", file=sys.stderr, flush=True)
             break
         taken += 1
+        claimed_at = time.time()          # with the marker's finished_at: the job's wall time (pilot cost per run)
         try:
             with queue.keep_lease(job, worker_id, progress=progress.token):
                 artifacts, summary = runner(job)
                 upload(storage, artifacts, on_put=progress.bump)
             record = {"summary": dict(summary),
                       "artifacts": [{k: a[k] for k in ("key", "sha256", "size")} for a in artifacts]}
-            stats["done" if queue.complete(job, record, meta, worker_id=worker_id) else "done_local"] += 1
+            stats["done" if queue.complete(job, record, {**(meta or {}), "claimed_at": claimed_at},
+                                           worker_id=worker_id) else "done_local"] += 1
         except LeaseLost:
             stats["lost"] += 1
         except Exception:

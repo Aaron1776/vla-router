@@ -21,7 +21,9 @@
 # the model servers and workers, syncs the job queue's results and its own files to the bucket, writes the reason to
 # STATE.json there, and stops the VM (shutdown -h: the instance is STOPPED, its disk kept). The spend daemon
 # (vlar-spend.service) runs independently and stops everything at the hard limit; while its STOP flag is up the
-# runner starts no step.
+# runner starts no step. Before every step the runner also asks the ledger (`vlar-ops spend check`): nothing starts
+# at the hard limit or past the open spend phase's stop point, and a step that names its phase (`# spend-phase:
+# NAME`) waits, queued, until that phase is the open one (PROPOSALS-2026-11-24 §0.1 (d)).
 set -uo pipefail
 : "${VLAR_PHASE0_URL:?gs://<bucket>/vla-router/phase0}"
 D="${VLAR_PHASE0_DIR:-/var/lib/vlar/phase0}"
@@ -126,13 +128,31 @@ on_term() {      # preemption or a manual stop: abandon the step (it stays queue
   sync_files
   [[ -n "$CHILD" ]] && kill -TERM "$CHILD" 2>/dev/null
   if [[ -e "$STOP_FLAG" ]]; then
-    write_state stopped "$CURRENT" "the spend guard reached its hard limit and stopped the VM during ${CURRENT:-no step}; the step stays queued"
+    write_state stopped "$CURRENT" "the spend guard stopped the VM during ${CURRENT:-no step} ($(stop_text)); the step stays queued"
     exit 143
   fi
   write_state interrupted "$CURRENT" "the VM was stopped from outside (preemption or a manual stop) during ${CURRENT:-no step}; the step stays queued"
   exit 143
 }
 trap on_term TERM INT
+
+stop_text() { head -c 300 "$STOP_FLAG" 2>/dev/null | tr '\n' ' '; }
+
+spend_gate() {   # spend_gate <file>: the ledger allows the step (hard limit; the open phase, its stop point)
+  local f="$1" phase out rc=1
+  phase="$(sed -n 's/^# spend-phase: *\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\) *$/\1/p' "$D/queue/$f" | head -n 1)"
+  for _ in 1 2 3; do
+    out="$(vlar-ops spend check ${phase:+--phase "$phase"} 2>&1 | tail -n 1)"; rc=$?   # pipefail: check's status
+    (( rc == 0 || rc == 3 || rc == 4 )) && break
+    sleep "${VLAR_PULL_RETRY_S:-15}"
+  done
+  case "$rc" in
+    0) say "spend check for ${f%.sh}: $out" ;;
+    3) finish stopped "${f%.sh} not started: $out" ;;
+    4) finish needs_input "${f%.sh} not started: $out" ;;
+    *) finish failed "${f%.sh} not started: the spend ledger could not be checked (3 tries): $out" ;;
+  esac
+}
 
 run_step() {     # run_step <file>
   local f="$1" name="${1%.sh}" cap rc reason t0
@@ -186,11 +206,12 @@ say "phase 0 runner started; queue $VLAR_PHASE0_URL/queue"
   echo "== needrestart"; journalctl --no-pager --since -2days 2>/dev/null | grep -i needrestart | tail -n 40
 } > "$D/logs/system-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || true
 while true; do
-  [[ -e "$STOP_FLAG" ]] && finish stopped "the spend guard's STOP flag is up (hard limit); no step started"
+  [[ -e "$STOP_FLAG" ]] && finish stopped "the spend guard's STOP flag is up ($(stop_text)); no step started"
   pulled=0
   for _ in 1 2 3; do pull_queue && { pulled=1; break; }; sleep "${VLAR_PULL_RETRY_S:-15}"; done
   (( pulled )) || finish failed "the bucket's queue could not be read (3 tries): no step started, since the VM's copy may hold steps taken out of it"
   next="$(ls "$D/queue" 2>/dev/null | grep -E '\.sh$' | LC_ALL=C sort | head -n 1)"
   [[ -z "$next" ]] && finish idle "out of queued work: every queued step is done"
+  spend_gate "$next"
   run_step "$next"
 done

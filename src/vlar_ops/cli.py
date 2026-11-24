@@ -85,7 +85,30 @@ def cmd_spend(a: argparse.Namespace) -> None:
                           "soft_limit_usd": scfg.soft_limit_usd, "hard_limit_usd": scfg.hard_limit_usd,
                           "vm_hours": round(sum(s["vm_seconds"] for s in led["sessions"]) / 3600, 2),
                           "sessions": len(led["sessions"]), "failed_boots_pending": len(failed),
-                          "alerts": led["alerts"]}, indent=1))
+                          "alerts": led["alerts"], "phase": spend.phase_state(led, now)}, indent=1))
+    elif a.action == "check":
+        led = spend.load_ledger(storage)
+        led["sessions"] += spend.pending_failed_boots(storage, led, scfg)
+        code, why = spend.check(led, scfg, now, phase=a.phase)
+        print(why)
+        sys.exit(code)
+    elif a.action == "phase-open":
+        if a.phase is None or a.allocation_usd is None or a.line_usd is None:
+            sys.exit("--phase, --allocation-usd and --line-usd are required")
+        margin = spend.default_phase_margin_usd(scfg) if a.margin_usd is None else a.margin_usd
+        try:
+            p = spend.start_phase(storage, a.phase, allocation_usd=a.allocation_usd, line_usd=a.line_usd,
+                                  margin_usd=margin, at=now)
+        except spend.PhaseError as e:
+            sys.exit(str(e))
+        print(json.dumps(p))
+    elif a.action == "phase-close":
+        if a.phase is None:
+            sys.exit("--phase is required")
+        try:
+            print(json.dumps(spend.end_phase(storage, a.phase, now)))
+        except spend.PhaseError as e:
+            sys.exit(str(e))
     elif a.action == "reconcile":
         if a.actual_usd is None:
             sys.exit("--actual-usd is required")
@@ -149,6 +172,8 @@ def cmd_supervise(a: argparse.Namespace) -> None:
                               step=a.step, max_jobs=a.max_jobs, max_restarts=a.max_restarts, poll_s=a.poll_s)
     except S.SizingError as e:
         sys.exit(f"supervise: {e}")
+    if a.summary:                       # peak memory, restarts and recycles for the step's report (pilot §0.4 (iv))
+        Path(a.summary).write_text(json.dumps(summary, indent=1, default=str))
     print(json.dumps({"supervised": a.phase, "gave_up": summary["gave_up"]}))   # run_phase checks the counts
 
 
@@ -289,6 +314,24 @@ def cmd_smoke(a: argparse.Namespace) -> None:
         sys.exit(f"SMOKE {a.cmd.upper()} MISMATCH: {rep.get('problems') or [j['problems'] for j in rep.get('jobs', [])]}")
 
 
+def cmd_pilot(a: argparse.Namespace) -> None:
+    from . import pilot
+    out = Path(a.out)
+    if a.cmd == "plan":                      # on the Mac, from local copies of the base runs, events and markers
+        sel = pilot.make_plan(Path(a.root), Path(a.markers), out)
+        print(json.dumps({k: sel[k] for k in ("plan_id", "n_points", "n_jobs")}))
+        return
+    cfg = _ops_config(a.ops_config)          # check: on the VM, after this boot's golden check
+    rep = pilot.run_checks(cfg, Path(a.plan_dir), Path(a.staging))
+    out.write_text(json.dumps(rep, indent=1, default=str))
+    print(json.dumps({"passed": rep["passed"], "features_equal_probe": rep["features"]["features_equal_probe"],
+                      "xvla_only": [r["passed"] for r in rep["xvla_only"]],
+                      "record_off": [r["passed"] for r in rep["record_off"]]}))
+    if not rep["passed"]:
+        sys.exit(f"PILOT CHECK MISMATCH: {rep['features']['problems']} "
+                 f"{[r['problems'] for v in ('xvla_only', 'record_off') for r in rep[v]]}")
+
+
 def cmd_grasps(a: argparse.Namespace) -> None:
     from . import grasps
     rep = grasps.run(Path(a.root), Path(a.out), phase=a.phase, shut=a.shut, open_=a.open)
@@ -335,7 +378,13 @@ def main(argv: list[str] | None = None) -> None:
     q.set_defaults(fn=cmd_queue)
 
     s = sub.add_parser("spend")
-    s.add_argument("action", choices=["status", "reconcile", "charge", "disk-created", "disk-deleted", "daemon"])
+    s.add_argument("action", choices=["status", "reconcile", "charge", "disk-created", "disk-deleted", "daemon",
+                                      "check", "phase-open", "phase-close"])
+    s.add_argument("--phase", help="check: the step's spend phase (must be the open one); phase-open/-close: its name")
+    s.add_argument("--allocation-usd", type=float, help="phase-open: the phase's planned VM spend")
+    s.add_argument("--line-usd", type=float, help="phase-open: the most the phase's VM time may cost")
+    s.add_argument("--margin-usd", type=float, help="phase-open: stop this far below the line (default: the drain "
+                                                    "grace plus 5 minutes at the hourly price)")
     s.add_argument("--actual-usd", type=float)
     s.add_argument("--usd", type=float, help="charge: a cost outside the ledger (e.g. image builds)")
     s.add_argument("--note")
@@ -369,6 +418,8 @@ def main(argv: list[str] | None = None) -> None:
     su.add_argument("--step", default="")
     su.add_argument("--max-restarts", type=int, default=3)
     su.add_argument("--poll-s", type=float, default=15.0)
+    su.add_argument("--summary", help="write the supervisor's summary (sizing, restarts, recycles, peak "
+                                              "memory, events) to this file")
     su.add_argument("--ops-config")
     su.set_defaults(fn=cmd_supervise)
 
@@ -430,6 +481,15 @@ def main(argv: list[str] | None = None) -> None:
     sm.add_argument("--out", required=True, help="plan: the plan file; else the JSON report")
     sm.add_argument("--ops-config")
     sm.set_defaults(fn=cmd_smoke)
+    pi = sub.add_parser("pilot", help="the pilot (PROPOSALS-2026-11-24 §4, §0.4; vlar_ops/pilot.py)")
+    pi.add_argument("cmd", choices=["plan", "check"])
+    pi.add_argument("--root", help="plan: local copy of records/{runs,events}/base")
+    pi.add_argument("--markers", help="plan: local copy of results/base")
+    pi.add_argument("--plan-dir", help="check: plan.json, labels.json, checks.json")
+    pi.add_argument("--staging", default="/var/lib/vlar/pilot/staging", help="check: where the re-runs are written")
+    pi.add_argument("--out", required=True, help="plan: the output directory; check: the JSON report")
+    pi.add_argument("--ops-config")
+    pi.set_defaults(fn=cmd_pilot)
     go = sub.add_parser("golden", help="the golden-set self-check (§15; vlar_ops/golden.py)")
     go.add_argument("cmd", choices=["select", "check"])
     go.add_argument("--root", help="select: local copy of the bucket's records")

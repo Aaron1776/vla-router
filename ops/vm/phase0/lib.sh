@@ -104,24 +104,31 @@ wait_servers() {   # both production servers answer /info (they load the weights
 # run_phase <phase> <worker args>: the production servers and the calibrated number of workers until no job of the
 # phase is left. `vlar-ops supervise` sizes each worker's memory limit from the running servers, writes worker.env
 # (--max-jobs, docker --memory), starts the workers, restarts any that die or freeze (at most 3 times each) and starts
-# again those that took their --max-jobs jobs (PROPOSALS-2026-11-24 §0.6).
+# again those that took their --max-jobs jobs (PROPOSALS-2026-11-24 §0.6). A step that ran this boot's golden check
+# itself sets VLAR_GOLDEN_DONE=1 (each worker still requires the pass marker). Work left behind the spend guard's stop
+# flag (the hard limit, or the open spend phase's stop point, §0.1 (d)) ends the step as needing the user (exit 75,
+# it stays queued); the supervisor's summary goes to logs/<phase>-supervisor.json.
 run_phase() {
-  local phase="$1" args="$2" n counts
+  local phase="$1" args="$2" n counts stop_flag="${VLAR_STOP_FLAG:-/var/lib/vlar/STOP}"
   n="$(calfile get servers.workers)"; [[ "${n}" =~ ^[0-9]+$ ]] || fail "no worker count in the calibration file"
   [[ -s /etc/vlar/batching.env ]] || write_batching_env
   systemctl start vlar-xvla vlar-pi05 || fail "model servers did not start"
   wait_servers || { systemctl stop vlar-xvla vlar-pi05; fail "model servers not answering /info after 10 minutes"; }
-  if calibration_frozen; then        # §15: a frozen harness replays its golden set before any worker starts
+  if [[ "${VLAR_GOLDEN_DONE:-0}" != 1 ]] && calibration_frozen; then   # §15: golden set before any worker starts
     golden_check || { systemctl stop vlar-xvla vlar-pi05; fail "golden-set self-check failed: no worker started (§15)"; }
   fi
   vlar-ops queue resume >/dev/null
   vlar-ops supervise --phase "${phase}" --workers "${n}" --worker-args "${args}" --worker-env /etc/vlar/worker.env \
-    --history "${P0D}/history.jsonl" --step "${phase}" \
+    --history "${P0D}/history.jsonl" --step "${phase}" --summary "${P0D}/logs/${phase}-supervisor.json" \
     || { systemctl stop 'vlar-worker@*' vlar-xvla vlar-pi05; fail "${phase}: supervisor stopped (see the step log)"; }
   vlar-ops queue sync >/dev/null
   counts="$(vlar-ops queue status --phase "${phase}" | tail -n 1)"
   systemctl stop vlar-xvla vlar-pi05
   echo "${phase}: ${counts}"
+  if [[ -e "${stop_flag}" ]]; then
+    python3 -c 'import json,sys; c=json.loads(sys.argv[1]); sys.exit(0 if c["pending"]+c["leased"]+c["failed"]==0 else 1)' "${counts}" \
+      || need_input "${phase} stopped by the spend guard with work left ($(head -c 300 "${stop_flag}" | tr '\n' ' ')): ${counts}"
+  fi
   python3 -c 'import json,sys; c=json.loads(sys.argv[1]); sys.exit(0 if c["pending"]+c["leased"]+c["done_local"]+c["failed"]==0 else 1)' "${counts}" \
     || fail "${phase} incomplete: ${counts}"
 }

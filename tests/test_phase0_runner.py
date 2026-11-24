@@ -54,6 +54,8 @@ case "$1 $2" in
   "spend status") n=$(cat "$FAKE/ticks" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE/ticks"
     echo "{\"total_usd\": $(( n + 1 )).5, \"vm_usd\": 1.0, \"disk_usd\": 0.1, \"storage_usd\": 0.0, \"vm_hours\": 2.0, \"hard_limit_usd\": 45}" ;;
   "queue sync") echo "uploaded 0 results" ;;
+  "spend check") [[ -f "$FAKE/check_rc" ]] || { echo "total \$1.00; no phase open"; exit 0; }
+    echo "noise"; cat "$FAKE/check_msg"; exit "$(cat "$FAKE/check_rc")" ;;
 esac
 """
 FAKE_SYSTEMCTL = '#!/bin/bash\necho "systemctl $*" >> "$FAKE/log"\n'
@@ -267,3 +269,41 @@ def test_after_600_the_bucket_queue_is_empty_and_no_disk_reruns_phase_0(tmp_path
         assert out.returncode == 0, out.stderr
         assert not (fake / "order").exists()
         assert json.loads((p0 / "STATE.json").read_text())["state"] == "idle"
+
+
+# ---------------------------------------------------------------- the ledger's check before every step (§0.1 (d))
+
+def check_says(tmp_path, rc, msg):
+    fake = tmp_path / "fake"
+    fake.mkdir(parents=True, exist_ok=True)
+    (fake / "check_rc").write_text(str(rc))
+    (fake / "check_msg").write_text(msg + "\n")
+
+
+def test_a_step_past_its_phases_stop_point_does_not_start_and_stays_queued(tmp_path):
+    check_says(tmp_path, 3, "spend phase pilot: $2.35 of VM since it opened (stop point $2.34, line $2.50)")
+    body = '# spend-phase: pilot\necho a >> "$FAKE/order"'
+    state, hist, p0, fake, local, _ = run(tmp_path, {"710-pilot.sh": body})
+    assert state["state"] == "stopped" and "710-pilot not started: spend phase pilot" in state["reason"]
+    assert not (fake / "order").exists() and ls(p0 / "queue") == ["710-pilot.sh"] and hist == []
+    assert "vlar-ops spend check --phase pilot" in (fake / "log").read_text()
+
+
+def test_a_step_whose_phase_is_not_open_waits_for_the_user(tmp_path):
+    check_says(tmp_path, 4, "the step belongs to spend phase 'pilot', but the open phase is none")
+    state, hist, p0, fake, local, _ = run(tmp_path, {"710-pilot.sh": '# spend-phase: pilot\necho a >> "$FAKE/order"'})
+    assert state["state"] == "needs_input" and "open phase is none" in state["reason"]
+    assert not (fake / "order").exists() and ls(p0 / "queue") == ["710-pilot.sh"]
+
+
+def test_an_unreadable_ledger_starts_no_step(tmp_path):
+    check_says(tmp_path, 1, "Traceback: bucket unreachable")
+    state, hist, p0, fake, local, _ = run(tmp_path, {"010-a.sh": 'echo a >> "$FAKE/order"'})
+    assert state["state"] == "failed" and "could not be checked" in state["reason"]
+    assert not (fake / "order").exists() and (fake / "log").read_text().count("vlar-ops spend check") == 3
+
+
+def test_steps_naming_no_phase_are_checked_without_one(tmp_path):
+    state, hist, p0, fake, local, _ = run(tmp_path, {"010-a.sh": 'echo a >> "$FAKE/order"'})
+    assert state["state"] == "idle" and (fake / "order").read_text().split() == ["a"]
+    assert "vlar-ops spend check\n" in (fake / "log").read_text()

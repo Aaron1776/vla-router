@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen; smoke run passed; proposals decided; worker fixes in)
+# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; stop lines in; pilot code in progress)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,99 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, later): the user's decisions on the proposals; worker fixes done; next is the pilot code
+## START HERE (2026-11-24, ~15:30Z): stop lines done; pilot code half done; stopped at the usage limit
+
+**The user's decisions this session (2026-11-24, fourth message; the user's full text is the source):**
+1. §0.3 screen-then-re-run **approved**, including: stop on any re-run that does not match its screened run bit for
+   bit; and the router-half fallback to record `full` if the pilot's `/sample`-vs-`/features` check fails.
+2. §0.5 outcome-stratified sampling with weighted training **approved** as the sampling plan for Phase 1 and DAgger
+   (§0.2 shows uniform sampling cannot pass the stop rule at this budget). **Write it as an amendment.**
+3. §0.2 stop-rule thresholds **kept** (20 positives per task, 100 per fold). **Log this decision rule in §17 before
+   the pilot runs:** using the pilot's stratified projections (§0.4): passes at the current plan (~47 points per
+   task) → keep the DAgger round; passes only with the DAgger round's money moved into Phase 1 points (~107 per
+   task) → drop the DAgger round and its post-DAgger evaluation, evaluating `cascader_nospread` in the single round;
+   fails at both → stop before Phase 1 and re-plan with the user. The pilot report shows the projections for both.
+4. Bucket soft delete: report it; if on, propose 30 days for the project; change nothing without asking.
+Then: per-phase stop lines (code and tests), the pilot code, the pilot boot up to $2.50. Effort xhigh; max for any
+unexplained mismatch. On resume (the user's words): stop without debugging on any mismatch, keep the VM stopped
+when idle, follow the stopping rule.
+
+**Bucket soft delete: OFF** (`retentionDurationSeconds: 0`; versioning off, checked 14:50Z). Nothing to propose
+under the user's rule ("if it's on"). Not yet told to the user as a question: turning it on (7 or 30 days) would be
+the only undo for an accidental delete or overwrite; cost small (ledger rewrites ~KB each minute; trunk snapshot
+deletions ~9.5 GB × 30 days ≈ $0.19). Mention it in the next report; change nothing.
+
+**Done this session (committed, see the commit after `38258a5`; tests below):**
+- **Per-phase stop lines** (`spend.py`): ledger `phases` (old ledgers migrate to `[]`); `start_phase` / `end_phase`
+  (one open phase; names unique); `phase_vm_usd` counts session seconds inside the phase window plus the boot
+  allowance of sessions started in it (a failed boot from before never counts); stop point = line − margin (default
+  margin = (drain grace 900 s + 300 s wind-down) × hourly ≈ $0.157 at $0.472, so the pilot stops claiming at
+  ≈ $2.34 and the line $2.50 is a cap). Guard states `phase_stop` (STOP flag up with the phase's reason, one
+  `spend_phase_stop` notification, keeps ticking) and `line` (release in-flight at once, sync, shut down: no
+  drain). A daemon restart clears the flag only in `ok`/`soft`. CLI: `vlar-ops spend phase-open --phase NAME
+  --allocation-usd A --line-usd L [--margin-usd M]`, `spend phase-close --phase NAME`, `spend check [--phase NAME]`
+  (exit 0 ok, 3 stop, 4 not the open phase), `spend status` shows the phase.
+- **Runner** (`runner.sh`): `spend_gate` before every step: a step header `# spend-phase: NAME` makes it run only
+  while NAME is the open phase (else `needs_input`, stays queued); exit 3 → `stopped` (stays queued); ledger
+  unreadable 3 times → `failed`. STOP-flag messages now quote the flag's text.
+- **`run_phase`** (`lib.sh`): skips the golden check when the step set `VLAR_GOLDEN_DONE=1` (workers still require
+  the pass marker); with the STOP flag up and work left it exits 75 (needs the user; the next boot's gate then stops
+  it); writes the supervisor summary to `logs/<phase>-supervisor.json` (`supervise --summary`).
+- **Supervisor**: recycles recorded as quiet events (summary only, with `at_s`), for the restart-overhead measure;
+  every event carries `at_s`. **Worker markers** carry `meta.claimed_at` (with `finished_at`: wall time per job).
+- **`branchplan.py` (branch data digest; no branch records exist yet, so nothing to compare):**
+  `stratified_selection` (per task `per_task` points, round(share × n) from failed parents, shortfall made up from
+  the other stratum, uniform within stratum by a seeded hash, inclusion prob n/N, base parents by point only);
+  `eligible(min_calls)`; `branch_plan(..., selection=)` with `dp_sampling.scheme: stratified` records each entry's
+  `selection` (stratum, size, drawn, inclusion_prob). Re-run parents (by episode, then k points) not implemented.
+- **`vlar_ops/pilot.py` (written, imports, NO TESTS YET):** `make_plan` (base points from runs+events tables, outcome
+  from runs; snapshots checked against the markers' artifact lists), `features_check`, `episode_check` (xvla_only:
+  runs+steps; record off: runs+steps+events minus `record`; calibration_hash skipped), `run_checks` (VM, in the sim
+  image like `smoke`), `folds`, `expected_positives`, `stop_rule`, `decision` (keep/drop/stop), `cluster_rates`
+  (episode-cluster bootstrap), `project`. CLI `vlar-ops pilot plan|check`.
+- **The pilot plan, built (not uploaded):** `outputs/pilot/plan/` (git-ignored) from `outputs/pilot/base/` (base
+  runs, events, markers downloaded). plan_id `2b402a23e4effd96`, 150 points, **1,638 jobs** (4 points have b3 = b4,
+  shared). Every task has failed episodes (task 9 only 2, task 3 4, task 2 5); 10 failed + 5 successful points per
+  task. Eligibility: ≥ 3 calls fit (§4's "budget ≥ 30 steps"; the π0.5 budget is 260 at every base point, so the
+  binding limit is index ≤ 49). Checks: features at one mid point per task; xvla_only `base/t3/i41, t4/i4, t5/i17`;
+  record off `base/t5/i45, t1/i12, t8/i30`.
+
+**Tests (Mac, this session):** main venv, the changed modules only (spend phases, ledger, queue/spend, runner,
+supervisor, worker, vm_worker, plan, datadigest, no-identifiers, unique names, phase0 steps): **139 passed**. Full
+suites not run. `pilot.py` has no tests. Spend unchanged at **$9.94** (no VM; bucket reads only).
+
+**Next (xhigh), in order, before any boot:**
+1. **SPEC §17 (not written yet):** amendment 56 (§0.3 screen then re-run, with the user's stop-on-mismatch and
+   router-half fallback), 57 (§0.5 stratified sampling with weighted training, approved; mark PROPOSALS §0.5
+   approved), 58 (the DAgger-round decision rule above, verbatim in substance, logged before the pilot), and a short
+   entry for the per-phase stop lines (§12, from the approved §0.1 (d)).
+2. **Tests for `pilot.py`** (`tests/test_pilot.py`, main venv if it imports without pyarrow, else
+   `tests/reference/`): selection counts/shortfall/order independence/eligibility; `stop_rule`, `folds`,
+   `decision`; `project` with synthetic points; a weighted-rate helper (Σw·x/Σw, w = 1/π; §0.5's "synthetic strata
+   re-weight to the known population rates") — **the helper is not written yet**; reference tests with the stand-ins
+   (`tests/reference/test_smoke.py`'s `factory`/`collect`): `features_check` passes and catches a `/features` that
+   differs; `episode_check` record-off passes and catches `Leaky`; xvla_only passes.
+3. **Step `ops/vm/postfreeze/710-pilot.sh`** (not written): header `# cap-seconds: 18000` and `# spend-phase:
+   pilot`; download `pilot/plan/*` from the bucket (record SHA-256s); servers; `golden_check` (gate, exit 76);
+   `export VLAR_GOLDEN_DONE=1`; `vlar-ops pilot check` in the sim image (as `smoke_in_sim`) → reports (a check
+   mismatch does not stop the branches; report it; record-off or sample-reproduction mismatch = unexplained → max
+   effort later, no debugging on the VM); `vlar-ops queue add plan.json`; timing file around `run_phase pilot
+   "--phase pilot"`; an EXIT trap uploads `reports/` and the supervisor summary to `<storage>/pilot/reports/`.
+4. Full suites once; commit; push; upload `outputs/pilot/plan/*` to `<storage>/pilot/plan/`; `vlar-ops spend
+   phase-open --phase pilot --allocation-usd 1.60 --line-usd 2.50`; queue with `31_phase0_queue.sh
+   ops/vm/postfreeze/710-pilot.sh`; start the VM (≤ $2.50; ~3.3-3.6 VM-h expected, ≈ $1.6-1.7).
+5. While it runs: the report (`pilot report`): labels via `vlar_harness.labels.point_labels` (base parent logs +
+   pilot branch logs; profiles incl. `none`); positive = p2 − p1 ≥ 1/3 under `cascader_full`; rates per task and
+   stratum; re-weighted rescue/harm; tasks 4 and 8 apart (rescues lost to the cut); `project` at 47 and 107 per
+   task and at the points the **measured** prices buy (Phase 1 n = 3.24/(c_b + c_e + r/2), DAgger m =
+   1.62/(2c_e + r/2) per half, r = 74 VM-s re-run; flag if the decision differs from the 47/107 one); VM-s per run
+   by branch type (phase VM-s apportioned by job wall time), per point with/without b3, b4's share; checks (i)-(iv);
+   peak memory and restart overhead (recycle events vs `claimed_at`/`finished_at` gaps). Then `phase-close`.
+6. Pause rule unchanged: if the pilot has not booted by ~09:45Z 2026-11-25, delete the VM and disk (`spend
+   disk-deleted`). Billing reconcile once Nov 24 appears. Restarter before the first long Phase 1 run. Phase 2 code
+   for amendment 57's weights (`vlar_train.data` reads w_i; weighted `_loss`, validation loss, `lam`) before training.
+
+## Done 2026-11-24 (later): the user's decisions on the proposals; worker fixes done
 
 **The user's decisions (2026-11-24, third message; the user's full text is the source; recorded in
 `docs/PROPOSALS-2026-11-24.md` §0):** 3a approved (amendment 55, with a 20-episode live audit per decider and round);
