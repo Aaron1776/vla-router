@@ -333,6 +333,19 @@ def reconcile(storage: Storage, actual_usd: float, at: float, note: str = "") ->
     return update_ledger(storage, edit)[1]
 
 
+def add_charge(storage: Storage, usd: float, at: float, note: str) -> dict[str, float]:
+    """Charges the ledger cannot see (image-build VMs, other non-VM items) added to its total until a `reconcile`
+    sets the total to the billing report's figure, which includes them."""
+    if not note:
+        raise ValueError("a charge needs a note saying what it is")
+    def edit(ledger):
+        before = estimate(ledger, at)["total_usd"]
+        ledger["adjustments"].append({"at": at, "kind": "charge", "delta_usd": float(usd), "note": note,
+                                      "estimate_before_usd": before})
+        return {"estimate_before_usd": before, "delta_usd": float(usd), "total_usd": before + float(usd)}
+    return update_ledger(storage, edit)[1]
+
+
 # ---------------------------------------------------------------- daemon
 
 def run_daemon(guard: SpendGuard, stop: StopFlag, *, in_flight: Callable[[], int],

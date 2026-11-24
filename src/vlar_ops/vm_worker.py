@@ -167,7 +167,7 @@ def golden_check(ops_cfg: Mapping[str, Any], golden_json: Path, *, marker: Optio
 
     from . import golden
     cfg = load_config()
-    image_check(cfg)
+    images = image_check(cfg)
     if clients is None:
         from vlar_harness.servers.clients import PI05Client, XVLAClient
         srv = cfg["servers"]
@@ -187,7 +187,8 @@ def golden_check(ops_cfg: Mapping[str, Any], golden_json: Path, *, marker: Optio
         report = golden.check(record, arrays, episodes, read)
     finally:
         episodes.close()
-    golden.write_marker(Path(marker or ops_cfg.get("golden_marker", golden.MARKER)), report, cfg.calibration_hash)
+    golden.write_marker(Path(marker or ops_cfg.get("golden_marker", golden.MARKER)), report, cfg.calibration_hash,
+                        image_check=images)
     return report
 
 

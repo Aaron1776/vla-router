@@ -20,8 +20,9 @@ runs automatically; each script is run by hand from a machine logged in with `gc
 | Boot disk | `DISK_GB` × $0.10/GB-month (pd-balanced) | **Bills every hour it exists, running or stopped.** 100 GB ≈ $10/month ≈ $0.33/day. |
 | Bucket | $0.020/GB-month (Standard, regional) | Scanned every 30 min while the VM runs. |
 | Anything else | weekly reconcile | Set the ledger to the billing report's figure: `vlar-ops spend reconcile --actual-usd X`. |
+| Image-build VMs, other non-VM items | `spend charge` | Added to the total at once: `vlar-ops spend charge --usd X --note WHAT`; the next reconcile's billing figure includes them, so they are not counted twice. |
 
-**From the Mac** (SPEC §17, amendment 47): `.venv-ops/bin/vlar-ops spend status|disk-created|disk-deleted|reconcile
+**From the Mac** (SPEC §17, amendment 47): `.venv-ops/bin/vlar-ops spend status|charge|disk-created|disk-deleted|reconcile
 --ops-config ops/ops.yaml`. This uses application-default credentials, so run `gcloud auth application-default
 login` once. To create the venv, run `python3.13 -m venv .venv-ops` and then
 `.venv-ops/bin/pip install --uploaded-prior-to 2026-11-07 -e '.[gcs]'`. To record a disk late, pass gcloud's

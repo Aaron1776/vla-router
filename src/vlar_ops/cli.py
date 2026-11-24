@@ -90,6 +90,10 @@ def cmd_spend(a: argparse.Namespace) -> None:
         if a.actual_usd is None:
             sys.exit("--actual-usd is required")
         print(json.dumps(spend.reconcile(storage, a.actual_usd, now, a.note or "")))
+    elif a.action == "charge":
+        if a.usd is None or not a.note:
+            sys.exit("--usd and --note are required")
+        print(json.dumps(spend.add_charge(storage, a.usd, now, a.note)))
     elif a.action == "disk-created":
         if a.gb is None or a.usd_per_gb_month is None:
             sys.exit("--gb and --usd-per-gb-month are required")
@@ -237,6 +241,28 @@ def cmd_golden(a: argparse.Namespace) -> None:
         golden.save(rec, arrays, Path(a.golden))
 
 
+def cmd_smoke(a: argparse.Namespace) -> None:
+    from . import smoke
+    cfg = _ops_config(a.ops_config)
+    out = Path(a.out)
+    subjects = [s for s in (a.subjects or "").split(",") if s]
+    if a.cmd == "plan":
+        smoke.plan_from_markers(open_storage(cfg["storage_url"]), subjects).write(out)
+        print(out.read_text().splitlines()[0])
+        return
+    if a.cmd == "compare":
+        from vlar_harness.config import load_config
+        from . import golden
+        rep = smoke.compare(open_storage(cfg["storage_url"]), open_storage(a.smoke_url), subjects,
+                            boot=golden.boot_id(), calibration_hash=load_config().calibration_hash)
+    else:
+        rep = smoke.run_on_servers(cfg, Path(a.golden), a.cmd)
+    out.write_text(json.dumps(rep, indent=1, default=str))
+    print(json.dumps({k: v for k, v in rep.items() if k != "jobs"}, default=str)[:4000])
+    if not rep["passed"]:
+        sys.exit(f"SMOKE {a.cmd.upper()} MISMATCH: {rep.get('problems') or [j['problems'] for j in rep.get('jobs', [])]}")
+
+
 def cmd_grasps(a: argparse.Namespace) -> None:
     from . import grasps
     rep = grasps.run(Path(a.root), Path(a.out), phase=a.phase, shut=a.shut, open_=a.open)
@@ -283,8 +309,9 @@ def main(argv: list[str] | None = None) -> None:
     q.set_defaults(fn=cmd_queue)
 
     s = sub.add_parser("spend")
-    s.add_argument("action", choices=["status", "reconcile", "disk-created", "disk-deleted", "daemon"])
+    s.add_argument("action", choices=["status", "reconcile", "charge", "disk-created", "disk-deleted", "daemon"])
     s.add_argument("--actual-usd", type=float)
+    s.add_argument("--usd", type=float, help="charge: a cost outside the ledger (e.g. image builds)")
     s.add_argument("--note")
     s.add_argument("--name", default="boot")
     s.add_argument("--gb", type=float)
@@ -354,6 +381,14 @@ def main(argv: list[str] | None = None) -> None:
     fi.add_argument("--golden", help="freeze: the checked golden set (golden.json)")
     fi.set_defaults(fn=cmd_finish)
 
+    sm = sub.add_parser("smoke", help="post-freeze smoke checks on the L4 (vlar_ops/smoke.py)")
+    sm.add_argument("cmd", choices=["plan", "probe", "branch", "compare"])
+    sm.add_argument("--subjects", help="plan, compare: comma-separated episode ids (base/t2/i34,...)")
+    sm.add_argument("--golden", help="probe, branch: golden.json")
+    sm.add_argument("--smoke-url", help="compare: the re-runs' storage root")
+    sm.add_argument("--out", required=True, help="plan: the plan file; else the JSON report")
+    sm.add_argument("--ops-config")
+    sm.set_defaults(fn=cmd_smoke)
     go = sub.add_parser("golden", help="the golden-set self-check (§15; vlar_ops/golden.py)")
     go.add_argument("cmd", choices=["select", "check"])
     go.add_argument("--root", help="select: local copy of the bucket's records")

@@ -63,10 +63,14 @@ freeze_host_packages() {
 }
 freeze_host_packages || fail "host packages not frozen (amendment 36)"
 
-SRC="$(gcloud storage cat "${P0}/src/CURRENT")" || fail "no ${P0}/src/CURRENT (run ops/gcp/31_phase0_queue.sh)"
+# The bucket is read with 3 tries 20 s apart (a transient error must not cost a boot); if it stays unreadable the
+# boot fails: recorded where possible, then the VM stops. It never waits idle on the GPU.
+try3() { local i; for i in 1 2 3; do "$@" && return 0; (( i < 3 )) && sleep "${VLAR_BOOT_RETRY_S:-20}"; done; return 1; }
+SRC="$(try3 gcloud storage cat "${P0}/src/CURRENT")" \
+  || fail "${P0}/src/CURRENT unreadable after 3 tries (bucket unreachable, or nothing queued: ops/gcp/31_phase0_queue.sh)"
 if [[ "$(cat "${R}/.src" 2>/dev/null)" != "${SRC}" ]]; then
   echo "installing ${SRC}"
-  rm -rf "${R}.new" && mkdir -p "${R}.new" && gcloud storage cp "${P0}/src/${SRC}" /tmp/vlar-src.tar.gz \
+  rm -rf "${R}.new" && mkdir -p "${R}.new" && try3 gcloud storage cp "${P0}/src/${SRC}" /tmp/vlar-src.tar.gz \
     && tar -xzf /tmp/vlar-src.tar.gz -C "${R}.new" || fail "source archive ${SRC}"
   rm -rf "${R}" && mv "${R}.new" "${R}"
   python3 -m venv "${R}/.venv" 2>/dev/null || { apt-get update -q && apt-get install -y -q python3-venv \

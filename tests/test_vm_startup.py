@@ -217,3 +217,18 @@ def test_the_disk_marker_is_written_only_after_the_ledger_confirms_the_record(tm
     calls = (tmp_path / "calls").read_text().splitlines()
     assert boot().stdout.strip() == "rc=0"             # marker present: no second record
     assert (tmp_path / "calls").read_text().splitlines() == calls and len(disks()) == 1
+
+
+@pytest.mark.parametrize("failures, ok", [(0, True), (2, True), (3, False)])
+def test_the_bucket_is_read_with_three_tries_at_boot(tmp_path, failures, ok):
+    """A transient bucket error does not cost a boot; a bucket still unreadable after 3 tries fails the boot,
+    which stops the VM (`fail`: shutdown), never leaving it idle."""
+    text = STARTUP.read_text()
+    fn = next(line for line in text.splitlines() if line.startswith("try3()"))
+    assert 'SRC="$(try3 gcloud storage cat' in text and "try3 gcloud storage cp" in text
+    script = (f"{fn}\nn=0; flaky() {{ n=$((n+1)); echo $n >> {tmp_path}/calls; (( n > {failures} )); }}\n"
+              "try3 flaky && echo OK || echo FAILED")
+    r = subprocess.run([BASH, "-c", script], env={**os.environ, "VLAR_BOOT_RETRY_S": "0"}, capture_output=True,
+                       text=True)
+    assert r.stdout.strip() == ("OK" if ok else "FAILED")
+    assert len((tmp_path / "calls").read_text().split()) == min(failures + 1, 3)

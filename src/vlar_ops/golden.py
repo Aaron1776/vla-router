@@ -131,10 +131,14 @@ def check(record: Mapping, arrays: Mapping, make_episode: Callable[[int], Any],
     return {"passed": all(r["problem"] is None for r in results), "results": results}
 
 
-def write_marker(path: Path, report: Mapping, calibration_hash: Optional[str]) -> None:
+def write_marker(path: Path, report: Mapping, calibration_hash: Optional[str],
+                 image_check: Optional[Mapping] = None) -> None:
+    """`image_check`: the boot's image cross-check (amendment 54) that ran before the replay; workers copy the
+    marker into every record's `meta.golden_pass`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"boot_id": boot_id(), "calibration_hash": calibration_hash,
-                                "passed": bool(report["passed"]), "results": report["results"]}, indent=1))
+                                "passed": bool(report["passed"]), "results": report["results"],
+                                "image_check": image_check}, indent=1))
 
 
 def passed_this_boot(path: Path, calibration_hash: Optional[str]) -> bool:

@@ -329,3 +329,19 @@ def test_two_open_records_with_one_name_need_since_to_close_one(tmp_path):
     spend.close_disk(st, "vm-boot", 7000.0)                       # now unambiguous
     with pytest.raises(ValueError, match="no open disk"):
         spend.close_disk(st, "vm-boot", 8000.0)
+
+
+def test_a_charge_outside_the_ledger_adds_to_the_total_until_a_reconcile_replaces_it(tmp_path):
+    """Image builds and other non-VM items (item 7): `spend charge` adds them; a later reconcile to the billing
+    figure, which includes them, does not count them twice."""
+    st = LocalStorage(tmp_path)
+    t = 1_700_000_000.0
+    spend.update_ledger(st, lambda led: led["sessions"].append(
+        {"boot_id": "b", "vm_seconds": 3600.0, "boot_allowance_s": 0.0, "hourly_usd": 0.5}))
+    out = spend.add_charge(st, 2.20, t, "image builds before 2026-11-24")
+    assert out["estimate_before_usd"] == pytest.approx(0.5) and out["total_usd"] == pytest.approx(2.70)
+    assert spend.estimate(spend.load_ledger(st), t)["total_usd"] == pytest.approx(2.70)
+    spend.reconcile(st, 3.00, t + 1, "billing")
+    assert spend.estimate(spend.load_ledger(st), t + 1)["total_usd"] == pytest.approx(3.00)
+    with pytest.raises(ValueError):
+        spend.add_charge(st, 1.0, t, "")
