@@ -29,6 +29,10 @@ creation time: `--since "$(gcloud compute disks describe <disk> --zone <zone> --
 To close one late, pass `--until <ISO time>`. `disk-created` exits 0 only after reading its record back from the
 ledger (amendment 48).
 
+**X-VLA parity from the Mac** (SPEC §11 step 5): `ops/xvla_parity.py` pairs the base rollouts' markers
+(`results/base/`) with `References/progress.jsonl` at 520 steps and reports the exact McNemar test; usage in its
+docstring. It lives outside `src/vlar_ops`, so it is in no ops digest.
+
 The disk is the cost that grows while nothing is happening. **If work pauses for more than a day,
 delete the L4 VM and its disk** (`gcloud compute instances delete … --delete-disks=all`, then
 `vlar-ops spend disk-deleted --name <vm>-boot`) and recreate it from the bucket to resume

@@ -369,7 +369,11 @@ the VM was preempted (VM stopped, STATE still "running"): start it again. In eve
 stops the VM for the user's review; never queue `600`. **After `500` (for Phase 1 planning):** measure from the
 base rollouts' logs where each episode's time went (GPU time per call type: `/act`, `/sample` probes, `/features`;
 simulation; rendering; image encoding; uploads) and record it here: the pilot decides from it whether to record
-probes only at sampled decision points. **Before Phase 1 queues real work (the user, 2026-11-23):** run a single smoke job on the frozen harness
+probes only at sampled decision points. **X-VLA parity (SPEC §11 step 5; the user, 2026-11-24):** once `400` has all
+500 markers, run `ops/xvla_parity.py` on a copy of `results/base/` (usage in its docstring; paired against
+`References/progress.jsonl` at 520 steps, exact McNemar; a report, not a gate), upload `xvla-parity.{json,txt}` to
+`phase0/step6/` beside the step-6 summary, give the user both together, and reference it here. **Before Phase 1
+queues real work (the user, 2026-11-23):** run a single smoke job on the frozen harness
 under the post-freeze ops code and confirm its marker's `meta.ops_waiver` (and `boot_id`, `golden_pass`):
 `serve`'s waiver wiring has only been tested with stubs. Earlier notes: The VM runs `0a0cd4c`'s ops code
 (`phase0/src/CURRENT`) on images `03f311c`. At 21:49Z step `200` had passed the geometry rule: batch size 4,
