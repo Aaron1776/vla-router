@@ -243,14 +243,145 @@ def episode_check(run_job: Callable[[Job], list[dict]], original: Callable[[str]
             "ran_as": {k: run.get(k) for k in ("mode", "record")}}
 
 
+# ---------------------------------------------------------------- the base run's setup (finding of 2026-11-24)
+
+MAX_LOADS = 64           # a base worker ran ~6 episodes of a task per process; far more would be a different problem
+FIXTURE_FIELDS = ("body_pos", "body_quat")   # what a fixture's placement writes; site_rgba may toggle in an episode
+
+
+def model_fields(sim, fields: Optional[Sequence[str]] = None) -> dict[str, Any]:
+    """The model fields LIBERO writes at run time (`vlar_harness.sim.state.MODEL_FIELDS`: fixture poses, site
+    colours), copied."""
+    import numpy as np
+    from vlar_harness.sim import state as sim_state
+    model = sim.env.env.sim.model._model
+    return {f: np.array(getattr(model, f), copy=True) for f in (fields or sim_state.MODEL_FIELDS)}
+
+
+def fields_equal(a: Mapping[str, Any], b: Mapping[str, Any], fields: Optional[Sequence[str]] = None) -> bool:
+    import numpy as np
+    keys = list(fields) if fields else sorted(set(a) | set(b))
+    return all(k in a and k in b and np.array_equal(np.asarray(a[k]), np.asarray(b[k])) for k in keys)
+
+
+def fields_max_diff(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
+    import numpy as np
+    return max((float(np.max(np.abs(np.asarray(a[k], dtype=np.float64) - np.asarray(b[k], dtype=np.float64))))
+                if np.shape(a[k]) == np.shape(b[k]) else math.inf for k in set(a) & set(b)), default=math.inf)
+
+
+def base_loads(make_sim: Callable[[int], Any], task_id: int, init_idx: int, scene_seed: int,
+               target: Mapping[str, Any], *, max_loads: int = MAX_LOADS,
+               nearest: Optional[dict] = None) -> Optional[int]:
+    """The model-load count of the base run's simulator when it set the episode up, that setup included.
+
+    LIBERO appends its open/close and on/off property samplers to a list kept across hard resets
+    (`object_property_initializers`), and at every reset they draw from np.random after `env.seed` and before the
+    fixtures are placed; a fixture's pose lives in the model (`body_pos`, `body_quat`), which `set_init_state` does
+    not restore. So the fixtures of tasks 3, 8 and 9 sit where the load count puts them, and a simulator that has
+    set up a different number of episodes sees another scene (docs/HARNESS.md, "Fixture placement depends on the
+    simulator's load count"). A fresh simulator is load 1 and each `setup_episode` one more; the count is the first
+    whose setup gives the model fields of the base run's decision-point-0 snapshot, bit for bit. None if none up to
+    `max_loads`; `nearest` (a dict, if given) gets the closest count and its largest difference either way (on another
+    CPU architecture the placement can differ in the last bit: 5e-19 m for task 3's cabinet on the Mac)."""
+    best = (None, math.inf)
+    sim = make_sim(task_id)
+    try:
+        for n in range(2, max_loads + 1):
+            sim.setup_episode(init_idx, scene_seed)
+            here = model_fields(sim)
+            if fields_equal(here, target):
+                best = (n, 0.0)
+                return n
+            d = fields_max_diff(here, target)
+            if d < best[1]:
+                best = (n, d)
+        return None
+    finally:
+        sim.close()
+        if nearest is not None:
+            nearest.update({"loads": best[0], "max_abs_diff": best[1]})
+
+
+def warm_up(sim, loads: int) -> None:
+    """Bring a fresh simulator (load 1) to `loads - 1` loads, so that the next `setup_episode` is load `loads`. Which
+    episodes the extra loads set up does not matter: only their number reaches the next setup (checked on the Mac
+    against the VM's base t8/i30, 2026-11-24)."""
+    for _ in range(loads - 2):
+        sim.setup_episode(0, 0)
+
+
+def replicated_episode_check(cfg, clients: Mapping[str, Any], read_bytes: Callable[[str], Optional[bytes]],
+                             read_snapshot: Callable[[str], Any], staging: Path, header: Mapping[str, Any], job: Job,
+                             variant: str, *, make_sim: Callable[[int], Any]) -> dict:
+    """(ii) or (iii) on a fresh simulator brought to the base run's load count (`base_loads`), so the re-run's setup is
+    the base run's; afterwards its fixtures must still be the base run's."""
+    from vlar_harness.collect import Runner
+    from vlar_harness.snapshot import SnapshotStore
+
+    from . import vm_worker
+    task, init = int(job.spec["task_id"]), int(job.spec["init_idx"])
+    first = read_snapshot(SnapshotStore.make_id(job.subject, 0))
+    target, scene = first.sim["model_fields"], int(first.episode["scene_seed"])
+    near: dict = {}
+    n = base_loads(make_sim, task, init, scene, target, nearest=near)
+    if n is None:
+        return {"subject": job.subject, "variant": variant, "passed": False, "tables": [], "outcome": {},
+                "ran_as": {}, "loads": None, "nearest": near, "fixtures_equal_base": None,
+                "problems": [f"no load count up to {MAX_LOADS} reproduces the base run's model fields at step 0 "
+                             f"(nearest: {near})"]}
+    episodes = vm_worker.ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
+    try:
+        warm_up(episodes.sim(task), n)
+        runner = Runner(cfg, episodes, read_bytes, staging, p_escalate=0.0, header=header)
+        rep = episode_check(lambda j: runner(j)[0], read_bytes, job, variant)
+        same = fields_equal(model_fields(episodes.sim(task), FIXTURE_FIELDS), target, FIXTURE_FIELDS)
+    finally:
+        episodes.close()
+    if not same:
+        rep = {**rep, "passed": False, "problems": rep["problems"] + ["the re-run's fixtures are not the base run's"]}
+    return {**rep, "loads": n, "fixtures_equal_base": same}
+
+
+def long_episode_subjects(rows: Sequence[Mapping[str, Any]], *, tasks: Sequence[int], seed: str,
+                          exclude: Sequence[str] = (), near: float = 0.85) -> list[str]:
+    """One long base episode per task, for the corrected check (iii): ended at the step limit, or succeeded with its
+    profile-none time at least `near` of the task's calibrated limit; the first of each task by a seeded rank.
+    `rows`: {"episode_id", "task_id", "end_reason", "time_frac"} per base run."""
+    out = []
+    for t in tasks:
+        ok = [r for r in rows if int(r["task_id"]) == t and r["episode_id"] not in exclude and (
+            r["end_reason"] == "step_limit" or (r["end_reason"] == "success" and r["time_frac"] >= near))]
+        if not ok:
+            raise PilotError(f"task {t}: no long base episode")
+        out.append(min(ok, key=lambda r: unit_uniform(seed, r["episode_id"]))["episode_id"])
+    return out
+
+
+def base_time_rows(runs: Sequence[Mapping], events: Sequence[Mapping], cfg) -> list[dict[str, Any]]:
+    """Per base run: task, end, and its profile-none simulated time as a fraction of the task's calibrated limit."""
+    from vlar_harness import clock as clk
+    charges = clk.Charges.from_config(cfg)
+    by: dict[str, list[dict]] = defaultdict(list)
+    for e in events:
+        by[e["run_id"]].append(json.loads(e["event"]))
+    out = []
+    for r in runs:
+        if r["run_kind"] != "episode" or not str(r["run_id"]).startswith("base/"):
+            continue
+        t = clk.replay(by[r["run_id"]], "none", charges)
+        out.append({"episode_id": r["run_id"], "task_id": int(r["task_id"]), "end_reason": r["end_reason"],
+                    "steps": int(r["steps"]), "time_frac": t / float(cfg.time_limit_s(int(r["task_id"])))})
+    return out
+
+
 def run_checks(ops_cfg: Mapping[str, Any], plan_dir: Path, staging: Path, *, clients=None, make_sim=None,
-               server_wait_s: float = 600.0) -> dict:
+               server_wait_s: float = 600.0, subjects_file: str = "checks.json") -> dict:
     import os
     import sys
     os.environ.setdefault("MUJOCO_GL", "egl" if sys.platform.startswith("linux") else "cgl")
     from vlar_harness import provenance
     from vlar_harness import snapshot as snap
-    from vlar_harness.collect import Runner
     from vlar_harness.config import load_config
     from vlar_harness.dataset import snapshot_key
 
@@ -267,9 +398,13 @@ def run_checks(ops_cfg: Mapping[str, Any], plan_dir: Path, staging: Path, *, cli
                    "pi05": PI05Client(srv["pi05"]["host"], int(srv["pi05"]["port"]))}
     vm_worker.check_servers(cfg, clients, wait_s=server_wait_s)
     storage = open_storage(ops_cfg["storage_url"])
-    subjects = json.loads((Path(plan_dir) / "checks.json").read_text())
+    subjects = json.loads((Path(plan_dir) / subjects_file).read_text())
+    if make_sim is None:
+        from vlar_harness.sim.libero_sim import LiberoSim, SimSpec
+        spec = SimSpec.from_config(cfg)
+        make_sim = lambda task_id: LiberoSim(task_id, spec)                       # noqa: E731
     episodes = vm_worker.ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
-    runner = Runner(cfg, episodes, storage.get_bytes, staging, p_escalate=0.0, header=provenance.record_header(cfg))
+    header = provenance.record_header(cfg)
 
     def read(sid):
         data = storage.get_bytes(snapshot_key(sid))
@@ -289,16 +424,103 @@ def run_checks(ops_cfg: Mapping[str, Any], plan_dir: Path, staging: Path, *, cli
             raise PilotError(f"{subject}: no result marker")
         return Job(**json.loads(data)["job"])
 
+    rep: dict[str, Any] = {}
     try:
-        rep = {"features": features_check(episodes, read, recorded, clients["xvla"], subjects["features"])}
+        if subjects.get("features"):
+            rep["features"] = features_check(episodes, read, recorded, clients["xvla"], subjects["features"])
         for variant in ("xvla_only", "record_off"):
-            rep[variant] = [episode_check(lambda j: runner(j)[0], storage.get_bytes, original_job(s), variant)
-                            for s in subjects[variant]]
+            if subjects.get(variant):
+                rep[variant] = [replicated_episode_check(cfg, clients, storage.get_bytes, read, staging, header,
+                                                         original_job(s), variant, make_sim=make_sim)
+                                for s in subjects[variant]]
     finally:
         episodes.close()
-    rep["passed"] = rep["features"]["sample_reproduces_record"] and all(
-        r["passed"] for v in ("xvla_only", "record_off") for r in rep[v])
-    return {**rep, "boot_id": golden.boot_id(), "calibration_hash": cfg.calibration_hash, "image_check": image}
+    rep["passed"] = rep.get("features", {}).get("sample_reproduces_record", True) and all(
+        r["passed"] for v in ("xvla_only", "record_off") for r in rep.get(v, []))
+    return {**rep, "subjects_file": subjects_file, "boot_id": golden.boot_id(), "calibration_hash": cfg.calibration_hash,
+            "image_check": image}
+
+
+def summary_line(rep: Mapping[str, Any]) -> str:
+    """'passed', or what failed (for the step log and the runner's reason)."""
+    if rep.get("passed"):
+        return "passed"
+    out = {}
+    if "features" in rep:
+        out["features"] = rep["features"]["problems"]
+        out["features_equal_probe"] = rep["features"]["features_equal_probe"]
+    for v in ("xvla_only", "record_off"):
+        if v in rep:
+            out[v] = [{"subject": r["subject"], "loads": r.get("loads"), "problems": r["problems"]} for r in rep[v]
+                      if not r["passed"]]
+    return "MISMATCH: " + json.dumps(out)[:1500]
+
+
+RESUME_CHECK_SEED = "pilot-check-iii-2026-11-24"
+RESUME_CHECK_TASKS = (3, 9, 8, 2, 4, 5)    # the three whose fixtures move, the other stove scene, the two time-bound
+
+
+def write_long_episode_checks(root: Path, plan_dir: Path, out: Path, *, cfg=None) -> dict[str, Any]:
+    """The corrected check (iii) (the user, 2026-11-24): base/t8/i30 again, plus one long base episode near its limit
+    from each of RESUME_CHECK_TASKS, none already checked; record off, each on the base run's load count."""
+    from vlar_harness.config import load_config
+    from vlar_harness.dataset import read_table
+    cfg = cfg or load_config()
+    done = json.loads((Path(plan_dir) / "checks.json").read_text())
+    before = set(done["xvla_only"]) | set(done["record_off"])
+    rows = base_time_rows(read_table(root, "runs").to_pylist(), read_table(root, "events").to_pylist(), cfg)
+    subjects = ["base/t8/i30"] + long_episode_subjects(rows, tasks=RESUME_CHECK_TASKS, seed=RESUME_CHECK_SEED,
+                                                        exclude=sorted(before))
+    by = {r["episode_id"]: r for r in rows}
+    obj = {"record_off": subjects, "seed": RESUME_CHECK_SEED, "tasks": list(RESUME_CHECK_TASKS),
+           "rule": "base/t8/i30, then per task the long base episode (step limit, or success at >= 0.85 of the "
+                   "task's limit under profile none) of lowest seeded rank, not checked before",
+           "episodes": {s: by[s] for s in subjects}}
+    Path(out).write_text(json.dumps(obj, indent=1, sort_keys=True))
+    return obj
+
+
+# ---------------------------------------------------------------- the resume's claim order (the user, 2026-11-24)
+
+def resume_order(jobs: Sequence[tuple[str, str, Job]], labels: Mapping[str, Mapping]) -> tuple[list[str], list[str]]:
+    """Point by point, so a stop leaves whole labelled points. Points with a job left are grouped by stratum cell (task,
+    parent outcome) and sorted within each cell by finished jobs (most first); round r takes each cell's r-th point,
+    the round's points again by finished jobs (then task, outcome). Each point's open jobs keep their planned order.
+    `jobs`: (job_id, status, Job) of the phase. Returns (point order, job order)."""
+    by_point: dict[str, list[tuple[str, Job]]] = defaultdict(list)
+    done: dict[str, int] = defaultdict(int)
+    for _, status, job in jobs:
+        by_point[job.subject].append((status, job))
+        done[job.subject] += status == "done"
+    cells: dict[tuple, list[str]] = defaultdict(list)
+    for p, js in by_point.items():
+        if any(s != "done" for s, _ in js):
+            st = labels[p]["selection"]["stratum"]
+            cells[(int(st["task_id"]), st["parent_outcome"])].append(p)
+    for c in cells.values():
+        c.sort(key=lambda p: (-done[p], p))
+    points: list[str] = []
+    for r in range(max((len(c) for c in cells.values()), default=0)):
+        level = sorted(((c[r], key) for key, c in cells.items() if r < len(c)), key=lambda x: (-done[x[0]], x[1]))
+        points += [p for p, _ in level]
+    order = [j.job_id for p in points for _, j in sorted((x for x in by_point[p] if x[0] != "done"),
+                                                         key=lambda x: x[1].order)]
+    return points, order
+
+
+def reorder_queue(q, plan_dir: Path) -> dict[str, Any]:
+    """Set the claim order of the pilot's open jobs (`resume_order`); only the queue's claim columns change."""
+    labels = json.loads((Path(plan_dir) / "labels.json").read_text())
+    jobs = q.phase_jobs(PHASE)
+    points, order = resume_order(jobs, labels)
+    q.set_order(PHASE, order)
+    subjects = {j.subject for _, _, j in jobs}
+    done_by = defaultdict(int)
+    for _, s, j in jobs:
+        done_by[j.subject] += s == "done"
+    return {"points": len(subjects), "points_complete": len(subjects) - len(points), "points_open": len(points),
+            "jobs_reordered": len(order), "first_points": [(p, done_by[p]) for p in points[:5]],
+            "order_points": points}
 
 
 # ---------------------------------------------------------------- projections and the stop rule (amendment 58)
@@ -515,21 +737,20 @@ def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: 
     apportioned by job wall time (claimed_at to finished_at) among the jobs that finished in it; and per point,
     with and without b3, base parent (b1 needs 2 seeds) and exploration parent (3), and b4's share. The boot, the
     golden check and the pilot's checks are outside the windows and reported apart by the caller."""
-    windows, start = [], {}
-    for t in timing:
-        if "phase_started" in t:
-            start[t["boot_id"]] = float(t["phase_started"])
-        elif "phase_ended" in t and t["boot_id"] in start:
-            windows.append((start.pop(t["boot_id"]), float(t["phase_ended"])))
     jobs = [{"kind": m["job"]["kind"], "wall": float(m["finished_at"]) - float(m["meta"]["claimed_at"]),
-             "end": float(m["finished_at"])} for m in markers if m.get("meta", {}).get("claimed_at") is not None]
+             "end": float(m["finished_at"]), "start": float(m["meta"]["claimed_at"]), "boot": m["meta"].get("boot_id")}
+            for m in markers if m.get("meta", {}).get("claimed_at") is not None]
+    windows = branch_windows(timing, jobs)
     vm_s: dict[str, float] = defaultdict(float)
+    worker_s: dict[str, float] = defaultdict(float)
     n: dict[str, int] = defaultdict(int)
-    for a, b in windows:
-        inside = [j for j in jobs if a <= j["end"] <= b]
+    for a, b, boot, _ in windows:
+        inside = [j for j in jobs if (j["boot"] == boot if boot is not None and j["boot"] is not None
+                                      else a <= j["end"] <= b)]
         total = sum(j["wall"] for j in inside)
         for j in inside:
             vm_s[j["kind"]] += (b - a) * j["wall"] / total if total else 0.0
+            worker_s[j["kind"]] += j["wall"]
             n[j["kind"]] += 1
     per_run = {k: vm_s[k] / n[k] for k in n}
     r = lambda k: per_run.get(k, float("nan"))                                             # noqa: E731
@@ -537,9 +758,38 @@ def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: 
              "base_without_b3": 2 * r("b1_continue") + 3 * (r("b2_one_call") + r("b4_max")),
              "explore_without_b3": 3 * (r("b1_continue") + r("b2_one_call") + r("b4_max"))}
     usd = {k: v * hourly_usd / 3600 for k, v in point.items()}
-    return {"windows_s": [b - a for a, b in windows], "jobs_timed": sum(n.values()), "jobs_untimed": len(markers) -
-            len(jobs), "vm_s_per_run": per_run, "runs": dict(n), "vm_s_per_point": point, "usd_per_point": usd,
+    return {"windows_s": [b - a for a, b, _, _ in windows], "window_ends": [src for *_, src in windows],
+            "jobs_timed": sum(n.values()), "jobs_untimed": len(markers) - len(jobs), "vm_s_per_run": per_run,
+            "worker_s_per_run": {k: worker_s[k] / n[k] for k in n}, "usd_per_run": {k: v * hourly_usd / 3600
+                                                                                    for k, v in per_run.items()},
+            "runs": dict(n), "vm_s_per_point": point, "usd_per_point": usd,
             "b4_share_of_base_point": 3 * r("b4_max") / point["base_without_b3"] if point["base_without_b3"] else None}
+
+
+def branch_windows(timing: Sequence[Mapping], jobs: Sequence[Mapping]) -> list[tuple[float, float, Optional[str], str]]:
+    """Per boot: (start, end, boot_id, how the end is known) of the branch phase. The start is timing.jsonl's
+    phase_started (else the boot's first claim); the end its phase_ended, else the boot's last job finish: a step
+    stopped inside `run_phase` writes no phase_ended (the user, 2026-11-24). Jobs without a boot id (older markers)
+    count in windows from timing.jsonl only."""
+    start, end = {}, {}
+    for t in timing:
+        if "phase_started" in t:
+            start.setdefault(t["boot_id"], float(t["phase_started"]))
+        elif "phase_ended" in t:
+            end[t["boot_id"]] = float(t["phase_ended"])
+    by_boot: dict[str, list[Mapping]] = defaultdict(list)
+    for j in jobs:
+        if j.get("boot") is not None:
+            by_boot[j["boot"]].append(j)
+    out = []
+    for boot in sorted(set(start) | set(by_boot)):
+        js = by_boot.get(boot, [])
+        a = start.get(boot, min((j["start"] for j in js), default=None))
+        b, src = (end[boot], "phase_ended") if boot in end else (max((j["end"] for j in js), default=None),
+                                                                 "last_job_finish")
+        if a is not None and b is not None and b > a:
+            out.append((a, b, boot if js else None, src))
+    return out
 
 
 def measured_budgets(c: Mapping[str, float], *, rerun_vm_s: float = 74.0, hourly_usd: float,
@@ -609,6 +859,7 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
         dec["differs"] = dec["at_measured_prices"] != dec["rule"]
     sup = json.loads((rd / "pilot-supervisor.json").read_text()) if (rd / "pilot-supervisor.json").exists() else {}
     checks = json.loads((rd / "checks.json").read_text()) if (rd / "checks.json").exists() else None
+    iii = json.loads((rd / "checks-iii.json").read_text()) if (rd / "checks-iii.json").exists() else None
     return {"plan_id": selection["plan_id"], "points": len(label_map), "labelled": len(rows), "problems": problems,
             "jobs_done": len(markers), "jobs_planned": selection["n_jobs"], "rates": rate_table(rows, PROFILES),
             "costs": cost, "phase_vm_usd": phase_vm_usd, "budgets_points_per_task": budgets, "projections": proj,
@@ -619,6 +870,10 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
                 "xvla_only": [r["passed"] for r in checks["xvla_only"]],
                 "record_off": [r["passed"] for r in checks["record_off"]],
                 "consequence": checks["features"]["consequence"]},
+            "check_iii_corrected": None if iii is None else {
+                "passed": iii["passed"], "record_off": [{k: r.get(k) for k in ("subject", "loads", "passed", "problems",
+                                                                               "fixtures_equal_base", "outcome")}
+                                                        for r in iii["record_off"]]},
             "supervisor": {k: sup.get(k) for k in ("peak_memory_bytes", "restarts", "recycles", "refused", "gave_up",
                                                    "counts")},
             "supervisor_events": {e: sum(1 for x in sup.get("events", []) if x.get("outcome") == e)

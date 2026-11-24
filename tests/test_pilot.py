@@ -268,3 +268,91 @@ def test_restart_overhead_separates_recycles_from_claiming():
           marker("b1_continue", "w2", 0, 5), marker("b1_continue", "w2", 7, 9)]
     o = pilot.restart_overhead(ms)
     assert o["gaps"] == 3 and o["large_gaps"] == 1 and o["large_gap_s_total"] == 60 and o["small_gap_s_median"] == 2
+
+
+# ---------------------------------------------------------------- the resume (the user, 2026-11-24)
+
+def _jobs_and_labels():
+    from vlar_ops.plan import Job
+    jobs, labels, k = [], {}, 0
+    for task, outcome, point, done in [(0, "failure", "a", 3), (0, "failure", "b", 0), (0, "success", "c", 1),
+                                       (1, "failure", "d", 4), (1, "failure", "e", 11), (2, "success", "f", 0)]:
+        sid = f"base/t{task}/i{point}/dp01"
+        labels[sid] = {"selection": {"stratum": {"task_id": task, "parent_outcome": outcome, "source": "base"}}}
+        for i in range(11):
+            jobs.append((f"{sid}#{i}", "done" if i < done else "pending",
+                         Job(f"{sid}#{i}", "pilot", "b1_continue", sid, 1, 1 + i % 3, 100 - k, {})))
+            k += 1
+    return jobs, labels
+
+
+def test_resume_order_goes_point_by_point_rotating_cells_most_finished_first():
+    jobs, labels = _jobs_and_labels()
+    points, order = pilot.resume_order(jobs, labels)
+    # e is complete; round 0: each cell's best point (d 4, a 3, c 1, f 0), round 1: b
+    assert points == ["base/t1/id/dp01", "base/t0/ia/dp01", "base/t0/ic/dp01", "base/t2/if/dp01", "base/t0/ib/dp01"]
+    subj = {jid: jid.split("#")[0] for jid, _, _ in jobs}
+    seen = [subj[j] for j in order]
+    assert seen == sorted(seen, key=points.index)                       # each point's jobs together, points in order
+    assert len(order) == 66 - 3 - 0 - 1 - 4 - 11 - 0 == len(set(order))  # every open job once, no done job
+    by = {jid: job for jid, _, job in jobs}
+    first = [j for j in order if subj[j] == points[0]]
+    assert [by[j].order for j in first] == sorted(by[j].order for j in first)   # planned order within a point
+
+
+def test_set_order_reorders_claims_and_keeps_the_job_bodies(tmp_path):
+    from vlar_ops.plan import Plan
+    from vlar_ops.queue import JobQueue
+    from vlar_ops.storage import LocalStorage
+    jobs, labels = _jobs_and_labels()
+    q = JobQueue(tmp_path / "q.db", LocalStorage(tmp_path / "bucket"), tmp_path / "local")
+    q.add_plan(Plan("pilot", {}, [j for _, _, j in jobs]))
+    with q._tx():
+        q._db.executemany("UPDATE jobs SET status='done' WHERE job_id=?", [(jid,) for jid, s, _ in jobs if s == "done"])
+    bodies = dict(q._db.execute("SELECT job_id, body FROM jobs").fetchall())
+    rep = pilot.reorder_queue(q, _labels_dir(tmp_path, labels))
+    assert rep["points_complete"] == 1 and rep["points_open"] == 5 and rep["jobs_reordered"] == 47
+    claimed = [q.claim("w1").subject for _ in range(7)]
+    assert claimed == ["base/t1/id/dp01"] * 7                           # d's 7 open jobs first, whatever their tier
+    assert q.claim("w1").subject == "base/t0/ia/dp01"
+    assert dict(q._db.execute("SELECT job_id, body FROM jobs").fetchall()) == bodies
+    with pytest.raises(ValueError, match="open jobs once"):
+        q.set_order("pilot", [jobs[-1][0]])
+    q.close()
+
+
+def _labels_dir(tmp_path, labels):
+    import json
+    d = tmp_path / "plan"
+    d.mkdir()
+    (d / "labels.json").write_text(json.dumps(labels))
+    return d
+
+
+def test_costs_of_a_stopped_step_come_from_the_jobs_claim_and_finish_times():
+    """No phase_ended (the step stopped inside run_phase): the window ends at that boot's last finish."""
+    def m(kind, claimed, finished, boot):
+        return {"job": {"kind": kind}, "finished_at": finished,
+                "meta": {"claimed_at": claimed, "worker_id": "w1", "boot_id": boot}}
+    ms = [m("b1_continue", 100, 110, "x"), m("b4_max", 100, 160, "x"), m("b2_one_call", 105, 135, "x"),
+          m("b1_continue", 1000, 1020, "y")]
+    c = pilot.costs(ms, [{"boot_id": "x", "phase_started": 90.0}], hourly_usd=0.472)
+    # boot x: 90..160 = 70 s over 10 + 60 + 30 wall s; boot y (no timing): its own claim..finish, 20 s
+    assert c["windows_s"] == [70.0, 20.0] and c["window_ends"] == ["last_job_finish", "last_job_finish"]
+    assert c["vm_s_per_run"]["b4_max"] == pytest.approx(70 * 60 / 100)
+    assert c["vm_s_per_run"]["b1_continue"] == pytest.approx((70 * 10 / 100 + 20) / 2)
+    assert c["worker_s_per_run"]["b1_continue"] == pytest.approx(15) and c["jobs_timed"] == 4
+    assert c["usd_per_run"]["b4_max"] == pytest.approx(42 * 0.472 / 3600)
+
+
+def test_long_episode_subjects_take_one_long_episode_per_task():
+    rows = [{"episode_id": "base/t3/i1", "task_id": 3, "end_reason": "step_limit", "time_frac": 0.99},
+            {"episode_id": "base/t3/i2", "task_id": 3, "end_reason": "success", "time_frac": 0.50},
+            {"episode_id": "base/t3/i3", "task_id": 3, "end_reason": "success", "time_frac": 0.90},
+            {"episode_id": "base/t4/i1", "task_id": 4, "end_reason": "step_limit", "time_frac": 1.1},
+            {"episode_id": "base/t4/i2", "task_id": 4, "end_reason": "success", "time_frac": 0.2}]
+    got = pilot.long_episode_subjects(rows, tasks=(3, 4), seed="s")
+    assert got[0] in ("base/t3/i1", "base/t3/i3") and got[1] == "base/t4/i1"
+    assert pilot.long_episode_subjects(rows, tasks=(3,), seed="s", exclude=["base/t3/i1"]) == ["base/t3/i3"]
+    with pytest.raises(pilot.PilotError, match="task 4"):
+        pilot.long_episode_subjects(rows, tasks=(4,), seed="s", exclude=["base/t4/i1"])

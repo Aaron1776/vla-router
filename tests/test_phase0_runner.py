@@ -322,3 +322,10 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
     assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", pilot, re.M) == ["pilot"]
     assert 'run_phase pilot "--phase pilot"' in pilot and "export VLAR_GOLDEN_DONE=1" in pilot
     assert pilot.index("golden_check ||") < pilot.index("vlar-ops pilot check --plan-dir") < pilot.index("run_phase pilot \"")
+    # the resume (the user, 2026-11-24): the corrected (iii) once, the open jobs point by point after the queue's
+    # resume, and workers of at least 5 GiB each with at most 2 jobs per process
+    assert "pilot_check checks-iii.json checks-iii.json" in pilot
+    assert (pilot.index("vlar-ops queue add \"") < pilot.index("vlar-ops queue resume >") < pilot.index("vlar-ops pilot reorder --plan-dir")
+            < pilot.index('VLAR_SUPERVISE_ARGS="--min-limit-gib 5 --max-jobs 2" run_phase pilot'))
+    lib = (REPO / "ops" / "vm" / "phase0" / "lib.sh").read_text()
+    assert "${VLAR_SUPERVISE_ARGS:-}" in lib[lib.index("run_phase() {"):]

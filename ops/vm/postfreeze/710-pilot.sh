@@ -12,9 +12,12 @@
 #  3. The cheap checks (`vlar-ops pilot check`, in the sim image, nothing written to the dataset): (i) /features
 #     against the recorded probe features, (ii) xvla_only against routed always-local, (iii) record off against
 #     record full, bit for bit. A mismatch is reported and does not stop the branches (the boot is paid for); the
-#     step then ends with exit 76. Done once: a re-run after a preemption reads the earlier report.
+#     step then ends with exit 76. Done once: a re-run after a preemption reads the earlier report. When the plan has
+#     checks-iii.json, the corrected (iii) runs once too (every re-run on a fresh simulator at the base run's model
+#     load count: LIBERO's fixture placement depends on it, the finding of 2026-11-24) and supersedes the first (iii).
 #  4. The branch jobs through `run_phase` (so through the supervisor: memory limits, --max-jobs recycling, restarts),
-#     with the phase's wall times in reports/timing.jsonl and the supervisor's summary (peak memory, recycles).
+#     open jobs point by point (`vlar-ops pilot reorder`), workers of at least 5 GiB each (as many as fit), with the
+#     phase's wall times in reports/timing.jsonl and the supervisor's summary (peak memory, recycles).
 # Every report goes to <storage>/pilot/reports/ when the step ends, however it ends.
 source /opt/vla-router/ops/vm/phase0/lib.sh
 need_images
@@ -39,7 +42,7 @@ trap 'exit 143' TERM INT
 # ---- 1. the plan
 gcloud storage cp -q "${VLAR_STORAGE_URL}/pilot/plan/*.json" "${PD}/" || fail "pilot plan not downloaded"
 for f in plan labels selection checks; do [[ -s "${PD}/${f}.json" ]] || fail "pilot plan: ${f}.json missing"; done
-(cd "${PD}" && sha256sum plan.json labels.json selection.json checks.json) > "${REP}/plan-sha256-${BOOT}.txt"
+(cd "${PD}" && sha256sum ./*.json) > "${REP}/plan-sha256-${BOOT}.txt"
 python3 - "${PD}" <<'PY' || fail "pilot plan: plan.json is not the plan selection.json describes"
 import json, sys
 d = sys.argv[1]
@@ -62,29 +65,59 @@ python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(0 if m["pa
 export VLAR_GOLDEN_DONE=1
 echo "golden set and image cross-check passed on boot ${BOOT}"
 
-# ---- 3. the cheap checks, once
-if [[ ! -s "${REP}/checks.json" ]]; then
-  t0="$(date +%s)"
+# ---- 3. the cheap checks, each once: checks.json ((i)-(iii), first boot), then checks-iii.json when the plan has it
+# (the corrected (iii), the user 2026-11-24: every re-run on a fresh simulator at the base run's load count; it
+# supersedes the first (iii))
+pilot_check() {   # pilot_check <subjects file> <report name>
+  [[ -s "${REP}/$2" ]] && return 0
+  local t0; t0="$(date +%s)"
   docker run --rm --gpus all --network host -v /etc/vlar:/etc/vlar:ro -v /var/lib/vlar:/var/lib/vlar \
     -v "${R}/ops/ops.yaml:/etc/vlar-ops/ops.yaml:ro" -e VLAR_OPS_CONFIG=/etc/vlar-ops/ops.yaml -e MUJOCO_GL=egl \
     -e PYOPENGL_PLATFORM=egl "${CAL_ENV[@]}" "${OPS_RUN[@]}" "vlar-sim:${C}" \
-    vlar-ops pilot check --plan-dir "${PD}" --staging "${PILOT}/staging" --out "${REP}/checks.json.tmp" \
-    > "${REP}/checks-${BOOT}.log" 2>&1
-  echo "pilot check exit $? after $(( $(date +%s) - t0 )) s: $(tail -n 2 "${REP}/checks-${BOOT}.log" | tr '\n' ' ')"
-  [[ -s "${REP}/checks.json.tmp" ]] && mv "${REP}/checks.json.tmp" "${REP}/checks.json"
+    vlar-ops pilot check --plan-dir "${PD}" --subjects "$1" --staging "${PILOT}/staging" --out "${REP}/$2.tmp" \
+    > "${REP}/${2%.json}-${BOOT}.log" 2>&1
+  echo "pilot check $1 exit $? after $(( $(date +%s) - t0 )) s: $(tail -n 2 "${REP}/${2%.json}-${BOOT}.log" | tr '\n' ' ')"
+  [[ -s "${REP}/$2.tmp" ]] && mv "${REP}/$2.tmp" "${REP}/$2"
   rm -rf "${PILOT}/staging"; mkdir -p "${PILOT}/staging"
-fi
-CHECKS="$(python3 -c 'import json,sys
-try: r=json.load(open(sys.argv[1]))
-except Exception: print("no report (the check did not finish)"); sys.exit()
-print("passed" if r["passed"] else "MISMATCH: " + json.dumps({"features": r["features"]["problems"], "features_equal_probe": r["features"]["features_equal_probe"], "xvla_only": [x["problems"] for x in r["xvla_only"]], "record_off": [x["problems"] for x in r["record_off"]]})[:1500])' \
-  "${REP}/checks.json")"
+}
+pilot_check checks.json checks.json
+[[ -s "${PD}/checks-iii.json" ]] && pilot_check checks-iii.json checks-iii.json
+python3 - "${REP}" "${PD}" > "${REP}/checks-summary.txt" <<'PY'
+import json, os, sys
+rep, pd = sys.argv[1:3]
+def load(p):
+    try:
+        return json.load(open(p))
+    except Exception:
+        return None
+first, iii = load(f"{rep}/checks.json"), load(f"{rep}/checks-iii.json")
+want_iii = os.path.exists(f"{pd}/checks-iii.json")
+if first is None or (want_iii and iii is None):
+    print("no report (a check did not finish)")
+    sys.exit()
+bad = {}
+if first["features"]["problems"]:
+    bad["features"] = first["features"]["problems"]
+x = [r["problems"] for r in first["xvla_only"] if not r["passed"]]
+if x:
+    bad["xvla_only"] = x
+off = (iii if want_iii else first)["record_off"]
+o = [{"subject": r["subject"], "loads": r.get("loads"), "problems": r["problems"]} for r in off if not r["passed"]]
+if o:
+    bad["record_off"] = o
+print("passed" if not bad else "MISMATCH: " + json.dumps(bad)[:1500])
+PY
+CHECKS="$(cat "${REP}/checks-summary.txt")"
 echo "pilot checks: ${CHECKS}"
 
-# ---- 4. the branches
+# ---- 4. the branches: the open jobs point by point (`pilot reorder`), workers sized for the measured memory
 vlar-ops queue add "${PD}/plan.json" || fail "pilot queue add"
+vlar-ops queue resume >/dev/null || fail "pilot queue resume"
+vlar-ops pilot reorder --plan-dir "${PD}" --out "${REP}/reorder-${BOOT}.json" || fail "pilot reorder"
 echo "{\"boot_id\": \"${BOOT}\", \"phase_started\": $(date +%s.%N)}" >> "${REP}/timing.jsonl"
-run_phase pilot "--phase pilot"
+# The first boot's workers were killed at 4 GiB (peak sampled 4.07 GB): at least 5 GiB each, as many as fit beside
+# the servers, and still at most 2 jobs per process (the user, 2026-11-24).
+VLAR_SUPERVISE_ARGS="--min-limit-gib 5 --max-jobs 2" run_phase pilot "--phase pilot"
 echo "{\"boot_id\": \"${BOOT}\", \"phase_ended\": $(date +%s.%N)}" >> "${REP}/timing.jsonl"
 echo "pilot branches done: $(vlar-ops queue status --phase pilot | tail -n 1)"
 [[ "${CHECKS}" == passed ]] || gate_fail "pilot branches done; checks: ${CHECKS} (reports in ${RURL}): no debugging on the VM"

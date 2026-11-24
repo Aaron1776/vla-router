@@ -260,6 +260,26 @@ class JobQueue:
         q = "SELECT job_id FROM jobs WHERE status='done'" + (" AND phase=?" if phase else "")
         return {r[0] for r in self._db.execute(q, (phase,) if phase else ()).fetchall()}
 
+    def phase_jobs(self, phase: str) -> list[tuple[str, str, Job]]:
+        """(job_id, status, job) of every job of `phase`, in claim order."""
+        return [(jid, st, Job.from_json(body)) for jid, st, body in self._db.execute(
+            "SELECT job_id, status, body FROM jobs WHERE phase=? ORDER BY priority, tier, ord", (phase,)).fetchall()]
+
+    def set_order(self, phase: str, job_ids: Sequence[str], *, tier: int = 0) -> int:
+        """Claim the phase's jobs that are not done in exactly this order: `job_ids` must be all of them, each once.
+        They get one tier, so the plan's tiers no longer decide. Only the queue's claim columns change; each job's
+        body (its spec and planned tier and order, which its result marker records) stays as planned."""
+        with self._tx():
+            open_ids = {r[0] for r in self._db.execute("SELECT job_id FROM jobs WHERE phase=? AND status != 'done'",
+                                                       (phase,)).fetchall()}
+            if len(set(job_ids)) != len(job_ids) or set(job_ids) != open_ids:
+                raise ValueError(f"set_order needs each of the phase's {len(open_ids)} open jobs once, got "
+                                 f"{len(job_ids)} ({len(set(job_ids) - open_ids)} unknown or done, "
+                                 f"{len(open_ids - set(job_ids))} left out)")
+            self._db.executemany("UPDATE jobs SET tier=?, ord=? WHERE job_id=?",
+                                 [(tier, i, jid) for i, jid in enumerate(job_ids)])
+        return len(job_ids)
+
     # ------------------------------------------------------------ internals
 
     def _local_path(self, phase: str, jid: str) -> Path:

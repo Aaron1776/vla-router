@@ -56,13 +56,21 @@ class Sizing:
 
 def size_workers(mem_total: int, servers: int, workers: int, *, server_margin: float = 1.25,
                  host_reserve: int = 4 * GiB, usable: float = 0.95, min_limit: int = 3 * GiB,
-                 worker_base: int = 2 * GiB, per_task: int = 768 * MiB, max_jobs: Optional[int] = None) -> Sizing:
+                 worker_base: int = 2 * GiB, per_task: int = 768 * MiB, max_jobs: Optional[int] = None,
+                 fit: bool = False) -> Sizing:
     """Equal limits for `workers` containers: (usable × RAM − servers × margin − host reserve) / workers, rounded down
     to 256 MiB. `max_jobs` defaults to the number of tasks' simulators that fit in the limit beside a worker's base
-    (*est.* from the w8 evidence: 8-9 GB at up to 10 tasks; the pilot measures it)."""
+    (*est.* from the w8 evidence: 8-9 GB at up to 10 tasks; the pilot measures it). With `fit`, as many workers (at
+    most `workers`) as get `min_limit` each, instead of refusing (the pilot's resume, the user 2026-11-24: a limit at
+    least 25% above the measured peak)."""
     if workers < 1:
         raise SizingError("no workers")
     avail = mem_total * usable - servers * server_margin - host_reserve
+    if fit:
+        workers = min(workers, int(avail // min_limit))
+        if workers < 1:
+            raise SizingError(f"not one worker gets {min_limit / GiB:.2f} GiB beside {servers / GiB:.1f} GiB of "
+                              f"servers in {mem_total / GiB:.1f} GiB")
     limit = int(avail // workers) // (256 * MiB) * (256 * MiB)
     if limit < min_limit:
         raise SizingError(f"{workers} workers get {limit / GiB:.2f} GiB each beside {servers / GiB:.1f} GiB of "
@@ -273,21 +281,24 @@ class Supervisor:
 
 def supervise(ops_cfg: Mapping, *, phase: str, workers: int, worker_args: str, worker_env: Path,
               history: Optional[Path], step: str, max_jobs: Optional[int] = None, units: Optional[Units] = None,
-              total: Optional[int] = None, **kw) -> dict:
-    """Size the workers from the running servers, write worker.env, start and supervise them."""
+              total: Optional[int] = None, min_limit: Optional[int] = None, **kw) -> dict:
+    """Size the workers from the running servers, write worker.env, start and supervise them. With `min_limit`
+    (bytes), as many workers as get at least that much each (at most `workers`)."""
     from .cli import _queue
     units = units or SystemdUnits()
     mem = units.memory()
     missing = [n for n in SERVER_CONTAINERS if n not in mem]
     if missing:
         raise SizingError(f"server containers not running: {missing}")
+    fit = {"min_limit": int(min_limit), "fit": True} if min_limit else {}
     sizing = size_workers(total if total is not None else mem_total(), sum(mem[n] for n in SERVER_CONTAINERS),
-                          workers, max_jobs=max_jobs)
+                          workers, max_jobs=max_jobs, **fit)
     write_worker_env(worker_env, worker_args, sizing)
     print(json.dumps({"sizing": asdict(sizing), "docker_args": sizing.docker_args()}))
     q = _queue(dict(ops_cfg))
     try:
-        sup = Supervisor(q, units, phase=phase, workers=workers, stop_flag=Path(ops_cfg["local_root"]) / "STOP",
+        sup = Supervisor(q, units, phase=phase, workers=sizing.workers,
+                         stop_flag=Path(ops_cfg["local_root"]) / "STOP",
                          history=history, step=step, **kw)
         return {"sizing": asdict(sizing), **sup.run()}
     finally:

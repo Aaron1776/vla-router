@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; pilot ran: check (iii) mismatch and memory kills; max-effort checkpoint)
+# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; pilot check (iii) explained; resume coded)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,53 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, ~19:30Z): pilot stopped: check (iii) MISMATCH and workers killed at the memory limit
+## START HERE (2026-11-24, ~21:40Z): check (iii) explained (fixture placement vs load count); resume coded; boot next
+
+The user's decisions (fifth message, 2026-11-24; their text is the source): (1) investigate check (iii) offline, no VM;
+if the check was set up differently from the base run, fix it to replicate the base run exactly and re-run it on the
+next boot with 5-7 more long episodes near their limits; if identical, report before changing anything; screened
+re-runs on hold until explained. (2) Resume the pilot within the existing $2.50 cap after (a) per-worker memory
+limit >= 25% above the measured peak (>= 5 GiB), as many workers as fit, numbers reported before booting; (b) the
+remaining jobs point by point, rotating tasks and strata, most-finished points first; (c) costs from per-job claim
+and finish times; (d) the corrected (iii) in the same boot. (3) Soft delete 30 days (done). (4) Keep the pilot spend
+phase open; pause rule stands (delete VM + disk if the resume won't boot before ~09:45Z Nov 25).
+
+- **(1) Explained, offline (max effort):** the check *was* set up differently. LIBERO places the fixtures of tasks
+  3, 8 and 9 with samplers that accumulate per model load, and fixture poses are not restored by `set_init_state`;
+  base/t8/i30 was the 4th load of w5's task-8 simulator, the check's was its 2nd: stove 2.1 mm away, other step-0
+  images, other first X-VLA chunk (event 1). Not a record off/full code path (nothing record-dependent runs before
+  event 1), not the time limit (t8/i30 ends at 48% of task 8's 62.3 s under profile none; the re-run ended in
+  success). Full write-up: HARNESS.md "Fixture placement depends on the simulator's model-load count". Reproduced
+  on the Mac bit for bit (two warm-up loads give the VM snapshot's model fields).
+- **Corrected (iii)** (`pilot.base_loads`, `warm_up`, `replicated_episode_check`): each re-run on a fresh simulator
+  brought to the base run's load count (found from its dp00 snapshot's model fields), fixtures checked again after.
+  Subjects `outputs/pilot/plan/checks-iii.json` (`vlar-ops pilot long-episodes`): base/t8/i30 + one long episode per
+  task 3, 9, 8, 2, 4, 5 (t3/i25, t9/i8, t8/i13, t2/i26, t4/i49, t5/i7; all 520 steps). Mac pre-check of the counts:
+  t8/i30 4, t8/i13 7, t2/i26 2, t4/i49 2, t5/i7 2, t3/i25 and t9/i8 2 (to ~6e-19 m on the Mac; exact on the VM).
+- **(2a) Sizing** (`size_workers(fit=True)`, `supervise --min-limit-gib`, `VLAR_SUPERVISE_ARGS` in `run_phase`):
+  from the first boot's numbers (RAM 67.42 GB; servers 19.05 GB at start, 20.20 GB peak): **6 workers at 5.5 GiB
+  (5.91 GB) each, `--max-jobs 2`** (was 8 at 4.0 GiB): 6 × 5.91 + 1.25 × 19.05 + 4.29 = 59.6 GB of 64.0 usable;
+  the limit is 1.45× the sampled peak 4.07 GB and 1.375× the 4 GiB the workers were killed at.
+- **(2b) Order** (`pilot.resume_order`, `reorder_queue`, `JobQueue.set_order`; `vlar-ops pilot reorder` after
+  `queue add` + `queue resume`): open jobs point by point; cells (task, parent outcome), most-finished first within a
+  cell; round r takes each cell's r-th point (round sorted by finished jobs); one tier for all. Only the queue's claim
+  columns change (bodies, so markers, as planned).
+- **(2c) Costs:** `costs()` windows per boot from timing.jsonl, else from the jobs' claim and finish times (a stopped
+  step has no phase_ended); adds `worker_s_per_run` and `usd_per_run`.
+- **(3) Soft delete:** 30 days, effective 21:25:25Z (`retentionDurationSeconds: 2592000`); SPEC §17 amendment 60;
+  `10_bucket_and_account.sh` sets 30d; `90_teardown.sh` clears it before the final deletion. Measured: ledger 2.9 KB
+  rewritten every 60 s of VM time; bucket 24.7 GB; cost ≈ planned deletions × $0.02/GB-month (~$0.19).
+- Data digests unchanged (common 4951f7f0, base 5da609ed, explore 663181c9, branch 85b3acc8 = the first pilot
+  boot's and its markers' waiver record); ops digest changes (waiver).
+
+**Next:** tests, commit, push; upload `checks-iii.json` to `<storage>/pilot/plan/`; queue `710-pilot.sh` from the
+new commit (`31_phase0_queue.sh`); report the sizing numbers; start the VM (pilot phase still open: VM $0.987 of the
+$2.50 line, stop point $2.3467); watch. When it stops: download reports + records, `pilot report`, read
+`checks-summary.txt`/`checks-iii.json` first (a mismatch at the replicated count is unexplained: max-effort
+checkpoint), then report. **Proposal for the user (not done):** Phase 1's screened re-runs (amendment 56) need each
+run's load count recorded (marker) and replayed by the re-run; on hold until decided.
+
+## Earlier 2026-11-24 (~19:30Z): pilot stopped: check (iii) MISMATCH and workers killed at the memory limit
 
 **Max-effort checkpoint (nothing debugged).** The pilot boot (host source `b6a0e4b`, boot `f8d1a6ee`) ran
 17:08-19:16Z; the step `710-pilot` ended with **exit 1** at 19:13:44Z ("pilot incomplete": 345 of 1,638 jobs done,

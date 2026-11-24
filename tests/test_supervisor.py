@@ -185,3 +185,32 @@ def test_a_stalled_worker_whose_job_was_claimed_by_another_is_stopped(tmp_path):
     assert q.owner(next(iter(attempts(q))))[0] in ("done", "leased")
     hist = [json.loads(x) for x in (tmp_path / "history.jsonl").read_text().splitlines()]
     assert hist[0]["outcome"] == "worker-stopped-frozen" and "lost [" in hist[0]["detail"]
+
+
+def test_fit_sizing_takes_as_many_workers_as_get_the_minimum_limit():
+    """The pilot's resume (the user, 2026-11-24): the first boot's 8 workers were killed at 4 GiB (peak sampled
+    4.07 GB); at least 5 GiB each, as many as fit beside the servers measured at that boot's start."""
+    mem, servers = 67_416_563_712, 19_052_474_925
+    old = S.size_workers(mem, servers, 8, max_jobs=2)
+    assert (old.workers, old.limit) == (8, 4 * GiB)                     # what the first boot ran
+    s = S.size_workers(mem, servers, 8, min_limit=5 * GiB, max_jobs=2, fit=True)
+    assert (s.workers, s.limit, s.max_jobs) == (6, 22 * 256 * S.MiB, 2)  # 6 workers at 5.5 GiB
+    assert s.limit >= 1.25 * 4.07e9 and s.limit >= 1.25 * 4 * GiB
+    assert s.workers * s.limit + servers * 1.25 + 4 * GiB <= mem * 0.95
+    assert S.size_workers(mem, servers, 4, min_limit=5 * GiB, fit=True).workers == 4    # never more than asked
+    with pytest.raises(S.SizingError, match="not one worker"):
+        S.size_workers(mem, servers, 8, min_limit=64 * GiB, fit=True)
+
+
+def test_supervise_with_a_minimum_limit_starts_only_the_workers_that_fit(tmp_path, monkeypatch):
+    q = make_queue(tmp_path, n=2)
+    units = FakeUnits(q, {1: [("work", 5)], 2: [("work", 5)], 3: [("work", 5)]})
+    units.memory = lambda: {"vlar-xvla": 5 * GiB, "vlar-pi05": 14 * GiB}
+    monkeypatch.setattr("vlar_ops.cli._queue", lambda cfg: q)
+    cfg = {"local_root": str(tmp_path), "storage_url": f"file://{tmp_path / 'bucket'}"}
+    out = S.supervise(cfg, phase="base", workers=3, worker_args="--phase base", worker_env=tmp_path / "w.env",
+                      history=None, step="t", units=units, total=36 * GiB, min_limit=5 * GiB, max_jobs=2,
+                      sleep=lambda s: None)
+    # 0.95 x 36 - 1.25 x 19 - 4 = 6.45 GiB: one worker of at least 5 GiB
+    assert out["sizing"]["workers"] == 1 and units.starts and set(units.starts) == {1}
+    assert "--memory=6400m" in (tmp_path / "w.env").read_text()

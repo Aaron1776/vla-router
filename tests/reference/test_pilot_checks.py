@@ -184,3 +184,28 @@ def test_point_rows_label_the_pilot_points_from_the_parent_and_branch_logs(sim, 
     rows, problems = pilot.point_rows([r for r in runs if r["run_id"] != gone], events, labels, limits_s={TASK: 1e9},
                                       charges=clk.Charges.from_config(CFG))
     assert len(rows) == 1 and len(problems) == 1 and "missing branch log" in problems[0]
+
+
+def test_base_loads_finds_the_load_count_that_placed_task_8s_stove():
+    """The finding of 2026-11-24: LIBERO places task 8's stove from samplers that accumulate with every model load, so
+    base/t8/i30 (the 4th load of w5's task-8 simulator) is another scene on a fresh simulator. `base_loads` recovers
+    the count from the model fields at step 0; `warm_up` then reproduces them."""
+    from vlar_harness.sim.libero_sim import LiberoSim, SimSpec
+    from vlar_ops import pilot
+    spec = SimSpec.from_config(CFG)
+    make = lambda task: LiberoSim(task, spec)                                   # noqa: E731
+    sim = make(8)
+    try:
+        sim.setup_episode(30, 172)
+        fresh = pilot.model_fields(sim)
+        sim.close()
+        sim = make(8)
+        pilot.warm_up(sim, 4)
+        sim.setup_episode(30, 172)
+        fourth = pilot.model_fields(sim)
+    finally:
+        sim.close()
+    assert not pilot.fields_equal(fresh, fourth, pilot.FIXTURE_FIELDS)        # the stove moved
+    assert pilot.base_loads(make, 8, 30, 172, fourth) == 4
+    assert pilot.base_loads(make, 8, 30, 172, fresh) == 2
+    assert pilot.base_loads(make, 8, 30, 172, {**fresh, "body_pos": fresh["body_pos"] + 1}, max_loads=3) is None

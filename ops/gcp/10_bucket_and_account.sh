@@ -8,9 +8,11 @@ gcloud services enable compute.googleapis.com storage.googleapis.com iam.googlea
 
 gcloud storage buckets create "gs://${BUCKET}" --project="${PROJECT_ID}" --location="${REGION}" \
   --uniform-bucket-level-access --public-access-prevention
-# Soft delete keeps deleted objects (and bills them) for 7 days by default; this project rewrites
-# the ledger every minute, so turn it off.
-gcloud storage buckets update "gs://${BUCKET}" --clear-soft-delete
+# Soft delete keeps deleted and overwritten objects (and bills them) for the retention period: the only undo for an
+# accidental delete or overwrite. 30 days for the project's duration (SPEC §17 amendment 60, the user 2026-11-24,
+# reversing the setup's "off"): the per-minute ledger rewrites are ~3 KB each, so the cost is the planned deletions
+# (~$0.02/GB-month). 90_teardown.sh clears it before the final deletion, or that would be kept and billed 30 days.
+gcloud storage buckets update "gs://${BUCKET}" --soft-delete-duration=30d
 
 gcloud iam service-accounts create "${SA_NAME}" --project="${PROJECT_ID}" --display-name="vla-router VM"
 SA="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"

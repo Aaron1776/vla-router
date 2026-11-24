@@ -169,7 +169,8 @@ def cmd_supervise(a: argparse.Namespace) -> None:
     try:
         summary = S.supervise(cfg, phase=a.phase, workers=a.workers, worker_args=a.worker_args,
                               worker_env=Path(a.worker_env), history=Path(a.history) if a.history else None,
-                              step=a.step, max_jobs=a.max_jobs, max_restarts=a.max_restarts, poll_s=a.poll_s)
+                              step=a.step, max_jobs=a.max_jobs, max_restarts=a.max_restarts, poll_s=a.poll_s,
+                              min_limit=int(a.min_limit_gib * S.GiB) if a.min_limit_gib else None)
     except S.SizingError as e:
         sys.exit(f"supervise: {e}")
     if a.summary:                       # peak memory, restarts and recycles for the step's report (pilot §0.4 (iv))
@@ -328,15 +329,27 @@ def cmd_pilot(a: argparse.Namespace) -> None:
         print(json.dumps({"labelled": rep["labelled"], "problems": len(rep["problems"]), "decision": rep["decision"],
                           "budgets": rep["budgets_points_per_task"]}, default=str))
         return
+    if a.cmd == "long-episodes":             # on the Mac: the corrected check (iii)'s subjects file in the plan dir
+        print(json.dumps(pilot.write_long_episode_checks(Path(a.root), Path(a.plan_dir), out)))
+        return
+    if a.cmd == "reorder":                   # on the VM, after `queue add` and `queue resume`, before the workers
+        q = _queue(_ops_config(a.ops_config))
+        try:
+            rep = pilot.reorder_queue(q, Path(a.plan_dir))
+        finally:
+            q.close()
+        out.write_text(json.dumps(rep, indent=1))
+        print(json.dumps({k: rep[k] for k in ("points", "points_complete", "jobs_reordered", "first_points")}))
+        return
     cfg = _ops_config(a.ops_config)          # check: on the VM, after this boot's golden check
-    rep = pilot.run_checks(cfg, Path(a.plan_dir), Path(a.staging))
+    rep = pilot.run_checks(cfg, Path(a.plan_dir), Path(a.staging), subjects_file=a.subjects)
     out.write_text(json.dumps(rep, indent=1, default=str))
-    print(json.dumps({"passed": rep["passed"], "features_equal_probe": rep["features"]["features_equal_probe"],
-                      "xvla_only": [r["passed"] for r in rep["xvla_only"]],
-                      "record_off": [r["passed"] for r in rep["record_off"]]}))
+    print(json.dumps({"passed": rep["passed"],
+                      "features_equal_probe": rep.get("features", {}).get("features_equal_probe"),
+                      **{v: [(r["subject"], r.get("loads"), r["passed"]) for r in rep[v]]
+                         for v in ("xvla_only", "record_off") if v in rep}}))
     if not rep["passed"]:
-        sys.exit(f"PILOT CHECK MISMATCH: {rep['features']['problems']} "
-                 f"{[r['problems'] for v in ('xvla_only', 'record_off') for r in rep[v]]}")
+        sys.exit(f"PILOT CHECK {pilot.summary_line(rep)}")
 
 
 def cmd_grasps(a: argparse.Namespace) -> None:
@@ -420,6 +433,8 @@ def main(argv: list[str] | None = None) -> None:
     su.add_argument("--workers", type=int, required=True)
     su.add_argument("--worker-args", required=True, help="VLAR_WORKER_ARGS without --max-jobs")
     su.add_argument("--max-jobs", type=int, help="default: from the memory limit")
+    su.add_argument("--min-limit-gib", type=float,
+                    help="as many workers (at most --workers) as get this memory limit each, or more")
     su.add_argument("--worker-env", default="/etc/vlar/worker.env")
     su.add_argument("--history")
     su.add_argument("--step", default="")
@@ -489,7 +504,9 @@ def main(argv: list[str] | None = None) -> None:
     sm.add_argument("--ops-config")
     sm.set_defaults(fn=cmd_smoke)
     pi = sub.add_parser("pilot", help="the pilot (PROPOSALS-2026-11-24 §4, §0.4; vlar_ops/pilot.py)")
-    pi.add_argument("cmd", choices=["plan", "check", "report"])
+    pi.add_argument("cmd", choices=["plan", "check", "report", "reorder", "long-episodes"])
+    pi.add_argument("--subjects", default="checks.json",
+                    help="check: the subjects file in --plan-dir (checks-iii.json: the corrected check (iii))")
     pi.add_argument("--root", help="plan: local copy of records/{runs,events}/base; report: also records/*/pilot "
                                    "and results/pilot")
     pi.add_argument("--markers", help="plan: local copy of results/base")

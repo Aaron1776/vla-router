@@ -118,8 +118,11 @@ run_phase() {
     golden_check || { systemctl stop vlar-xvla vlar-pi05; fail "golden-set self-check failed: no worker started (§15)"; }
   fi
   vlar-ops queue resume >/dev/null
+  # VLAR_SUPERVISE_ARGS: a step's own sizing (e.g. the pilot's resume: --min-limit-gib 5 --max-jobs 2).
+  # shellcheck disable=SC2086
   vlar-ops supervise --phase "${phase}" --workers "${n}" --worker-args "${args}" --worker-env /etc/vlar/worker.env \
     --history "${P0D}/history.jsonl" --step "${phase}" --summary "${P0D}/logs/${phase}-supervisor.json" \
+    ${VLAR_SUPERVISE_ARGS:-} \
     || { systemctl stop 'vlar-worker@*' vlar-xvla vlar-pi05; fail "${phase}: supervisor stopped (see the step log)"; }
   vlar-ops queue sync >/dev/null
   counts="$(vlar-ops queue status --phase "${phase}" | tail -n 1)"

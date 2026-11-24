@@ -921,6 +921,37 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
   `tests/test_phase0_steps.py` (the step chain, the ops mounts), `tests/test_config.py` and `tests/test_manifest.py`
   (the ops digest in the freeze record and the manifest).
 
+## Fixture placement depends on the simulator's model-load count (found 2026-11-24)
+
+The pilot's check (iii) re-ran base/t8/i30 with record off on the first pilot boot and it differed from the record from
+its first X-VLA call (event 1; 378 vs 396 steps). The re-run was not set up as the base run was:
+
+- LIBERO's `BDDLBaseDomain` keeps `object_property_initializers` across hard resets and `_add_placement_initializer`
+  appends the problem's open/close and on/off samplers to it at every model load (`_load_model`). At `_reset_internal`
+  every accumulated sampler draws from `np.random` (seeded by `env.seed` just before) before the placement samplers,
+  so the fixtures' sampled poses shift with the number of loads. Fixture poses are written into the model
+  (`body_pos`, `body_quat`), which `set_init_state` does not restore. Movable objects are restored (qpos); the
+  physics state at step 0 is the same, but the fixtures, and so the camera images at step 0, are not.
+- Affected tasks (Mac survey, two extra loads): 3 (white cabinet and wine rack, up to 15.5 mm), 8 (flat stove, up to
+  9.1 mm), 9 (microwave, 7.0 mm). The other seven have no such samplers (task 2's stove has none: turning it on is
+  the goal, not an initial-state predicate).
+- A fresh `LiberoSim` is load 1 and each `setup_episode` one more. `ProductionEpisodes` keeps one simulator per task
+  per process, so a base episode's fixtures depend on how many episodes of its task its worker process had set up:
+  base/t8/i30 was w5's 4th task-8 load (after t8/i32 and t8/i26; `visualization_sites_list`, which LIBERO also
+  appends to per load, has 4 entries in its snapshots). The check's simulator had restored a t8/i48 snapshot and
+  set up nothing, so t8/i30 was its 2nd load: the stove 2.1 mm away.
+- Reproduced on the Mac: a fresh task-8 simulator, two warm-up loads, then `setup_episode(30, 172)` gives the VM base
+  snapshot's model fields bit for bit; replaying t8/i32 and t8/i26 first changes nothing else at step 0. The load
+  count is recoverable from a base run's dp00 snapshot (`vlar_ops.pilot.base_loads`: the first count whose setup
+  gives its model fields): t8/i30 4, t8/i13 7, t3/i25 2, t9/i8 2 (on the Mac tasks 3 and 9 match to ~6e-19 m, a
+  last-bit difference of the CPU; exact on the VM).
+- Not affected: everything restored from a snapshot (branches, golden set, features check): `sim.state` restores
+  the model fields. Affected: any re-run of an episode from scratch on another simulator, so the smoke's base
+  re-run of t8/i19 can only have passed at an equal count (not checked), and Phase 1's screened re-runs (amendment 56) need the
+  screened run's load count recorded and replayed (a proposal for the user; on hold until decided).
+- The pilot's corrected check (iii) (`checks-iii.json`) runs every re-run on a fresh simulator brought to the base
+  run's count (`base_loads`, `warm_up`) and checks the fixtures again afterwards.
+
 ## Phase 2 training (`vlar_train`, started 2026-11-23)
 
 Outside the frozen harness (§15), for the Mac or the VM: `.venv-sim/bin/python -m vlar_train --records <local copy>
