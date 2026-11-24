@@ -360,7 +360,16 @@ user, 2026-11-23), copied straight into `phase0/queue/` so `CURRENT` stays `0a0c
 and stops the VM with exit 75. `600` (the freeze) only with the user's explicit approval after they read that
 summary.** **If `300` or `400` fails**, the VM stops with `500` still queued, and `500` does not check that the base
 rollouts are complete: delete `phase0/queue/500-calibrate.sh` before starting the VM again (the watcher never
-starts it). **Before Phase 1 queues real work (the user, 2026-11-23):** run a single smoke job on the frozen harness
+starts it). **Pre-approved recovery (the user, 2026-11-24 ~01:50Z), done without waiting for the user, no debugging:**
+if `400` hits its 12-h cap (history outcome `time_cap`, STATE reason "hit its time cap"): move
+`phase0/queue/500-calibrate.sh` to `phase0/held/`, copy `phase0/failed/400-base.sh` back into `phase0/queue/` (its
+jobs are idempotent, so it resumes the remaining episodes), move `500` back from `held/` into `phase0/queue/`, start
+the VM, and watch again. If `400` fails for any other reason: remove `500` from the queue and stop; report only. If
+the VM was preempted (VM stopped, STATE still "running"): start it again. In every case `500`'s step-6 summary
+stops the VM for the user's review; never queue `600`. **After `500` (for Phase 1 planning):** measure from the
+base rollouts' logs where each episode's time went (GPU time per call type: `/act`, `/sample` probes, `/features`;
+simulation; rendering; image encoding; uploads) and record it here: the pilot decides from it whether to record
+probes only at sampled decision points. **Before Phase 1 queues real work (the user, 2026-11-23):** run a single smoke job on the frozen harness
 under the post-freeze ops code and confirm its marker's `meta.ops_waiver` (and `boot_id`, `golden_pass`):
 `serve`'s waiver wiring has only been tested with stubs. Earlier notes: The VM runs `0a0cd4c`'s ops code
 (`phase0/src/CURRENT`) on images `03f311c`. At 21:49Z step `200` had passed the geometry rule: batch size 4,
