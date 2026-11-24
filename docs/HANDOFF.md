@@ -47,9 +47,15 @@ phase open; pause rule stands (delete VM + disk if the resume won't boot before 
 - Data digests unchanged (common 4951f7f0, base 5da609ed, explore 663181c9, branch 85b3acc8 = the first pilot
   boot's and its markers' waiver record); ops digest changes (waiver).
 
-**Next:** tests, commit, push; upload `checks-iii.json` to `<storage>/pilot/plan/`; queue `710-pilot.sh` from the
-new commit (`31_phase0_queue.sh`); report the sizing numbers; start the VM (pilot phase still open: VM $0.987 of the
-$2.50 line, stop point $2.3467); watch. When it stops: download reports + records, `pilot report`, read
+- **Done:** committed `bb7112f` and pushed (main venv 381 passed, 30 skipped; sim 578 passed, 21 skipped);
+  `checks-iii.json` uploaded to `<storage>/pilot/plan/` (round trip equal; plan/labels/selection/checks unchanged);
+  `710-pilot.sh` queued from `bb7112f` (byte-equal); sizing numbers reported to the user; **VM started 21:41:55Z**
+  (third try; two zone stockouts, no charge). Pilot phase open: VM $0.987 of the $2.50 line, stop $2.3467; total
+  $11.05. Watchers: `32_watch_vm.sh` -> `outputs/build-logs/resume-watch.log`; markers every 5 min ->
+  `outputs/build-logs/resume-progress.log` (from 345). Offline estimate at first-boot prices: ~70 complete points
+  (69 points already have their 5 tier-1 jobs; they go first).
+
+**Next:** when it stops: download reports + records, `pilot report`, read
 `checks-summary.txt`/`checks-iii.json` first (a mismatch at the replicated count is unexplained: max-effort
 checkpoint), then report. **Proposal for the user (not done):** Phase 1's screened re-runs (amendment 56) need each
 run's load count recorded (marker) and replayed by the re-run; on hold until decided.
