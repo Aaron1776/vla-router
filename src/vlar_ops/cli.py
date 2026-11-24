@@ -321,6 +321,13 @@ def cmd_pilot(a: argparse.Namespace) -> None:
         sel = pilot.make_plan(Path(a.root), Path(a.markers), out)
         print(json.dumps({k: sel[k] for k in ("plan_id", "n_points", "n_jobs")}))
         return
+    if a.cmd == "report":                    # on the Mac, from local copies of the records and reports
+        rep = pilot.report(Path(a.root), Path(a.plan_dir), Path(a.reports), hourly_usd=a.hourly_usd,
+                           phase_vm_usd=a.phase_vm_usd)
+        out.write_text(json.dumps(rep, indent=1, default=str))
+        print(json.dumps({"labelled": rep["labelled"], "problems": len(rep["problems"]), "decision": rep["decision"],
+                          "budgets": rep["budgets_points_per_task"]}, default=str))
+        return
     cfg = _ops_config(a.ops_config)          # check: on the VM, after this boot's golden check
     rep = pilot.run_checks(cfg, Path(a.plan_dir), Path(a.staging))
     out.write_text(json.dumps(rep, indent=1, default=str))
@@ -482,10 +489,14 @@ def main(argv: list[str] | None = None) -> None:
     sm.add_argument("--ops-config")
     sm.set_defaults(fn=cmd_smoke)
     pi = sub.add_parser("pilot", help="the pilot (PROPOSALS-2026-11-24 §4, §0.4; vlar_ops/pilot.py)")
-    pi.add_argument("cmd", choices=["plan", "check"])
-    pi.add_argument("--root", help="plan: local copy of records/{runs,events}/base")
+    pi.add_argument("cmd", choices=["plan", "check", "report"])
+    pi.add_argument("--root", help="plan: local copy of records/{runs,events}/base; report: also records/*/pilot "
+                                   "and results/pilot")
     pi.add_argument("--markers", help="plan: local copy of results/base")
-    pi.add_argument("--plan-dir", help="check: plan.json, labels.json, checks.json")
+    pi.add_argument("--plan-dir", help="check, report: plan.json, labels.json, selection.json, checks.json")
+    pi.add_argument("--reports", help="report: local copy of <storage>/pilot/reports/")
+    pi.add_argument("--hourly-usd", type=float, default=0.472, help="report: VM price per hour")
+    pi.add_argument("--phase-vm-usd", type=float, help="report: the ledger's VM spend in the pilot phase")
     pi.add_argument("--staging", default="/var/lib/vlar/pilot/staging", help="check: where the re-runs are written")
     pi.add_argument("--out", required=True, help="plan: the output directory; check: the JSON report")
     pi.add_argument("--ops-config")

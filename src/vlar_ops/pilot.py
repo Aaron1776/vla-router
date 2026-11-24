@@ -408,3 +408,222 @@ def project(points: Sequence[Mapping], strata: Mapping[int, Mapping[str, Any]], 
                                 "bootstrap_pass_share": sum(stop_rule(bt[key])["passes"] for bt in boots) / len(boots)}
     out["rates"] = {f"t{t}/{o}": r for (t, o), r in sorted(cluster_rates(points).items())}
     return out
+
+
+# ---------------------------------------------------------------- the report (Mac, after the pilot)
+
+COMPARED = ("b2_one_call", "b3_three_calls", "b4_max")
+TIME_TASKS = (4, 8)          # π0.5's successful parity episodes overran the limit only there (§4)
+
+
+def _gain(labels: Mapping[str, Mapping[str, Any]], b: str, prof: str):
+    """p_b - p_1 as an exact fraction under `prof`, or None if either label is missing (profile excluded)."""
+    from fractions import Fraction
+    x, y = labels.get(b, {}).get(prof), labels.get("b1_continue", {}).get(prof)
+    return None if x is None or y is None else Fraction(x.successes, x.seeds) - Fraction(y.successes, y.seeds)
+
+
+def point_rows(runs: Sequence[Mapping], events: Sequence[Mapping], label_map: Mapping[str, Mapping], *,
+               limits_s: Mapping[int, float], charges, profiles: Optional[Sequence[str]] = None
+               ) -> tuple[list[dict], list[str]]:
+    """One row per pilot point: its stratum and inclusion probability, p_b per branch and profile (as
+    `vlar_harness.labels.point_labels` scores them from the base parent's log and the pilot's branch logs), the
+    excluded profiles, and `positive` (p_2 - p_1 >= 1/3 under cascader_full, §4; False where that profile is
+    excluded, which `positive_scored` records). Points that cannot be labelled are listed, not guessed."""
+    from vlar_harness import labels as L
+    from vlar_harness.config import PROFILES
+    from vlar_train.data import group_events, prefix_of
+    profiles = tuple(profiles or PROFILES)
+    logs = group_events(events)
+    own: dict[str, dict[tuple[str, int], list]] = defaultdict(dict)
+    for r in runs:
+        if r.get("snapshot_id") in label_map and r.get("branch"):
+            own[r["snapshot_id"]][(r["branch"], int(r["seed_index"]))] = logs.get(r["run_id"], [])
+    rows, problems = [], []
+    for sid, entry in sorted(label_map.items()):
+        p, sel = entry["point"], entry["selection"]
+        parent = logs.get(p["episode_id"])
+        if parent is None:
+            problems.append(f"{sid}: no event log for the parent {p['episode_id']}")
+            continue
+        try:
+            pl = L.point_labels(prefix_of(parent, p["index"]), entry, own.get(sid, {}),
+                                seeds=int(entry["settings"]["seeds"]), charges=charges,
+                                limit_s=float(limits_s[int(p["task_id"])]),
+                                parent_log=parent if entry.get("parent_seeds") else None, profiles=profiles)
+        except (L.LabelError, KeyError) as e:
+            problems.append(f"{sid}: {e}")
+            continue
+        g = _gain(pl.labels, "b2_one_call", STOP_PROFILE)
+        rows.append({"snapshot_id": sid, "task_id": int(p["task_id"]), "episode_id": p["episode_id"],
+                     "index": int(p["index"]), "parent_outcome": sel["stratum"]["parent_outcome"],
+                     "inclusion_prob": float(sel["inclusion_prob"]), "excluded": list(pl.excluded),
+                     "gain": {b: {prof: (None if (d := _gain(pl.labels, b, prof)) is None else float(d))
+                                  for prof in profiles} for b in COMPARED if b in pl.labels},
+                     "p": {b: {prof: lab.value for prof, lab in d.items()} for b, d in pl.labels.items()},
+                     "positive": bool(g is not None and g >= POSITIVE_EXACT), "positive_scored": g is not None})
+    return rows, problems
+
+
+def _frac_third():
+    from fractions import Fraction
+    return Fraction(1, 3)
+
+
+POSITIVE_EXACT = _frac_third()   # POSITIVE as an exact fraction: labels are k/3, so the test must not round
+
+
+def rate_table(rows: Sequence[Mapping], profiles: Sequence[str]) -> dict[str, Any]:
+    """Per task (and all tasks): rescue (p_b > p_1), harm (p_b < p_1) and mean p_b - p_1 for b2, b3, b4 against b1
+    under each profile, re-weighted to the eligible population (w = 1/π, amendment 57 (6)), with n and the
+    effective sample size; positives per stratum unweighted (the projection's inputs); and, per task, the rescues
+    under `none` that cascader_full's cut loses (§4's tasks 4 and 8 apart)."""
+    out: dict[str, Any] = {}
+    groups = {f"t{t}": [r for r in rows if r["task_id"] == t] for t in sorted({r["task_id"] for r in rows})}
+    groups["all"] = list(rows)
+    groups["all_but_4_8"] = [r for r in rows if r["task_id"] not in TIME_TASKS]
+    for name, rs in groups.items():
+        g: dict[str, Any] = {"n": len(rs)}
+        for b in COMPARED:
+            for prof in profiles:
+                sc = [r for r in rs if r["gain"].get(b, {}).get(prof) is not None]
+                if not sc:
+                    continue
+                pi = [r["inclusion_prob"] for r in sc]
+                d = [r["gain"][b][prof] for r in sc]
+                g[f"{b}/{prof}"] = {"rescue": weighted_rate([x > 0 for x in d], pi)["rate"],
+                                    "harm": weighted_rate([x < 0 for x in d], pi)["rate"],
+                                    "mean_gain": weighted_rate(d, pi)["rate"], **{k: v for k, v in
+                                    weighted_rate(d, pi).items() if k != "rate"}}
+        for o in ("failure", "success"):
+            st = [r for r in rs if r["parent_outcome"] == o]
+            g[f"positive_{o}"] = {"n": len(st), "positives": sum(r["positive"] for r in st),
+                                  "unscored": sum(not r["positive_scored"] for r in st)}
+        pos = [r for r in rs if r["positive_scored"]]
+        if pos:
+            g["positive_reweighted"] = weighted_rate([r["positive"] for r in pos], [r["inclusion_prob"] for r in pos])
+        lost = [r for r in rs if (r["gain"].get("b2_one_call", {}).get("none") or 0) > 0
+                and not ((r["gain"]["b2_one_call"].get(STOP_PROFILE) or 0) > 0)]
+        g["rescues_lost_to_cascader_full_cut"] = {"n": len(lost), "excluded_at_the_point": sum(
+            STOP_PROFILE in r["excluded"] for r in lost)}
+        out[name] = g
+    return out
+
+
+def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: float) -> dict[str, Any]:
+    """VM-s per run by branch type: each branch window's VM seconds (timing.jsonl, phase start to end, per boot)
+    apportioned by job wall time (claimed_at to finished_at) among the jobs that finished in it; and per point,
+    with and without b3, base parent (b1 needs 2 seeds) and exploration parent (3), and b4's share. The boot, the
+    golden check and the pilot's checks are outside the windows and reported apart by the caller."""
+    windows, start = [], {}
+    for t in timing:
+        if "phase_started" in t:
+            start[t["boot_id"]] = float(t["phase_started"])
+        elif "phase_ended" in t and t["boot_id"] in start:
+            windows.append((start.pop(t["boot_id"]), float(t["phase_ended"])))
+    jobs = [{"kind": m["job"]["kind"], "wall": float(m["finished_at"]) - float(m["meta"]["claimed_at"]),
+             "end": float(m["finished_at"])} for m in markers if m.get("meta", {}).get("claimed_at") is not None]
+    vm_s: dict[str, float] = defaultdict(float)
+    n: dict[str, int] = defaultdict(int)
+    for a, b in windows:
+        inside = [j for j in jobs if a <= j["end"] <= b]
+        total = sum(j["wall"] for j in inside)
+        for j in inside:
+            vm_s[j["kind"]] += (b - a) * j["wall"] / total if total else 0.0
+            n[j["kind"]] += 1
+    per_run = {k: vm_s[k] / n[k] for k in n}
+    r = lambda k: per_run.get(k, float("nan"))                                             # noqa: E731
+    point = {"base_with_b3": 2 * r("b1_continue") + 3 * (r("b2_one_call") + r("b3_three_calls") + r("b4_max")),
+             "base_without_b3": 2 * r("b1_continue") + 3 * (r("b2_one_call") + r("b4_max")),
+             "explore_without_b3": 3 * (r("b1_continue") + r("b2_one_call") + r("b4_max"))}
+    usd = {k: v * hourly_usd / 3600 for k, v in point.items()}
+    return {"windows_s": [b - a for a, b in windows], "jobs_timed": sum(n.values()), "jobs_untimed": len(markers) -
+            len(jobs), "vm_s_per_run": per_run, "runs": dict(n), "vm_s_per_point": point, "usd_per_point": usd,
+            "b4_share_of_base_point": 3 * r("b4_max") / point["base_without_b3"] if point["base_without_b3"] else None}
+
+
+def measured_budgets(c: Mapping[str, float], *, rerun_vm_s: float = 74.0, hourly_usd: float,
+                     phase1_usd: float = 3.24, dagger_branch_usd: float = 1.62, dagger_round_usd: float = 6.04,
+                     tasks: int = 10) -> dict[str, float]:
+    """Points per task the measured prices buy (PROPOSALS §0.1 (e)): Phase 1 n base and n exploration points,
+    n = $3.24 / (c_b + c_e + r/2) (an exploration re-run serves k = 2 points); DAgger m points in each half,
+    m = $1.62 / (2 c_e + r/2) (the router half's re-runs); moved: the DAgger round's $6.04 and its branches' $1.62
+    into Phase 1 points at Phase 1's price. r: the re-run's cost (74 VM-s, est.; the pilot does not measure it)."""
+    r = rerun_vm_s * hourly_usd / 3600
+    cb, ce = c["base_without_b3"], c["explore_without_b3"]
+    n = phase1_usd / (cb + ce + r / 2)
+    m = dagger_branch_usd / (2 * ce + r / 2)
+    moved = (phase1_usd + dagger_branch_usd + dagger_round_usd) / (cb + ce + r / 2)
+    return {"current": (2 * n + 2 * m) / tasks, "moved": 2 * moved / tasks}
+
+
+def restart_overhead(markers: Sequence[Mapping], *, gap_s: float = 20.0) -> dict[str, Any]:
+    """Idle time between one job's end and the same worker's next claim: the small gaps are claiming, the large
+    ones (> gap_s) recycles and restarts (container start, imports), the overhead task-affine claiming would cut."""
+    by: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for m in markers:
+        meta = m.get("meta", {})
+        if meta.get("claimed_at") is not None and meta.get("worker_id"):
+            by[meta["worker_id"]].append((float(meta["claimed_at"]), float(m["finished_at"])))
+    gaps = []
+    for js in by.values():
+        js.sort()
+        gaps += [b[0] - a[1] for a, b in zip(js, js[1:])]
+    big = [g for g in gaps if g > gap_s]
+    small = sorted(g for g in gaps if g <= gap_s)
+    return {"workers": len(by), "gaps": len(gaps), "large_gaps": len(big), "large_gap_s_total": sum(big),
+            "large_gap_s_median": sorted(big)[len(big) // 2] if big else None,
+            "small_gap_s_median": small[len(small) // 2] if small else None}
+
+
+def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, phase_vm_usd: Optional[float] = None,
+           cfg=None, n_boot: int = 2000) -> dict[str, Any]:
+    """The pilot report (§4, §0.4, amendment 58) from local copies: <root>/records/{runs,events}/{base,pilot}/,
+    <root>/results/pilot/ (markers), the plan directory and <storage>/pilot/reports/."""
+    from vlar_harness import clock as clk
+    from vlar_harness.config import PROFILES, load_config
+    from vlar_harness.dataset import read_table
+    cfg = cfg or load_config()
+    if not getattr(cfg, "frozen", False):
+        raise PilotError("labels are scored with the frozen calibration file (set VLAR_CALIBRATION to v1.0's)")
+    limits = {int(k): float(v) for k, v in cfg["time_limit"]["per_task_s"].items()}
+    label_map = json.loads((Path(plan_dir) / "labels.json").read_text())
+    selection = json.loads((Path(plan_dir) / "selection.json").read_text())
+    rows, problems = point_rows(read_table(root, "runs").to_pylist(), read_table(root, "events").to_pylist(),
+                                label_map, limits_s=limits, charges=clk.Charges.from_config(cfg))
+    markers = [json.loads(f.read_text()) for f in sorted((Path(root) / "results" / PHASE).glob("*.json"))]
+    rd = Path(reports_dir)
+    read_jsonl = lambda f: [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []  # noqa
+    cost = costs(markers, read_jsonl(rd / "timing.jsonl"), hourly_usd=hourly_usd)
+    budgets = {"current": 47.0, "moved": 107.0}
+    if all(math.isfinite(v) for v in cost["usd_per_point"].values()):
+        mb = measured_budgets(cost["usd_per_point"], hourly_usd=hourly_usd)
+        budgets.update({"measured_current": mb["current"], "measured_moved": mb["moved"]})
+    pools = {k: (3 if k.endswith("current") else 2) for k in budgets}
+    strata = {int(t): v for t, v in selection["phase1_strata"].items()}
+    proj = project(rows, strata, budgets, pools=pools, n_boot=n_boot) if rows else {}
+    dec = {"rule": decision(proj["current/stratified"]["passes"], proj["moved/stratified"]["passes"])} if rows else {}
+    if "measured_current/stratified" in proj:
+        dec["at_measured_prices"] = decision(proj["measured_current/stratified"]["passes"],
+                                             proj["measured_moved/stratified"]["passes"])
+        dec["differs"] = dec["at_measured_prices"] != dec["rule"]
+    sup = json.loads((rd / "pilot-supervisor.json").read_text()) if (rd / "pilot-supervisor.json").exists() else {}
+    checks = json.loads((rd / "checks.json").read_text()) if (rd / "checks.json").exists() else None
+    return {"plan_id": selection["plan_id"], "points": len(label_map), "labelled": len(rows), "problems": problems,
+            "jobs_done": len(markers), "jobs_planned": selection["n_jobs"], "rates": rate_table(rows, PROFILES),
+            "costs": cost, "phase_vm_usd": phase_vm_usd, "budgets_points_per_task": budgets, "projections": proj,
+            "decision": dec, "decision_text": DECISIONS.get(dec.get("rule", ""), "no labelled points"),
+            "checks": None if checks is None else {
+                "passed": checks["passed"], "features_equal_probe": checks["features"]["features_equal_probe"],
+                "sample_reproduces_record": checks["features"]["sample_reproduces_record"],
+                "xvla_only": [r["passed"] for r in checks["xvla_only"]],
+                "record_off": [r["passed"] for r in checks["record_off"]],
+                "consequence": checks["features"]["consequence"]},
+            "supervisor": {k: sup.get(k) for k in ("peak_memory_bytes", "restarts", "recycles", "refused", "gave_up",
+                                                   "counts")},
+            "supervisor_events": {e: sum(1 for x in sup.get("events", []) if x.get("outcome") == e)
+                                  for e in sorted({x.get("outcome") for x in sup.get("events", [])})},
+            "restart_overhead": restart_overhead(markers),
+            "notes": ["Exploration and DAgger parents are projected with base-parent rates (none exist yet).",
+                      "The pilot's eligible points end at index 49 (b3's three calls); Phase 1's at 51.",
+                      "The re-run cost r = 74 VM-s is an estimate; the pilot does not measure it."]}

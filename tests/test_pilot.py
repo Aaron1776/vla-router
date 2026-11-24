@@ -209,3 +209,62 @@ def test_the_bootstrap_resamples_parent_episodes_not_points():
     rng = random.Random(0)
     seen = {round(pilot.cluster_rates(pts, rng)[(0, "failure")], 6) for _ in range(200)}
     assert seen == {0.0, 0.8, 1.0}             # {a, a}, {a, b}, {b, b}: never a point-level value such as 0.6
+
+
+# ---------------------------------------------------------------- the report's pieces
+
+def row(task, outcome, ep, gain_none, gain_full, pi=0.5, excluded=()):
+    g = {"b2_one_call": {"none": gain_none, "cascader_full": gain_full}}
+    return {"task_id": task, "parent_outcome": outcome, "episode_id": ep, "inclusion_prob": pi,
+            "gain": g, "excluded": list(excluded), "positive": gain_full is not None and gain_full >= 1 / 3,
+            "positive_scored": gain_full is not None}
+
+
+def test_rate_table_re_weights_and_counts_the_rescues_the_cut_loses():
+    rows = [row(4, "failure", "a", 2 / 3, 2 / 3, pi=0.5), row(4, "failure", "a", 1 / 3, None, pi=0.5,
+                                                                excluded=("cascader_full",)),
+            row(4, "success", "b", 0.0, 0.0, pi=0.1), row(4, "success", "c", -1 / 3, -1 / 3, pi=0.1)]
+    t = pilot.rate_table(rows, ("none", "cascader_full"))
+    none = t["t4"]["b2_one_call/none"]
+    # weights 2, 2, 10, 10: rescue (2 + 2) / 24, harm 10 / 24
+    assert none["rescue"] == pytest.approx(4 / 24) and none["harm"] == pytest.approx(10 / 24) and none["n"] == 4
+    assert t["t4"]["b2_one_call/cascader_full"]["n"] == 3                      # the excluded point is not scored
+    assert t["t4"]["positive_failure"] == {"n": 2, "positives": 1, "unscored": 1}
+    assert t["t4"]["rescues_lost_to_cascader_full_cut"] == {"n": 1, "excluded_at_the_point": 1}
+    assert t["all"]["n"] == 4 and t["all_but_4_8"]["n"] == 0
+
+
+def marker(kind, worker, claimed, finished):
+    return {"job": {"kind": kind}, "finished_at": finished, "meta": {"claimed_at": claimed, "worker_id": worker}}
+
+
+def test_costs_apportion_each_branch_window_by_job_wall_time():
+    ms = [marker("b1_continue", "w1", 100, 110), marker("b2_one_call", "w2", 100, 130),
+          marker("b4_max", "w1", 112, 172), marker("b3_three_calls", "w2", 131, 171),
+          marker("b1_continue", "w1", 500, 600)]                                # outside every window
+    timing = [{"boot_id": "x", "phase_started": 100.0}, {"boot_id": "x", "phase_ended": 180.0}]
+    c = pilot.costs(ms, timing, hourly_usd=0.472)
+    # 80 window seconds shared by 10 + 30 + 60 + 40 = 140 wall seconds
+    assert c["vm_s_per_run"]["b1_continue"] == pytest.approx(80 * 10 / 140)
+    assert c["vm_s_per_run"]["b4_max"] == pytest.approx(80 * 60 / 140)
+    assert c["jobs_timed"] == 4 and c["windows_s"] == [80.0]
+    r = c["vm_s_per_run"]
+    assert c["vm_s_per_point"]["base_without_b3"] == pytest.approx(2 * r["b1_continue"] + 3 * (r["b2_one_call"]
+                                                                                                + r["b4_max"]))
+    assert c["usd_per_point"]["explore_without_b3"] == pytest.approx(c["vm_s_per_point"]["explore_without_b3"]
+                                                                     * 0.472 / 3600)
+
+
+def test_measured_budgets_reproduce_the_plan_at_its_estimated_prices():
+    est = {"base_without_b3": 8 * 7 * 0.472 / 3600, "explore_without_b3": 9 * 7 * 0.472 / 3600}
+    b = pilot.measured_budgets(est, hourly_usd=0.472)
+    assert b["current"] == pytest.approx(47, abs=0.5) and b["moved"] == pytest.approx(107, abs=0.5)
+    dear = pilot.measured_budgets({k: 2 * v for k, v in est.items()}, hourly_usd=0.472)
+    assert dear["current"] < 30 and dear["moved"] < 70
+
+
+def test_restart_overhead_separates_recycles_from_claiming():
+    ms = [marker("b1_continue", "w1", 0, 10), marker("b1_continue", "w1", 11, 20), marker("b1_continue", "w1", 80, 90),
+          marker("b1_continue", "w2", 0, 5), marker("b1_continue", "w2", 7, 9)]
+    o = pilot.restart_overhead(ms)
+    assert o["gaps"] == 3 and o["large_gaps"] == 1 and o["large_gap_s_total"] == 60 and o["small_gap_s_median"] == 2

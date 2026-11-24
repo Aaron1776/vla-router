@@ -41,7 +41,26 @@ keep the VM stopped when idle; stopping rule). Items 1-3 of the list below are *
   equal; plan `9b144a9a...`, labels `8edf4408...`, selection `6d49c284...`, checks `6de840c1...`); spend phase
   `pilot` opened 2026-11-24 ~17:05Z (allocation $1.60, line $2.50).
 
-**Next:** item 4's rest (queue `710-pilot.sh` with `31_phase0_queue.sh`, start the VM, watch), then 5 (report) and 6.
+- **Boot:** `710-pilot.sh` queued with host source `b6a0e4b` (queued file byte-equal); first start 17:06Z failed on
+  a zone stockout (no charge); started 17:08:12Z on the first retry (`outputs/build-logs/l4-start-retries-pilot.log`).
+  Step `710-pilot` running from 17:09:10Z (spend gate passed). Watchers on the Mac: `32_watch_vm.sh` →
+  `outputs/build-logs/pilot-watch.log`; marker count every 5 min → `outputs/build-logs/pilot-progress.log`.
+- **Report code (item 5, written while the pilot runs; not on the VM):** `pilot.point_rows` (labels per point via
+  `vlar_harness.labels.point_labels`, exact-fraction positives, unlabelled points listed), `rate_table` (re-weighted
+  rescue/harm/mean gain for b2-b4 vs b1 under every profile, positives per stratum, rescues lost to
+  `cascader_full`'s cut, `t4`/`t8` and `all_but_4_8`), `costs` (branch windows from `timing.jsonl` apportioned by
+  job wall time), `measured_budgets` (reproduces 47/107 at the estimated prices), `restart_overhead`, `report`;
+  CLI `vlar-ops pilot report --root --plan-dir --reports --out [--hourly-usd] [--phase-vm-usd]`. Labels need the
+  frozen calibration: `VLAR_CALIBRATION=outputs/freeze/cal/calibration.yaml` (downloaded; freeze.json `5e2826f6`,
+  calibration `b80124b2`). Dry run on the base records: all 150 parents' logs check out; every point stops at its
+  missing branch logs, as expected before the pilot. Tests: `tests/test_pilot.py` (19),
+  `tests/reference/test_pilot_checks.py` (8, incl. `point_rows` on real collected branch logs).
+
+**Next (when the VM stops):** download `records/{runs,events}/pilot`, `results/pilot` and `pilot/reports/` into
+`outputs/pilot/base` (root) and `outputs/pilot/reports`; `vlar-ops spend status` (phase VM $); run `pilot report`
+(sim venv, `PYTHONPATH=src`); read checks (i)-(iii) first (a record-off or sample-reproduction mismatch is
+unexplained: max-effort checkpoint, no debugging); then `spend phase-close --phase pilot`; report to the user with
+the amendment 58 decision. Then item 6.
 
 ## Earlier 2026-11-24 (~15:30Z): stop lines done; pilot code half done; stopped at the usage limit
 

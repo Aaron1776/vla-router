@@ -4,6 +4,7 @@ differs (the fallback, not a failure) and fails when a fresh `/sample` does not 
 and (iii) record `off` re-runs of a recorded base episode pass, and record `off` catches a measurement that leaks into
 what executes."""
 import io
+from pathlib import Path
 
 import pytest
 from conftest import requires_lerobot
@@ -142,3 +143,44 @@ def test_record_off_catches_a_measurement_that_changes_what_executes(sim, leaky,
     rep = pilot.episode_check(rerun(sim, leaky, tmp_path, leaky=True), leaky.get_bytes, original_job(leaky),
                               "record_off")
     assert not rep["passed"] and any(p.startswith(("steps", "runs", "events")) for p in rep["problems"])
+
+
+def test_point_rows_label_the_pilot_points_from_the_parent_and_branch_logs(sim, sound, tmp_path):
+    """Two late points of the recorded base episode, branched with 2 seeds by the production runner: `point_rows`
+    scores each branch from the parent's log (b1's seed 1) and the branch logs, as `vlar_harness.labels` does, and
+    lists a point whose branch log is missing instead of labelling it."""
+    from vlar_harness import clock as clk
+    from vlar_harness.collect import Runner
+    from vlar_harness.dataset import read_table
+    from vlar_ops import pilot
+    from vlar_ops.branchplan import branch_plan, stratified_selection
+    runs, events = read_table(sound.root, "runs").to_pylist(), read_table(sound.root, "events").to_pylist()
+    points, success, _ = pilot.base_points(runs, events)
+    late = [p for p in points if p.index >= 47]
+    dp = {"scheme": "stratified", "seed": 1, "per_task": 2, "failed_share": 0.5, "min_calls": 1}
+    sel = stratified_selection(late, success, step_limit=520, interval=10, dp_sampling=dp)
+    plan, labels = branch_plan("pilot", late, branches=CFG["branches"], step_limit=520, interval=10, seeds=2,
+                               enabled=["b1_continue", "b2_one_call", "b3_three_calls", "b4_max"], tier_one_seeds=2,
+                               order_seed=1, dp_sampling=dp, selection=sel)
+    runner = Runner(CFG, factory(sim), sound.get_bytes, tmp_path / "staging", p_escalate=0.0)
+    for job in plan.jobs:
+        for a in runner(job)[0]:
+            sound.put_bytes(a["key"], Path(a["path"]).read_bytes())
+    runs, events = read_table(sound.root, "runs").to_pylist(), read_table(sound.root, "events").to_pylist()
+    rows, problems = pilot.point_rows(runs, events, labels, limits_s={TASK: 1e9}, charges=clk.Charges.from_config(CFG))
+    assert not problems and len(rows) == 2
+    won = {r["run_id"]: bool(r["success"]) for r in runs}
+    for r in rows:
+        sid = r["snapshot_id"]
+        b1 = [won[SUBJECT], won[f"{sid}/b1_continue/s2"]]                 # seed 1 is the parent's own continuation
+        assert r["p"]["b1_continue"]["none"] == sum(b1) / 2
+        canon = labels[sid]["shares"]["b2_one_call"]
+        b2 = [won[f"{sid}/{canon}/s{s}"] for s in (1, 2)]
+        assert r["gain"]["b2_one_call"]["none"] == pytest.approx(sum(b2) / 2 - sum(b1) / 2)
+        assert r["positive"] == (sum(b2) / 2 - sum(b1) / 2 >= 1 / 3 - 1e-12) and r["positive_scored"]
+        assert r["inclusion_prob"] == sel[sid]["inclusion_prob"] and r["parent_outcome"] == (
+            "success" if won[SUBJECT] else "failure")
+    gone = f"{rows[0]['snapshot_id']}/b1_continue/s2"
+    rows, problems = pilot.point_rows([r for r in runs if r["run_id"] != gone], events, labels, limits_s={TASK: 1e9},
+                                      charges=clk.Charges.from_config(CFG))
+    assert len(rows) == 1 and len(problems) == 1 and "missing branch log" in problems[0]
