@@ -5,7 +5,7 @@ local_root: /var/lib/vlar          # queue database, local copies of results, ST
 spend:
   soft_limit_usd: 40               # one notification (log-based alert -> email)
   hard_limit_usd: 45               # stop new jobs, drain, sync, shut down
-  vm_hourly_usd: 0.46              # g2-standard-16 Spot incl. its L4: check the current price before each start
+  vm_hourly_usd: 0.472             # g2-standard-16 Spot incl. its L4 (0.472 measured 2026-11-24): check the price before each start
   boot_allowance_s: 180            # billed time before the kernel starts (sessions count from boot)
   storage_usd_per_gb_month: 0.020  # Standard storage, regional: check for your region
   tick_s: 60

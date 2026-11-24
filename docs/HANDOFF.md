@@ -33,7 +33,15 @@ keep the VM stopped when idle; stopping rule). Items 1-3 of the list below are *
   `<storage>/pilot/reports/`. A check mismatch does not stop the branches; the step then ends with exit 76.
   New test: post-freeze steps parse and carry the headers the runner reads.
 
-**Next:** item 4 (commit, push, upload plan, `phase-open`, queue, boot), then 5 (report) and 6.
+- **VM price:** the VM's guard charged $0.46/h (`ops/ops.example.yaml`, which `startup.sh` copies), so a $2.50
+  ledger line would be ~$2.56 at the measured $0.472. Set to **0.472** before the pilot boot (and in the Mac's
+  git-ignored `ops/ops.yaml`); earlier sessions stay at 0.46 until the billing reconcile. The pilot phase was opened
+  before the change (stop point $2.3467 from the 0.46 margin; at 0.472 it would be $2.3427: immaterial).
+- **Item 4 so far:** committed `f8708db` and pushed; plan uploaded to `<storage>/pilot/plan/` (round-trip SHA-256s
+  equal; plan `9b144a9a...`, labels `8edf4408...`, selection `6d49c284...`, checks `6de840c1...`); spend phase
+  `pilot` opened 2026-11-24 ~17:05Z (allocation $1.60, line $2.50).
+
+**Next:** item 4's rest (queue `710-pilot.sh` with `31_phase0_queue.sh`, start the VM, watch), then 5 (report) and 6.
 
 ## Earlier 2026-11-24 (~15:30Z): stop lines done; pilot code half done; stopped at the usage limit
 
