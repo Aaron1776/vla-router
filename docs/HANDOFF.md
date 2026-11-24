@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: freeze approved and running on the L4)
+# Handoff: state of the harness build (2026-11-24: harness v1.0 frozen, Phase 0 complete)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -131,7 +131,7 @@ Where each item stands now (all seven hold as of the commit after `c6d49ed`; mil
 | π0.5 diagnosis (step 095, 2026-11-23): numerical, not a bug (HARNESS.md); host-package freeze (amendment 36); approved rules (joint memory, grasp check) | done, uncommitted; option for π0.5 open; spend $0.86 | |
 | Phase 0 stage B on the L4 (images and host source `03f311c`, 2026-11-23): rebuild, image load, re-run rows, verdict, step 2 | 010-090 done, every re-run row passed (π0.5 batch invariance included); **200 failed** (UnboundLocalError in `vlar_ops/step2.py`:390, not debugged); VM stopped 14:48Z; spend $1.70 | `03f311c` |
 | Amendment 35 and stage B code: calibration file with write-once group, freeze lineage, refusals, step 2 tools, parity gate, base step (HARNESS.md "Calibration file and stage B") | done on the Mac; main 204 passed, 19 skipped; simulator env 150 passed, 17 skipped (the same 17); X-VLA env `-k xvla` 2 passed | the commit after `c991493` |
-| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | step 2 (`200`, `210`) done; parity (`300`) passed 2026-11-23 22:26Z; base rollouts (`400`) done 2026-11-24 08:41Z, X-VLA parity 398/500 vs 405 (McNemar p 0.47); step 6 (`500`) done 08:48Z: m = 2.0, handoff check passed, grasp check flagged; `600` (freeze) waits for the user's approval; spend $7.43 | ops `0a0cd4c`, images `03f311c` |
+| Phase 0 steps 2-7 on the L4 (step 2, parity, base rollouts, time limits, freeze) | step 2 (`200`, `210`) done; parity (`300`) passed 2026-11-23 22:26Z; base rollouts (`400`) done 2026-11-24 08:41Z, X-VLA parity 398/500 vs 405 (McNemar p 0.47); step 6 (`500`) done 08:48Z: m = 2.0, handoff check passed; gripper thresholds from ground truth (`550`, amendments 50-51); **frozen 2026-11-24 09:46Z** (`600`: calibration `b80124b2`, golden check passed); spend $7.53 | ops `0a0cd4c`, images `03f311c` |
 | Effort steps 6-7 (fold/leakage review; post-pilot re-budgeting and results) | later phases | |
 
 **Tests after the container definitions (Mac, 2026-11-22).** Main venv 158 passed, 13 skipped (`tests/test_containers.py` 19); simulator env 125 passed, 17 skipped; `uv pip install --dry-run` of every lock for cp313 linux/x86_64 with hashes required: 172 wheels + 5 sdists, 69, 4.
@@ -349,15 +349,50 @@ any case waits for the §18 milestone and the user's go-ahead.
 
 ## Next step
 
-**NOW (2026-11-24): the freeze is approved and queued: `550-gripper.sh` (amendments 50-51) and `600-freeze.sh`
-were copied into the bucket's queue from `harness-v1`, so `CURRENT` stays `0a0cd4c`, and the L4 was started.** On
-boot the runner runs `500` (still queued; same records and calibration file, so it ends done), then `550` (a new
-calibration version: shut 3.0 mm, the ground-truth note), then `600` (golden set, freeze, verify, golden check again);
-the queue then runs empty and the VM stops. If the golden check fails: stop, report, no debugging (the user).
+**NOW (2026-11-24, 09:50Z): HARNESS v1.0 IS FROZEN; PHASE 0 IS COMPLETE. The L4 is STOPPED (TERMINATED 09:48Z,
+queue empty). Next: the post-freeze list below, at xhigh, before Phase 1.** The start succeeded on its third try
+(09:39Z, still `us-central1-a`; no zone fallback). `500` done (18 s: records and calibration unchanged), `550` done
+(9 s), `600` done (436 s). Spend guard **$7.53** (VM $7.12 over 15.08 h, disk $0.41).
+- **Freeze record** (`vla-router/calibration/freeze.json`): `frozen_at` 09:46:21Z; harness 1.0.0; config
+  `33fe6d52...`; source digest `845d6933...`; ops digest `c55d17fc...` (`0a0cd4c`, the same as the base records');
+  **calibration `b80124b2c19b...`**, lineage `1d61294a`, `236439b4`, `aa38aac7`; golden set `base/t8/i10/dp33`,
+  `base/t5/i16/dp13`, `base/t6/i14/dp38`, `base/t3/i4/dp17`, `base/t0/i4/dp32`.
+- **Frozen calibration = 550's version** (checked from the bucket's files): versions `aa38aac7` (step 2), then
+  `1d61294a` (step 6), then `236439b4` (550: only `shut_width_m` 0.0090040 -> 0.003), then `b80124b2` (`write_freeze`
+  loads the file in effect and adds only `frozen`; values identical to `236439b4`). Frozen gripper thresholds: shut
+  0.003 m, open 0.0715459 m. Amendment 53 records the provenance (550 and 600 from `de9b4c3`).
+- **Golden check: passed** (all 5 replayed bit for bit), both before the freeze (`--mark-checked`) and again on the
+  frozen file (`phase0/step7/golden-pass.json`, boot `65121451...`); `freeze verified`.
+- **Finding, not fixed: `freeze.json` has `image_digests: {}`.** `provenance.image_digests()` reads
+  `VLAR_IMAGE_DIGESTS` or `/etc/vlar/image-digests.json`, and the `finish freeze` container mounts only
+  `/etc/vlar/calibration`. The harness code is pinned by `source_digest`, but the freeze record does not pin the
+  images, while every base marker does (`03f311c`; sim `sha256:20d19481...`, pi05 `39acf6e7...`, xvla `83896f24...`).
+  The remedy (e.g. a dated supplement, as the frozen file refuses changes) is the user's decision.
+- Bucket queue empty after `600` (the runner removes each done step from it), so a fresh disk would re-run nothing.
+**Post-freeze list, before Phase 1 (the user, 2026-11-24; effort xhigh):**
+1. The runner's local queue mirrors the bucket exactly, removals included (`pull_queue`), with a test; correct the
+   recovery rule (the finding below).
+2. `550` refuses to write once the calibration is frozen (it fails today through `calibration_frozen`, and the
+   writer refuses too: add a test), and the bucket queue is cleared or done-marked after `600` succeeds, so a fresh
+   disk cannot re-run `010`-`600` (true today by `move_step`: add a test).
+3. Consider moving the L4 to a zone with more reliable Spot capacity (`us-central1-a` was out twice on 2026-11-24).
+   Before any zone move: find every script that addresses the VM by name or zone (the spend guard's $45 stop, the
+   ledger and CLI, the watcher, start and stop) and point each at the new zone; show the guard's stop command
+   resolving to the new VM in a dry run before the VM is created (the runner starts at boot); if that cannot be
+   verified, no move.
+4. The `image_digests` finding above (the user's decision).
+5. Before Phase 1 queues real work: the single smoke job (below).
+**Zone fallback rules (the user, 2026-11-24, replacing the earlier ones):** `us-central1-b`, then `-c` (no G2/L4 in
+`-f`); if neither starts, leave the VM stopped and ask. No other region without the user's approval. Point every
+script at the new zone first, with the dry run above. `020` before every step that needs the weights. A failing GPU
+re-run step on a new VM (batch invariance included) means stop, no debugging, like the golden check. Before deleting
+the old disk, confirm its last bucket sync completed after the last step it ran.
 **Finding: removing a step from the bucket's queue does not remove the VM's copy.** `pull_queue` is a
 `gcloud storage rsync` without deletion, and the VM's local queue survives a stop. So the earlier advice ("delete
 `phase0/queue/500-calibrate.sh` before starting the VM") would not have stopped `500` (it never came to that). To
 take a step out of the queue, it must also be removed on the VM (or replaced in the bucket queue).
+(The 09:34Z start failed twice on a zone stockout and succeeded at 09:39Z; `outputs/build-logs/l4-start-retries-freeze.log`.
+For a zone move, the ledger needs `disk-deleted --since` for the old disk: the new one has the same name.)
 Below: the state at 08:55Z, before the review. `400` done 08:41:41Z (36925 s; all 500 episodes; no failure, time cap
 or preemption, so the pre-approved recovery was not needed). `500` ended with exit 75 at 08:48:34Z as designed and
 stays queued: a re-run with the same records and calibration file ends done, so a `600` queued behind it runs.

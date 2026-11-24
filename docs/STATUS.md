@@ -109,8 +109,12 @@ passed, 17 skipped. In the images on the CPU build VM (`be7b95a`): simulator 293
 1 skipped; X-VLA 12 passed, every batch-invariance check bit-exact on that CPU. The skipped tests need model weights,
 both servers running or the GPU, so they run on the L4 VM.
 
-Not started: everything on the L4 VM (Phase 0 steps 1-7: GPU checks, latency measurements, the re-run of every
-equality and determinism test, π0.5 parity, X-VLA base rollouts, time limits, freeze). DAgger and evaluation jobs
+**Phase 0 is complete (2026-11-24): harness v1.0 is frozen** (calibration `b80124b2`, freeze record
+`vla-router/calibration/freeze.json`). On the L4: every equality and determinism test re-run and passed; π0.5 parity
+passed; X-VLA base rollouts 398/500 against the reference's 405/500 (paired, exact McNemar p = 0.47); time limits with
+margin 2.0; gripper thresholds from ground truth (shut 3.0 mm; SPEC §17, amendments 50-51); the golden set replays
+bit for bit. Cloud spend so far $7.53. Before Phase 1: the short post-freeze list in HANDOFF.md.
+Earlier, before Phase 0 ran: DAgger and evaluation jobs
 wait for learned deciders (Phases 2-3).
 
 The §18 milestone (all seven must hold before the harness build counts as complete):
@@ -125,8 +129,8 @@ The §18 milestone (all seven must hold before the harness build counts as compl
 | 6. Ready-to-run Google Cloud setup scripts (Spot VM, bucket, budget alerts) | done 2026-11-22; Phase 0 stage 1 run the same day: APIs, bucket, VM service account, the $50 budget (whole-project period, before credits) and email alerts created; no VM yet |
 | 7. VM re-run list complete, everything committed, HANDOFF.md current | done 2026-11-22: the list covers steps 1-5, §12 rendering, measurement recording, the worker and the containers; parity tooling and reference files committed |
 
-By phase: the harness build is complete (the §18 milestone, all seven items, announced 2026-11-22). Phase 0 is in
-progress. On Google Cloud the bucket, budget and alerts exist, and Phase 0's first step is done: the three container
+By phase: the harness build is complete (the §18 milestone, all seven items, announced 2026-11-22). Phase 0 is
+complete (frozen 2026-11-24). Earlier status, for the record: Phase 0 was in progress. On Google Cloud the bucket, budget and alerts exist, and Phase 0's first step is done: the three container
 images were built and tested on a CPU-only build VM and stored in the bucket (commit `be7b95a`, 2026-11-22; six build
 attempts, about $1.10 in all). Miguel gave the go-ahead for the L4
 GPU VM and Phase 0 on 2026-11-22: long jobs run on the VM under systemd, and the VM syncs everything to the bucket and
