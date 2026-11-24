@@ -194,13 +194,45 @@ def test_projections_apply_the_rule_at_both_budgets():
     assert out["current/uniform"]["expected"][0] == pytest.approx(47 * 0.2) and not out["current/uniform"]["passes"]
     assert moved["expected"][0] == pytest.approx(107 * 2 / 3)
     assert cur["expected_ci95"][0] == (pytest.approx(47 * 2 / 3), pytest.approx(47 * 2 / 3))  # no spread to resample
-    assert cur["bootstrap_pass_share"] == 1.0 and out["rates"]["t0/failure"] == 1.0
+    assert cur["bootstrap_pass_share"] == 1.0 and out["rates"]["t0/failure"]["rate"] == 1.0
+    assert out["pooled_rates"]["failure"]["rate"] == 1.0 and out["pooled_rates"]["success"]["n"] == 90
     # few failed points: the stratified draw is capped by what the pools offer
     tight = {t: {"phi": 0.2, "points_failed": 5} for t in tasks}
     out = pilot.project(pts, tight, {"current": 47}, pools={"current": 3}, n_boot=10)
     assert out["current/stratified"]["expected"][0] == pytest.approx(15) and not out["current/stratified"]["passes"]
     rule = (out["current/stratified"]["passes"], True)
     assert pilot.decision(*rule) == "drop"
+
+
+def test_projections_pool_stratum_rates_across_tasks_and_own_rates_flag_only_from_10_points():
+    """Amendment 62 (1): the rule runs on rates pooled across tasks, applied to each task's phi and failed points;
+    a task's own rate flags it only if it has at least 10 labelled points."""
+    spec = {}
+    for t in range(10):
+        # task 0: 0 of 6 failed-parent points positive; the others 6 of 6 -> pooled r_f = 54/60 = 0.9
+        spec[(t, "failure")] = [(f"base/t{t}/i{i}", t != 0) for i in range(3) for _ in range(2)]
+        spec[(t, "success")] = [(f"base/t{t}/i{10 + i}", False) for i in range(1)]
+    pts = labelled(spec)
+    strata = {t: {"phi": 0.2, "points_failed": 500} for t in range(10)}
+    strata[1] = {"phi": 0.1, "points_failed": 4}                 # few failed points: capped at 3 x 4 = 12
+    out = pilot.project(pts, strata, {"current": 30}, pools={"current": 3}, n_boot=50)
+    cur = out["current/stratified"]
+    assert out["pooled_rates"]["failure"] == {"rate": pytest.approx(0.9), "positives": 54, "n": 60,
+                                              "ci95": out["pooled_rates"]["failure"]["ci95"]}
+    assert cur["expected"][0] == pytest.approx(20 * 0.9)        # pooled, not task 0's own 0.0
+    assert cur["expected"][1] == pytest.approx(12 * 0.9)        # its own failed-points cap
+    assert cur["own_expected"][0] == 0.0 and cur["own_expected"][2] == pytest.approx(20)
+    # 7 labelled points per task: task 0's own rate does not flag it; the pooled projections flag all ten (< 20)
+    assert out["own_rate_judged_tasks"] == [] and cur["flagged_by_own_rate"] == []
+    assert cur["flagged_tasks"] == list(range(10))
+    lo, hi = out["rates"]["t0/failure"]["ci95"]
+    assert lo == hi == 0.0 and out["rates"]["t2/failure"]["rate"] == 1.0
+    # at 10 labelled points a task's own rate can flag it, even where the pooled projection passes
+    spec[(0, "failure")] += [(f"base/t0/i{5 + i}", False) for i in range(3)]
+    out = pilot.project(labelled(spec), strata, {"big": 90}, pools={"big": 3}, n_boot=20)
+    big = out["big/stratified"]
+    assert out["labelled_per_task"][0] == 10 and out["own_rate_judged_tasks"] == [0]
+    assert big["expected"][0] >= 20 and big["flagged_by_own_rate"] == [0] and 0 in big["flagged_tasks"]
 
 
 def test_the_bootstrap_resamples_parent_episodes_not_points():
@@ -349,6 +381,24 @@ def test_costs_of_a_stopped_step_come_from_the_jobs_claim_and_finish_times():
     assert c["usd_per_run"]["b4_max"] == pytest.approx(42 * 0.472 / 3600)
 
 
+def test_costs_come_from_the_resumed_boot_with_the_first_boot_apart():
+    """Amendment 62 (1): the first boot (earliest claim) is costed alone; the later boots give the costs."""
+    def m(kind, claimed, finished, boot):
+        return {"job": {"kind": kind}, "finished_at": finished,
+                "meta": {"claimed_at": claimed, "worker_id": "w1", "boot_id": boot}}
+    ms = [m("b1_continue", 100, 130, "first"), m("b1_continue", 1000, 1010, "resume"),
+          m("b4_max", 1000, 1040, "resume")]
+    timing = [{"boot_id": "first", "phase_started": 90.0}, {"boot_id": "resume", "phase_started": 995.0},
+              {"boot_id": "resume", "phase_ended": 1045.0}]
+    c = pilot.costs_by_boot(ms, timing, hourly_usd=0.472)
+    assert c["first_boot"] == "first" and c["later_boots"] == ["resume"] and c["untagged_jobs"] == 0
+    assert c["first"]["vm_s_per_run"] == {"b1_continue": pytest.approx(40.0)}       # 90..130
+    assert c["resumed"]["windows_s"] == [50.0] and c["resumed"]["runs"] == {"b1_continue": 1, "b4_max": 1}
+    assert c["resumed"]["vm_s_per_run"]["b1_continue"] == pytest.approx(50 * 10 / 50)
+    one = pilot.costs_by_boot(ms[:1], timing[:1], hourly_usd=0.472)
+    assert one["resumed"] is None and one["first"]["runs"] == {"b1_continue": 1}
+
+
 def test_long_episode_subjects_take_one_long_episode_per_task():
     rows = [{"episode_id": "base/t3/i1", "task_id": 3, "end_reason": "step_limit", "time_frac": 0.99},
             {"episode_id": "base/t3/i2", "task_id": 3, "end_reason": "success", "time_frac": 0.50},
@@ -371,8 +421,10 @@ def test_fit_table_answers_whether_7_or_8_workers_fit_at_the_limit():
     f = pilot.fit_table(sup)
     assert f["servers_peak"] == 14_645_838_479 + 5_553_392_713 and f["rule_max_workers"] == 6
     assert f["counts"][6]["rule_fits"] and not f["counts"][7]["rule_fits"] and not f["counts"][8]["rule_fits"]
-    assert f["counts"][7]["limits_fit_ram"] and not f["counts"][8]["limits_fit_ram"]
-    assert f["counts"][8]["worker_peaks_fit_ram"]            # 8 x 4.5 GB + 20.2 GB + 4 GiB < 67.4 GB
+    # amendment 62 (4): 8 x 5.5 GiB + the servers' 20.2 GB peak is 27 MB over RAM; 7 fit with 5.9 GB to spare
+    assert f["counts"][7]["fits"] and not f["counts"][8]["fits"] and f["max_workers_fit"] == 7
+    assert f["counts"][8]["headroom_bytes"] == 67_416_563_712 - 8 * 22 * 256 * 1024 ** 2 - f["servers_peak"] < 0
+    assert f["counts"][8]["worker_peaks_fit_ram"]            # measured peaks would fit, but do not decide
     assert f["counts"][8]["worker_peaks_bytes"] == 8 * 4_500_000_000 + f["servers_peak"] + 4 * GiB
 
 

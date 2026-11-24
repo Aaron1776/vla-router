@@ -8,6 +8,21 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 2026-11-24 (~22:35Z, session 8): amendment 62 logged before the resume's results; report code follows it
+
+The user's seventh message (their text is the source), logged as **SPEC §17 amendment 62** at 22:34Z, before any
+result of the resumed boot was downloaded or read (only the marker count, 523 at 22:31Z): (1) projections from
+stratum rates pooled across tasks, applied to each task's own failure rate and budget; per-task rates with intervals,
+a task's own rate flags it only from 10 labelled points; costs from the resumed boot's jobs only, the first boot's
+apart; the report says the rules came first. (2) Setup count (= load count) approved: marker records it, re-runs,
+amendment 55's live audits and π0.5-alone evaluation episodes replay it; trunk-snapshot suffixes confirmed unaffected
+(restore writes the model fields); before Phase 1 propose a rule for fresh-start runs (exploration screening,
+evaluation trunks) with warm-up costs and fixture shifts, and write the record/replay code. (3) Amendment 61's reading
+confirmed (throughput test and pilot extension from the label line). (4) Memory fit: N × limit + servers' peaks ≤ RAM.
+Code: `pilot.project` (pooled, `own_expected`, `flagged_by_own_rate`, `MIN_OWN_POINTS`), `costs_by_boot`,
+`fit_table` (`fits`, `headroom_bytes`, `max_workers_fit`), report note; tests in `tests/test_pilot.py` (4 mutations
+caught).
+
 ## START HERE (2026-11-24, ~22:30Z): pilot resume running; amendment 61 logged; fresh session does the report and re-plan
 
 This session stopped at the stopping rule (half of context). **The pilot resume is running on the VM** (started

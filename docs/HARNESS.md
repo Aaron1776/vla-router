@@ -948,7 +948,10 @@ its first X-VLA call (event 1; 378 vs 396 steps). The re-run was not set up as t
 - Not affected: everything restored from a snapshot (branches, golden set, features check): `sim.state` restores
   the model fields. Affected: any re-run of an episode from scratch on another simulator, so the smoke's base
   re-run of t8/i19 can only have passed at an equal count (not checked), and Phase 1's screened re-runs (amendment 56) need the
-  screened run's load count recorded and replayed (a proposal for the user; on hold until decided).
+  screened run's load count recorded and replayed. **Approved (SPEC §17 amendment 62 (2), the "setup count"):** every
+  run's marker records it and re-runs replay it, as do amendment 55's live audits and π0.5-alone evaluation episodes
+  (the trunk's count); suffixes restored from trunk snapshots are unaffected (above). Before Phase 1: the recording
+  and replay code, and a proposed rule for runs that start fresh (exploration screening, evaluation trunks).
 - The pilot's corrected check (iii) (`checks-iii.json`) runs every re-run on a fresh simulator brought to the base
   run's count (`base_loads`, `warm_up`) and checks the fixtures again afterwards.
 

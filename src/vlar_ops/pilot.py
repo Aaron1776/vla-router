@@ -552,10 +552,11 @@ def expected_positives(n: float, rate_f: float, rate_s: float, *, scheme: str, p
 
 
 def stop_rule(expected: Mapping[int, float], *, per_task: float = 20, per_fold: float = 100,
-              max_flagged: int = 3) -> dict[str, Any]:
+              max_flagged: int = 3, also_flagged: Sequence[int] = ()) -> dict[str, Any]:
     """§4: a task expecting fewer than 20 positives is flagged; more than 3 flagged tasks, or a training fold (8 tasks)
-    expecting fewer than 100, stops before Phase 1."""
-    flagged = sorted(t for t, e in expected.items() if e < per_task)
+    expecting fewer than 100, stops before Phase 1. `also_flagged`: tasks flagged by another test (amendment 62 (1):
+    a task's own rate, at 10 or more labelled points)."""
+    flagged = sorted({t for t, e in expected.items() if e < per_task} | set(also_flagged))
     fold_sum = {f: sum(expected[t] for t in train) for f, train in folds(sorted(expected)).items()}
     short = sorted(f for f, s in fold_sum.items() if s < per_fold)
     return {"passes": len(flagged) <= max_flagged and not short, "flagged_tasks": flagged,
@@ -588,57 +589,111 @@ def weighted_rate(values: Sequence[float], inclusion_probs: Sequence[float]) -> 
             "ess": sw * sw / sum(wi * wi for wi in w)}
 
 
-def cluster_rates(points: Sequence[Mapping], rng: Optional[random.Random] = None) -> dict[tuple[int, str], float]:
-    """Positive rate per (task, parent outcome); with `rng`, one bootstrap replicate that resamples parent episodes
-    with replacement within each stratum (points of one episode are not independent)."""
+def cell_counts(points: Sequence[Mapping], rng: Optional[random.Random] = None) -> dict[tuple[int, str], tuple[int, int]]:
+    """(positives, points) per (task, parent outcome); with `rng`, one bootstrap replicate that resamples parent
+    episodes with replacement within each cell (points of one episode are not independent)."""
     groups: dict[tuple[int, str], dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
     for p in points:
         groups[(p["task_id"], p["parent_outcome"])][p["episode_id"]].append(int(p["positive"]))
     out = {}
-    for k, eps in groups.items():
+    for k in sorted(groups):
+        eps = groups[k]
         keys = sorted(eps)
         pick = keys if rng is None else [rng.choice(keys) for _ in keys]
-        pos = sum(sum(eps[e]) for e in pick)
-        n = sum(len(eps[e]) for e in pick)
-        out[k] = pos / n if n else 0.0
+        out[k] = (sum(sum(eps[e]) for e in pick), sum(len(eps[e]) for e in pick))
     return out
 
 
+def cluster_rates(points: Sequence[Mapping], rng: Optional[random.Random] = None) -> dict[tuple[int, str], float]:
+    """Positive rate per (task, parent outcome) (a bootstrap replicate with `rng`, as `cell_counts`)."""
+    return {k: pos / n if n else 0.0 for k, (pos, n) in cell_counts(points, rng).items()}
+
+
+OUTCOMES = ("failure", "success")
+
+
+def pooled_rates(cells: Mapping[tuple[int, str], tuple[int, int]]) -> dict[str, float]:
+    """Amendment 62 (1): each parent-outcome stratum's positive rate pooled across tasks, positives over labelled
+    points of that outcome, every task's points together."""
+    out = {}
+    for o in OUTCOMES:
+        pos = sum(c[0] for (t, oo), c in cells.items() if oo == o)
+        n = sum(c[1] for (t, oo), c in cells.items() if oo == o)
+        out[o] = pos / n if n else 0.0
+    return out
+
+
+MIN_OWN_POINTS = 10     # amendment 62 (1): a task's own rate flags it only from 10 labelled points
+
+
 def project(points: Sequence[Mapping], strata: Mapping[int, Mapping[str, Any]], budgets: Mapping[str, float], *,
-            pools: Mapping[str, int], share: float = 2 / 3, n_boot: int = 2000, seed: int = 0) -> dict[str, Any]:
+            pools: Mapping[str, int], share: float = 2 / 3, n_boot: int = 2000, seed: int = 0,
+            min_own: int = MIN_OWN_POINTS) -> dict[str, Any]:
     """Expected positives per task and fold under both schemes at each budget (points per task), with cluster-
     bootstrap 95% intervals and the share of replicates that pass the stop rule. `points`: one dict per labelled
     pilot point (task_id, parent_outcome, episode_id, positive). `strata[t]`: phi and points_failed (Phase 1's
     eligibility). `pools[budget]`: parent pools the budget draws from (base, exploration, DAgger), each assumed to
     offer as many failed-parent points as the base rollouts (exploration and DAgger parents are projected with base
-    rates: none exist yet)."""
-    tasks = sorted(strata)
+    rates: none exist yet).
 
-    def one(rates):
+    Amendment 62 (1), set before the results: the projections the stop rule runs on apply the stratum rates pooled
+    across tasks to each task's own failure rate (phi, failed points available) and budget. Each task's projection
+    from its own rates is shown beside them (`own_expected`), and flags the task only if it has at least `min_own`
+    labelled points. Every replicate resamples episodes within each (task, outcome) cell, then pools."""
+    tasks = sorted(strata)
+    n_task = {t: sum(1 for p in points if p["task_id"] == t) for t in tasks}
+    judged = [t for t in tasks if n_task[t] >= min_own]
+
+    def exp_for(rate_of, b, scheme):
+        n = budgets[b]
+        return {t: expected_positives(n, rate_of(t, "failure"), rate_of(t, "success"), scheme=scheme,
+                                      phi=strata[t]["phi"], share=share,
+                                      failed_available=pools[b] * strata[t]["points_failed"]) for t in tasks}
+
+    def one(cells):
+        own = {k: pos / n if n else 0.0 for k, (pos, n) in cells.items()}
+        pooled = pooled_rates(cells)
         res = {}
-        for b, n in budgets.items():
+        for b in budgets:
             for scheme in ("uniform", "stratified"):
-                exp = {t: expected_positives(n, rates.get((t, "failure"), 0.0), rates.get((t, "success"), 0.0),
-                                             scheme=scheme, phi=strata[t]["phi"], share=share,
-                                             failed_available=pools[b] * strata[t]["points_failed"])
-                       for t in tasks}
-                res[(b, scheme)] = exp
-        return res
-    point = one(cluster_rates(points))
+                res[(b, scheme)] = (exp_for(lambda t, o: pooled[o], b, scheme),
+                                    exp_for(lambda t, o: own.get((t, o), 0.0), b, scheme))
+        return res, own, pooled
+
+    def rule(pair):
+        exp, own_exp = pair
+        return stop_rule(exp, also_flagged=[t for t in judged if own_exp[t] < 20])
+
+    cells = cell_counts(points)
+    point, own_rates, pooled = one(cells)
     rng = random.Random(seed)
-    boots = [one(cluster_rates(points, rng)) for _ in range(n_boot)]
+    boots = [one(cell_counts(points, rng)) for _ in range(n_boot)]
+
+    def q(vals):
+        vals = sorted(vals)
+        return (float(vals[int(0.025 * (len(vals) - 1))]), float(vals[int(math.ceil(0.975 * (len(vals) - 1)))]))
     out: dict[str, Any] = {}
-    for key, exp in point.items():
+    for key, pair in point.items():
         b, scheme = key
-        rule = stop_rule(exp)
-        q = lambda vals: (float(sorted(vals)[int(0.025 * (len(vals) - 1))]),            # noqa: E731
-                          float(sorted(vals)[int(math.ceil(0.975 * (len(vals) - 1)))]))
-        task_ci = {t: q([bt[key][t] for bt in boots]) for t in tasks}
-        fold_ci = {f: q([sum(bt[key][u] for u in train) for bt in boots]) for f, train in folds(tasks).items()}
-        out[f"{b}/{scheme}"] = {"points_per_task": budgets[b], "expected": exp, "expected_ci95": task_ci,
-                                "fold_ci95": fold_ci, **rule,
-                                "bootstrap_pass_share": sum(stop_rule(bt[key])["passes"] for bt in boots) / len(boots)}
-    out["rates"] = {f"t{t}/{o}": r for (t, o), r in sorted(cluster_rates(points).items())}
+        exp, own_exp = pair
+        r = rule(pair)
+        out[f"{b}/{scheme}"] = {
+            "points_per_task": budgets[b], "expected": exp,
+            "expected_ci95": {t: q([bt[0][key][0][t] for bt in boots]) for t in tasks},
+            "fold_ci95": {f: q([sum(bt[0][key][0][u] for u in train) for bt in boots])
+                          for f, train in folds(tasks).items()},
+            **r, "flagged_by_own_rate": sorted(t for t in judged if own_exp[t] < 20),
+            "own_expected": own_exp,
+            "own_expected_ci95": {t: q([bt[0][key][1][t] for bt in boots]) for t in tasks},
+            "bootstrap_pass_share": sum(rule(bt[0][key])["passes"] for bt in boots) / len(boots)}
+    out["pooled_rates"] = {o: {"rate": pooled[o], "positives": sum(c[0] for (t, oo), c in cells.items() if oo == o),
+                               "n": sum(c[1] for (t, oo), c in cells.items() if oo == o),
+                               "ci95": q([bt[2][o] for bt in boots])} for o in OUTCOMES}
+    out["rates"] = {f"t{t}/{o}": {"rate": own_rates[(t, o)], "positives": cells[(t, o)][0], "n": cells[(t, o)][1],
+                                  "ci95": q([bt[1].get((t, o), 0.0) for bt in boots])}
+                    for (t, o) in sorted(cells)}
+    out["labelled_per_task"] = n_task
+    out["own_rate_judged_tasks"] = judged
     return out
 
 
@@ -781,6 +836,32 @@ def costs(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: 
             "b4_share_of_base_point": 3 * r("b4_max") / point["base_without_b3"] if point["base_without_b3"] else None}
 
 
+def costs_by_boot(markers: Sequence[Mapping], timing: Sequence[Mapping], *, hourly_usd: float) -> dict[str, Any]:
+    """Amendment 62 (1): costs from the resumed boot's jobs only. The first boot (the earliest first claim) is costed
+    on its own and reported apart; every later boot's jobs, each in its own window, give the costs the measured
+    budgets use (the pilot's resume is one boot; a preemption would add one, listed in `later_boots`)."""
+    first_claim: dict[Optional[str], float] = {}
+    for m in markers:
+        c = m.get("meta", {}).get("claimed_at")
+        if c is not None:
+            b = m["meta"].get("boot_id")
+            first_claim[b] = min(first_claim.get(b, float(c)), float(c))
+    boots = sorted((b for b in first_claim if b is not None), key=lambda b: first_claim[b])
+    if not boots:
+        return {"first_boot": None, "later_boots": [], "first": None, "resumed": costs(markers, timing,
+                                                                                       hourly_usd=hourly_usd)}
+    first = boots[0]
+    later = boots[1:]
+
+    def pick(bs):
+        return ([m for m in markers if m.get("meta", {}).get("boot_id") in bs],
+                [t for t in timing if t.get("boot_id") in bs])
+    return {"first_boot": first, "later_boots": later,
+            "untagged_jobs": sum(1 for m in markers if m.get("meta", {}).get("boot_id") is None),
+            "first": costs(*pick({first}), hourly_usd=hourly_usd),
+            "resumed": costs(*pick(set(later)), hourly_usd=hourly_usd) if later else None}
+
+
 def check_timing(iii: Mapping[str, Any]) -> dict[str, Any]:
     """The corrected check (iii)'s record-off episodes as screened runs, alone on the servers: per episode its load
     count, steps and seconds (search, warm-up, episode; reports from bb7112f have no per-episode seconds)."""
@@ -799,9 +880,10 @@ def check_timing(iii: Mapping[str, Any]) -> dict[str, Any]:
 def fit_table(summary: Mapping[str, Any], counts: Sequence[int] = (6, 7, 8), *, usable: float = 0.95,
               server_margin: float = 1.25, host_reserve: int = 4 * 1024 ** 3) -> dict[str, Any]:
     """Would `counts` workers at the run's per-worker limit fit (the user, 2026-11-24: the exploration, DAgger and
-    evaluation estimates assumed 8-worker throughput)? Per count: by the sizing rule (servers' resident memory at
-    start x 1.25, a 4 GiB host reserve, 95% of RAM), with every limit filled beside the servers' measured peaks, and
-    with every worker at the largest measured worker peak (all in RAM, no margin)."""
+    evaluation estimates assumed 8-worker throughput)? Amendment 62 (4): a count fits only if its per-worker limits
+    plus the servers' measured peaks fit inside RAM (`fits`, with the headroom left). Shown beside it, not deciding:
+    the boot-time sizing rule (servers' resident memory at start x 1.25, a 4 GiB host reserve, 95% of RAM), and every
+    worker at the largest measured worker peak."""
     sz, peaks = summary["sizing"], summary.get("peak_memory_bytes") or {}
     mem, start, limit = int(sz["mem_total"]), int(sz["servers"]), int(sz["limit"])
     servers = {k: v for k, v in peaks.items() if k in ("vlar-xvla", "vlar-pi05")}
@@ -809,15 +891,16 @@ def fit_table(summary: Mapping[str, Any], counts: Sequence[int] = (6, 7, 8), *, 
     wk = max((v for k, v in peaks.items() if k.startswith("vlar-worker")), default=None)
     rows = {}
     for n in counts:
-        rule, full = n * limit + start * server_margin + host_reserve, n * limit + srv + host_reserve
-        row = {"rule_bytes": rule, "rule_fits": rule <= mem * usable, "limits_at_server_peak_bytes": full,
-               "limits_fit_ram": full <= mem}
+        rule, full = n * limit + start * server_margin + host_reserve, n * limit + srv
+        row = {"fits": full <= mem, "limits_at_server_peak_bytes": full, "headroom_bytes": mem - full,
+               "rule_bytes": rule, "rule_fits": rule <= mem * usable}
         if wk is not None:
             row.update({"worker_peaks_bytes": n * wk + srv + host_reserve,
                         "worker_peaks_fit_ram": n * wk + srv + host_reserve <= mem})
         rows[n] = row
     return {"mem_total": mem, "limit": limit, "servers_at_start": start, "servers_peak": srv, "server_peaks": servers,
-            "worker_peak_max": wk, "rule_max_workers": int((mem * usable - start * server_margin - host_reserve) // limit),
+            "worker_peak_max": wk, "max_workers_fit": int((mem - srv) // limit),
+            "rule_max_workers": int((mem * usable - start * server_margin - host_reserve) // limit),
             "counts": rows}
 
 
@@ -913,9 +996,10 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
     markers = [json.loads(f.read_text()) for f in sorted((Path(root) / "results" / PHASE).glob("*.json"))]
     rd = Path(reports_dir)
     read_jsonl = lambda f: [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []  # noqa
-    cost = costs(markers, read_jsonl(rd / "timing.jsonl"), hourly_usd=hourly_usd)
+    by_boot = costs_by_boot(markers, read_jsonl(rd / "timing.jsonl"), hourly_usd=hourly_usd)
+    cost = by_boot["resumed"] or by_boot["first"]          # one boot only: the first is all there is
     budgets = declared_budgets(hourly_usd)
-    if all(math.isfinite(v) for v in cost["usd_per_point"].values()):
+    if by_boot["resumed"] is not None and all(math.isfinite(v) for v in cost["usd_per_point"].values()):
         mb = measured_budgets(cost["usd_per_point"], hourly_usd=hourly_usd)
         budgets.update({"measured_current": mb["current"], "measured_moved": mb["moved"]})
     pools = {k: (3 if k.endswith("current") else 2) for k in budgets}
@@ -931,7 +1015,10 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
     iii = json.loads((rd / "checks-iii.json").read_text()) if (rd / "checks-iii.json").exists() else None
     return {"plan_id": selection["plan_id"], "points": len(label_map), "labelled": len(rows), "problems": problems,
             "jobs_done": len(markers), "jobs_planned": selection["n_jobs"], "rates": rate_table(rows, PROFILES),
-            "costs": cost, "phase_vm_usd": phase_vm_usd, "budgets_points_per_task": budgets, "projections": proj,
+            "costs": cost, "costs_basis": "resumed boot" if by_boot["resumed"] is not None else "first boot only",
+            "costs_first_boot": by_boot["first"], "boots": {"first": by_boot["first_boot"],
+                                                             "later": by_boot["later_boots"]},
+            "phase_vm_usd": phase_vm_usd, "budgets_points_per_task": budgets, "projections": proj,
             "decision": dec, "decision_text": DECISIONS.get(dec.get("rule", ""), "no labelled points"),
             "checks": None if checks is None else {
                 "passed": checks["passed"], "features_equal_probe": checks["features"]["features_equal_probe"],
@@ -951,6 +1038,11 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
             "supervisor_events": {e: sum(1 for x in sup.get("events", []) if x.get("outcome") == e)
                                   for e in sorted({x.get("outcome") for x in sup.get("events", [])})},
             "restart_overhead": restart_overhead(markers),
-            "notes": ["Exploration and DAgger parents are projected with base-parent rates (none exist yet).",
+            "notes": ["Amendment 62 (logged 2026-11-24 22:34Z, before any result of the resumed boot was downloaded "
+                      "or read): the stop rule runs on stratum rates pooled across tasks, applied to each task's own "
+                      "failure rate and budget; a task's own rate flags it only from 10 labelled points; costs and "
+                      "measured-price budgets come from the resumed boot's jobs only (the first boot's apart); a "
+                      "worker count fits only if its limits plus the servers' peaks fit inside RAM.",
+                      "Exploration and DAgger parents are projected with base-parent rates (none exist yet).",
                       "The pilot's eligible points end at index 49 (b3's three calls); Phase 1's at 51.",
                       "The re-run cost r = 74 VM-s is an estimate; the pilot does not measure it."]}
