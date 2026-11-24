@@ -307,3 +307,18 @@ def test_steps_naming_no_phase_are_checked_without_one(tmp_path):
     state, hist, p0, fake, local, _ = run(tmp_path, {"010-a.sh": 'echo a >> "$FAKE/order"'})
     assert state["state"] == "idle" and (fake / "order").read_text().split() == ["a"]
     assert "vlar-ops spend check\n" in (fake / "log").read_text()
+
+
+def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
+    """The runner reads `# cap-seconds: N` and `# spend-phase: NAME` with sed; a step meant for a spend phase must
+    name it exactly (the pilot: `pilot`, approved up to $2.50, SPEC §17 amendment 59)."""
+    import re
+    steps = sorted((REPO / "ops" / "vm" / "postfreeze").glob("*.sh"))
+    assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh"]
+    for p in steps:
+        assert subprocess.run(["bash", "-n", str(p)]).returncode == 0, p.name
+        assert re.search(r"^# cap-seconds: [0-9]+ *$", p.read_text(), re.M), p.name
+    pilot = (REPO / "ops" / "vm" / "postfreeze" / "710-pilot.sh").read_text()
+    assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", pilot, re.M) == ["pilot"]
+    assert 'run_phase pilot "--phase pilot"' in pilot and "export VLAR_GOLDEN_DONE=1" in pilot
+    assert pilot.index("golden_check ||") < pilot.index("vlar-ops pilot check --plan-dir") < pilot.index("run_phase pilot \"")

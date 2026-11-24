@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; stop lines in; pilot code in progress)
+# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; pilot code done; pilot boot next)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,34 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-24, ~15:30Z): stop lines done; pilot code half done; stopped at the usage limit
+## START HERE (2026-11-24, ~17:00Z): amendments 56-59 written; pilot code and step done and tested; boot next
+
+Resumed at ~16:50Z under the same rules (pilot boot approved up to $2.50; stop without debugging on any mismatch;
+keep the VM stopped when idle; stopping rule). Items 1-3 of the list below are **done**:
+- **SPEC §17 amendments 56-59** (header: approved 2026-11-24, logged before the pilot): 56 screen then re-run (stop
+  all re-runs on any difference; router-half fallback to record `full` if check (i) fails); 57 stratified sampling
+  with weighted training (eligibility `min_calls` 1 in Phase 1/DAgger, 3 in the pilot; re-run-parent selection
+  still to write before Phase 1; training weights before Phase 2); 58 the DAgger decision rule (47 vs 107 points per
+  task; expected counts; measured-price points shown and flagged if the outcome differs, the user decides); 59 the
+  per-phase stop lines. PROPOSALS §0.2, §0.3, §0.5 marked decided.
+- **`pilot.py`:** `weighted_rate` added (Σw·x/Σw, w = 1/π, with ESS); `episode_check` reports `ran_as` (mode,
+  record). Tests: `tests/test_pilot.py` (selection counts, shortfall both ways, order independence, seed,
+  eligibility, base-only, plan = selection; re-weighting exact and unbiased over 300 draws; folds; stop rule;
+  decision; projections; episode-cluster bootstrap) and `tests/reference/test_pilot_checks.py` (stand-ins in the
+  real simulator: features pass; a differing `/features` is reported with its fallback, not a failure; a `/sample`
+  that does not reproduce the record fails; a chunk point is refused; record `off` and `xvla_only` re-runs pass and
+  ran as intended; record `off` catches `Leaky`). Note: with at most 3 tasks flagged, every fold has ≥ 5 × 20 = 100,
+  so the fold test can only bind together with the task test (tested).
+- **Step `ops/vm/postfreeze/710-pilot.sh`** (cap 18000 s, `# spend-phase: pilot`): plan download + SHA-256s +
+  plan/selection consistency; servers; golden check and image check (exit 76); `VLAR_GOLDEN_DONE=1`; `vlar-ops pilot
+  check` once (sim image; a re-run after preemption reuses `reports/checks.json`); `queue add`; `run_phase pilot`
+  with `timing.jsonl`; EXIT trap uploads `reports/` (+ supervisor summary, golden pass, step exits) to
+  `<storage>/pilot/reports/`. A check mismatch does not stop the branches; the step then ends with exit 76.
+  New test: post-freeze steps parse and carry the headers the runner reads.
+
+**Next:** item 4 (commit, push, upload plan, `phase-open`, queue, boot), then 5 (report) and 6.
+
+## Earlier 2026-11-24 (~15:30Z): stop lines done; pilot code half done; stopped at the usage limit
 
 **The user's decisions this session (2026-11-24, fourth message; the user's full text is the source):**
 1. §0.3 screen-then-re-run **approved**, including: stop on any re-run that does not match its screened run bit for

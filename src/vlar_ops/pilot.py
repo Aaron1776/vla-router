@@ -239,7 +239,8 @@ def episode_check(run_job: Callable[[Job], list[dict]], original: Callable[[str]
     run = _table(Path(arts[f"records/runs/{job.phase}/{job.job_id}.parquet"]["path"]).read_bytes()).to_pylist()[0] \
         if f"records/runs/{job.phase}/{job.job_id}.parquet" in arts else {}
     return {"subject": job.subject, "variant": variant, "passed": not problems, "problems": problems,
-            "tables": compared, "outcome": {k: run.get(k) for k in ("success", "end_reason", "steps", "success_step")}}
+            "tables": compared, "outcome": {k: run.get(k) for k in ("success", "end_reason", "steps", "success_step")},
+            "ran_as": {k: run.get(k) for k in ("mode", "record")}}
 
 
 def run_checks(ops_cfg: Mapping[str, Any], plan_dir: Path, staging: Path, *, clients=None, make_sim=None,
@@ -339,6 +340,20 @@ def decision(passes_current: bool, passes_moved: bool) -> str:
     """Amendment 58, set by the user before the pilot ran: stratified projections at the current plan's points per
     task, then at the points per task with the DAgger round's money moved into Phase 1."""
     return "keep" if passes_current else "drop" if passes_moved else "stop"
+
+
+def weighted_rate(values: Sequence[float], inclusion_probs: Sequence[float]) -> dict[str, float]:
+    """Σ w·x / Σ w with w = 1/π, π each point's recorded inclusion probability: a rate over the sampled points
+    re-weighted to the population they were drawn from (amendment 57 (6)), with the effective sample size
+    (Σw)²/Σw²."""
+    if len(values) != len(inclusion_probs) or not values:
+        raise PilotError(f"{len(values)} values and {len(inclusion_probs)} inclusion probabilities")
+    if not all(0 < p <= 1 for p in inclusion_probs):
+        raise PilotError("inclusion probabilities must be in (0, 1]")
+    w = [1 / p for p in inclusion_probs]
+    sw = sum(w)
+    return {"rate": sum(wi * x for wi, x in zip(w, values)) / sw, "n": len(values),
+            "ess": sw * sw / sum(wi * wi for wi in w)}
 
 
 def cluster_rates(points: Sequence[Mapping], rng: Optional[random.Random] = None) -> dict[tuple[int, str], float]:

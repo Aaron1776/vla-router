@@ -99,6 +99,9 @@ $2.58 = **$4.86 for branches and re-runs**: two thirds to Phase 1, one third to 
 
 ### 0.2 What this means for the stop rule (before the pilot)
 
+**Decided 2026-11-24: thresholds kept; the DAgger round's fate follows the pilot's projections at ~47 and ~107
+points per task (SPEC §17 amendment 58).**
+
 With ~47 points per task, ≥ 20 positives per task needs a positive rate of **43% of all points** under uniform
 sampling. A positive needs p_1 ≤ 2/3. At a base point in a successful episode, b1's first seed is the parent itself,
 a success, so p_1 ≤ 2/3 also needs one of the 2 new seeds to fail. Positives therefore come mostly from the ~20%
@@ -110,6 +113,9 @@ against §3's 660 points. At ~466 they are near the edge even with stratificatio
 before or after the pilot:** keep them, lower them, or move points from elsewhere (e.g. the DAgger round, (e)).
 
 ### 0.3 Probes only at sampled points, with outcome-stratified selection kept possible (decision 3)
+
+**Approved 2026-11-24 (SPEC §17 amendment 56)**, with stop on any re-run that differs from its screen and the
+router-half fallback to record `full` if the pilot's check (i) fails.
 
 **Neither proposed method runs on the frozen harness.** The harness has two record modes, `off` and `full`
 (`episode.RECORD_MODES`). `collect.Runner` writes snapshots and `points` rows only under `full`. Recording probes
@@ -158,7 +164,7 @@ Unchanged otherwise: 150 base points, 11 runs each with b3 kept, ~$1.6, stopped 
   their `full` records, bit for bit (§0.3's screening); (iv) peak memory per worker and restart overhead under
   `--max-jobs` (§0.6). Together well under $0.05.
 
-### 0.5 Proposed amendment (draft, not approved): outcome-stratified decision-point sampling with weighted training
+### 0.5 Outcome-stratified decision-point sampling with weighted training (approved 2026-11-24: SPEC §17 amendment 57)
 
 1. **Strata:** (parent kind, task, parent outcome). The outcome is success at 520 steps without a time cutoff for
    scripted parents (base, exploration screening), and success under the parent's own live profile for DAgger
