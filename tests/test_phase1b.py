@@ -447,3 +447,16 @@ def test_the_top_up_decision_goes_only_under_a_dollar_and_without_a_rate_under_t
     full = {"needed_per_task": 21, "tasks": {"0": rep["tasks"]["0"]}}
     assert B.top_up_decision(full, usd_per_episode=0.0017, overhead_usd=0.2) == {
         "extra": {}, "episodes": 0, "cost_usd": 0.0, "sizes": {0: 115}, "go": False, "stops": []}
+
+
+# ---------------------------------------------------------------- pace projections (amendments 69, 70)
+
+def test_projections_from_measured_paces_and_the_raise_they_call_for():
+    assert B.project_remaining(spent_usd=0.92, remaining=1641, per_hour=327, hourly_usd=0.6865) == pytest.approx(
+        0.92 + (1641 / 327 + 0.08) * 0.6865)
+    p = B.project_740(failed_episodes=210, success_episodes=110, success_steps=252, rerun_vm_s_per_step=0.2329,
+                      branch_jobs=3840, branch_vm_s_per_job=7.18, hourly_usd=0.6865)
+    assert p["rerun_h"] == pytest.approx((210 * 520 + 110 * 252) * 0.2329 / 3600)
+    assert p["usd"] == pytest.approx((p["rerun_h"] + 3840 * 7.18 / 3600 + 0.33) * 0.6865)
+    assert B.raise_for(11.0, 11.09) == 0.0
+    assert B.raise_for(11.57, 11.09) == pytest.approx(0.74) and B.raise_for(4.41, 3.3312) == pytest.approx(1.33)

@@ -45,6 +45,15 @@ up (2, 3, 4, 5, 7, 8, 9), base only in 0, 1, 6.
 **730 money (amendment 69, ~20:35Z):** 333/1,974 done for $0.92 at 327-351 episodes/h; completion projected $4.18-4.41
 (~01:10-01:30Z). `spend phase-raise` +$1.33: line $4.89, stop $4.66 (allocation $3.30); reserve now $0.02, so a top-up
 comes out of the final tier. Watch the projection again near the end (markers: `results/explore/`).
+**Amendment 70 (pace checks, shared raise cap $2.50 from the final tier):** 740 projected $11.57-12.44 vs its $11.09 stop
+(`phase1b.project_740`: re-runs at 0.2329 VM-s/step x (7/8 scaling for the high end), branches 7.18 VM-s/job, 0.33 h
+overhead); redo before booting with the screen's final yield and pace, then `spend phase-raise --phase phase1b` by
+`raise_for(projection, 11.09)` (overrun + $0.25) before queueing 740, and again at 740's halfway point. 730: re-project
+~25 min after each restart (`project_remaining`); 735: before boot and at halfway. Raises so far against the $2.50:
+none (amendment 69's $1.33 for 730 came from the reserve). Past $2.50: stop and ask. k stays 2.
+**730 preempted again ~20:32Z** ($0.95, ~400 done); restart 1/7 stockout at 20:34Z, retrying. If no restart by 21:30Z:
+bring the user the zone-move plan (fresh 100 GB pd-balanced disk in us-central1-b/-c via the 33 flow; 010-090 setup ~1 h
+~$0.69; `queue resume` marks screened episodes done from their bucket markers); no move without approval.
 **Amendment 68 (the user, ~19:00Z): after 730, one pre-approved top-up, then 740.** On the Mac when 730 ends: yield
 (`phase1 yield-b`, or reports/screen-yield.json); `phase1b.top_up_decision(rep, usd_per_episode=<phase1b-screen VM $
 less the boot and gate overhead, / episodes>, overhead_usd=<that overhead>)`; if `go`: write its `sizes` to a file,

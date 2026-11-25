@@ -212,6 +212,31 @@ def top_up_decision(rep: Mapping[str, Any], *, usd_per_episode: float, overhead_
             "go": n_extra > 0 and not stops, "stops": stops}
 
 
+def project_remaining(*, spent_usd: float, remaining: int, per_hour: float, hourly_usd: float,
+                      tail_h: float = 0.08) -> float:
+    """Amendment 69: a running step's spend at completion from its measured pace: what it has spent, plus its
+    remaining jobs at `per_hour`, plus the wind-down (`tail_h`), at the VM's price."""
+    return spent_usd + (remaining / per_hour + tail_h) * hourly_usd
+
+
+def project_740(*, failed_episodes: int, success_episodes: int, success_steps: float, rerun_vm_s_per_step: float,
+                branch_jobs: int, branch_vm_s_per_job: float, hourly_usd: float, overhead_h: float = 0.33,
+                step_cap: int = 520) -> dict[str, float]:
+    """Amendment 70: 740's cost from measured paces before it boots: the record-full re-runs (failed episodes run to
+    the step cap) at the record-full VM-seconds per step, the branch jobs at Tranche A's VM-seconds per job, and the
+    boot, gate, selection, comparison and wind-down overhead."""
+    rerun_h = (failed_episodes * step_cap + success_episodes * success_steps) * rerun_vm_s_per_step / 3600
+    branch_h = branch_jobs * branch_vm_s_per_job / 3600
+    usd = (rerun_h + branch_h + overhead_h) * hourly_usd
+    return {"rerun_h": rerun_h, "branch_h": branch_h, "overhead_h": overhead_h, "usd": usd}
+
+
+def raise_for(projected_usd: float, stop_usd: float, *, cushion_usd: float = 0.25) -> float:
+    """Amendments 69, 70: the raise a projection calls for, the overrun plus the cushion (0 when within the stop)."""
+    over = projected_usd - stop_usd
+    return 0.0 if over <= 0 else round(over + cushion_usd + 0.005, 2)
+
+
 def select_reruns(rows: Iterable[Mapping], *, per_task: int, k: int, seed: int,
                   failed_share: float = FAILED_SHARE) -> dict[str, dict]:
     """Per task n/k episodes (rounded up), round(s x n/k) failed, each stratum's shortfall made up from the other;

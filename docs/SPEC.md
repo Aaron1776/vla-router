@@ -523,6 +523,23 @@ with the reason and old values in the phase's `raises`; the guard reads the ledg
 allocation unchanged ($3.30). Reserve $1.35 -> $0.02, so amendment 68's top-up (<= $1.00), if it runs, comes out of
 the final tier ($4.18 -> as low as $3.18).
 
+70. §4, §12 (the user, 2026-11-25 ~20:35-20:45Z). **Projections from measured paces before and during Tranche B's
+steps.** (1) **740, before it boots**, is projected from measured paces, not the plan's (`phase1b.project_740`): the
+record-full re-runs at the record-full VM-seconds per step (Phase 0's 500 base rollouts, 233 VM-ms per step, 5.85x the
+screen's record-off pace; scaled from 8 to 7 workers for the high end), failed episodes to the 520-step cap; the
+branch jobs at Tranche A's 7.18 VM-seconds per job (6.39 VM-h for 3,200 jobs); boot, gate, selection, comparison and
+wind-down 0.33 h. At 20:40Z: re-runs $6.08-6.95, branches $5.26, overhead $0.23, **$11.57-12.44 against the $11.09
+stop**; redone with the finished screen's yield and pace before the boot. (2) **Re-projections:** 740 at its halfway
+point; 730 about 25 minutes after each restart (`phase1b.project_remaining` from the boot's own pace); 735 before it
+boots (amendment 68's cost at the screen's measured pace) and at its halfway point. (3) **Raises:** whenever a
+projection passes the open phase's stop point, `spend phase-raise` by the overrun plus $0.25
+(`phase1b.raise_for`), from the final tier, without asking, while the raises for finishing Tranche B (730 after
+amendment 69's, 735 and 740) total at most **$2.50** (the user raised the shared cap from $1.50); a raise past that
+cap stops for the user. The final tier gets whatever is left. `phase-raise` is used only under amendments 69 and 70;
+any other raise needs the user. 735's own cost stays within amendment 68's $1.00. (4) **k stays 2 points per
+re-run episode:** the re-runs are the expensive part, but fewer episodes would worsen the clustering (amendment 68
+(3)), and the record-full re-runs carry the history features Oscar's deciders need.
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
