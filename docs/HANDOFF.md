@@ -10,6 +10,18 @@ re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline
 
 ## START HERE (2026-11-25, ~09:30Z, scheduled session): Tranche A preempted in setup; Tranche B code built
 
+**Update ~09:40Z (another session, the user's direct approval):** Tranche A restarted 08:24Z in us-central1-a,
+preempted again 09:05:14Z (in 050), restarted 09:17:47Z after one stockout; 720 running since ~09:25Z. Restarts and
+watching: `outputs/l4-retry/watch_restart.sh` (detached on the Mac, not committed; pid `outputs/l4-retry/restart.pid`,
+log `retry.log`): restarts only after a `compute.instances.preempted` since the last start, in us-central1-a only,
+at most 3 automatic restarts (1 used), spend check before each; any other stop or a 4th preemption ends it for the
+user. **Queueing 730 behind 720 on the running VM: the runner does not allow it as built.** After 720 the runner
+pulls the queue and runs `spend check --phase phase1b-screen`; `phase1a` is still the open phase (one open phase at a
+time; `phase-open` is refused while another is open), so the check returns 4 (wrong phase) and the runner stops the VM
+(`finish needs_input`). Doing it needs a runner change (e.g. wait on a wrong-phase check, polling for up to ~20 min,
+while the Mac closes `phase1a` and opens `phase1b-screen` once 720 is done): the user decides; a runner change reaches
+the VM only on its next boot.
+
 **Tranche A is not running.** The Spot VM was **preempted at 06:41:42Z** (compute operation `instances.preempted`)
 during setup step `030-rerun-sim`; 010/015/020 done; no golden replay, no branch job. The retry watcher saw it
 TERMINATED and ended (no restarts, as designed). phase1a spent $0.18 of its $6.27 stop. The unattended session did not
@@ -31,17 +43,20 @@ resumes at 030, then 720); if the zone is out of Spot, `ops/gcp/33_create_retry.
   re-runs with a 2-min comparison watcher that raises the stop flag on any difference, compare all, branch plan,
   branches). Not queued, not uploaded. Before booting: upload `phase1b/screen/plan.json` (from `plan-b-screen
   --per-task-screen 115 --seed <s>`) and `params.json` (`{"per_task": 64, "k": 2, "seed": <s>}`), open the spend phase.
-- **Choices for the user to confirm (not in SPEC §17 yet):** (1) seeds for repeated screens via namespace offsets
-  (+1000 r), `plan.rollout_seed` unchanged; (2) the sims cache managed from `serve` instead of changing
-  `ProductionEpisodes` (keeps the waiver; the count is recorded per job instead); (3) episode selection in `phase1b.py`,
-  not `branchplan.py` (keeps the branch digest equal to Tranche A's); (4) `datadigest.KINDS["explore"]` now also
-  covers `phase1b:screen_plan` and `phase1b:rerun_plan` (no explore record exists yet); (5) a screened run and its
-  re-run share a run id under phase `explore`: consumers take the record-`full` row.
-- **Amendment 58 re-check at $0.6865/h** (`outputs/pilot/a58-recheck-2026-11-25.json`; pooled r_f 0/59, r_s 2/50;
-  B projected at base rates): b4 at every point: 127 points/task, 1.7-3.0 positives/task, 15.9-17.7 per fold;
-  ~54 more base points: 181 points/task, 2.4-3.8 per task, 21.6-23.4 per fold. **Fails at both** (all 10 tasks under
-  20, every fold under 100), as at the pilot (amendment 63 re-planned on that basis; b4 does not enter the positive).
-  At these rates 2/3 failed share lowers raw expected positives (r_f = 0).
+- **Review fixes (SPEC §17 amendment 66, the user 2026-11-25):** the five choices confirmed and logged (66 (6)); a
+  re-run difference ends 740 with exit 76 via `rerun/MISMATCH.json` (66 (2)); `compare_rerun` compares
+  `calibration_hash` (66 (3)); 730 ends with the per-task yield against the 21 failed episodes needed and a proposed
+  top-up per short task (`phase1 yield-b`, `reports/screen-yield.json`; 66 (4)). At base rates tasks 2, 3, 5, 7, 9
+  expect 4.6-16.1 failed: expect a top-up proposal there before 740.
+- **Amendment 58 re-check, corrected (66 (1); `cascader_nospread`, r_f 13/59, r_s 1/50, $0.6865/h;
+  `phase1.final_tier_check`, `outputs/pilot/a58-recheck-nospread-2026-11-25.json`; the earlier `a58-recheck-2026-11-25.json`
+  used `cascader_full`'s rates and is superseded):** b4 at every point 19.6 per task (plan doc 19.8: B by episode is
+  42/22, not 43/21), 157 per fold; capped by the screen's yield at base rates 13.0-19.6 per task, 136-145 per fold:
+  **fails** (all tasks under 20). ~54 more base points 27.9 per task (plan doc 28.1), 223 per fold; capped 21.3-27.9,
+  203-211: **passes**.
+- **For the handoff package (66 (5)):** training exports keep only the record-`full` row of each `explore` run id
+  (screen and re-run share it), with a check (no run id twice, every kept row `full`) and a test.
+- **Queueing 730 behind Tranche A on the running VM:** not allowed by the runner as built (see the update above).
 - Deferred to after Nov 28: the restarter, HANDOFF-SPARK.md, the handoff package, the never-mix draft.
 
 ## Earlier 2026-11-25 (~06:45Z): Tranche A is booting; next: Tranche B code, the restarter, HANDOFF-SPARK

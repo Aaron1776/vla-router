@@ -8,15 +8,17 @@
 #  2. The golden gate (exit 76 on any mismatch).
 #  3. The re-runs (record full, at the screen's setup count) through `run_phase explore`, compared with their screened
 #     runs every 2 minutes while they run (`compare-b`): any difference writes the spend guard's stop flag, so all
-#     re-runs stop (amendment 56; max-effort checkpoint), and the step stops with exit 76.
+#     re-runs stop (amendment 56; max-effort checkpoint), and the step stops with exit 76: compare-b writes the
+#     mismatch marker before the stop flag, and the marker is checked before a stop is read as a budget stop
+#     (run_phase's need_input, 75), so a difference never ends the step as one (amendment 66 (2)).
 #  4. Every re-run compared once more (all must have passed), then the branch plan over their points
 #     (`plan-b`: k points per episode, b1 and b2, 3 seeds), uploaded to <storage>/phase1b/plan/.
 #  5. The branch jobs through `run_phase phase1b`, open jobs point by point (`pilot reorder`).
-source /opt/vla-router/ops/vm/phase0/lib.sh
+source "${VLAR_LIB:-/opt/vla-router/ops/vm/phase0/lib.sh}"    # VLAR_LIB, VLAR_WORK_ROOT: tests only
 need_images
 : "${VLAR_STORAGE_URL:?}"
 PH=phase1b
-W="/var/lib/vlar/${PH}"
+W="${VLAR_WORK_ROOT:-/var/lib/vlar}/${PH}"
 SD="${W}/screen"; RD="${W}/rerun"; PD="${W}/plan"; REP="${W}/reports"
 RURL="${VLAR_STORAGE_URL}/${PH}/reports"
 BOOT="$(cat /proc/sys/kernel/random/boot_id)"
@@ -62,18 +64,27 @@ export VLAR_GOLDEN_DONE=1
 
 # ---- 3. the re-runs, compared as they finish
 CMP="${REP}/compare.json"
+MISMATCH="${RD}/MISMATCH.json"   # compare-b writes it before the stop flag on any difference
+mismatch_stop() {   # a re-run difference (this boot or an earlier one) ends the step with 76, never as a budget stop
+  [[ -s "${MISMATCH}" ]] && gate_fail "a re-run differs from its screened run ($(head -c 300 "${MISMATCH}" | tr '\n' ' ')): all re-runs stopped, no branches (max-effort checkpoint)"
+  return 0
+}
+mismatch_stop
 vlar-ops queue add "${RD}/plan.json" || fail "${PH} re-run queue add"
 ( while sleep 120; do
-    ops_sim phase1 compare-b --plan-dir "${RD}" --out "${CMP}" --stop-flag "${STOP_FLAG}" >/dev/null 2>&1
+    ops_sim phase1 compare-b --plan-dir "${RD}" --out "${CMP}" --mismatch "${MISMATCH}" --stop-flag "${STOP_FLAG}" >/dev/null 2>&1
     [[ $? -eq 76 ]] && break
   done ) &
 WATCH_PID=$!
 echo "{\"boot_id\": \"${BOOT}\", \"reruns_started\": $(date +%s.%N)}" >> "${REP}/timing.jsonl"
-VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase explore "--phase explore"
+# in a subshell: a stop flag raised by a difference ends run_phase through need_input (75, "stopped by the spend guard")
+( VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase explore "--phase explore" ); rc=$?
 kill "${WATCH_PID}" 2>/dev/null; WATCH_PID=""
+mismatch_stop
+(( rc == 0 )) || exit "${rc}"
 
 # ---- 4. every comparison, then the branch plan
-ops_sim phase1 compare-b --plan-dir "${RD}" --out "${CMP}" --stop-flag "${STOP_FLAG}" --require-all
+ops_sim phase1 compare-b --plan-dir "${RD}" --out "${CMP}" --mismatch "${MISMATCH}" --stop-flag "${STOP_FLAG}" --require-all
 rc=$?
 [[ ${rc} -eq 76 ]] && gate_fail "a re-run differs from its screened run: all re-runs stopped, no branches (max-effort checkpoint)"
 [[ ${rc} -ne 0 ]] && fail "${PH}: not every re-run compared"

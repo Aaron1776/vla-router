@@ -31,6 +31,7 @@ Records: a screened run and its re-run share a run id under phase `explore`; con
 from __future__ import annotations
 
 import json
+import math
 import random
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
@@ -47,7 +48,8 @@ ENABLED = ("b1_continue", "b2_one_call")
 SEEDS, TIER_ONE_SEEDS = 3, 2
 ORDER_SEED_B = 65_002
 FAILED_SHARE = 2 / 3
-RECORD_SKIP = ("record", "calibration_hash")    # pilot.EPISODE_SKIP["record_off"]
+RECORD_SKIP = ("record",)    # the record mode only: the screen and its re-run both run under the frozen calibration,
+                             # so calibration_hash must match (unlike pilot.EPISODE_SKIP["record_off"])
 
 
 class TrancheBError(RuntimeError):
@@ -109,6 +111,35 @@ def screened(plan: Plan, marker: Callable[[str], Optional[Mapping]]) -> list[dic
     if missing:
         raise TrancheBError(f"{len(missing)} screened episodes have no result marker, e.g. {missing[0]}")
     return out
+
+
+def screen_yield(rows: Iterable[Mapping], *, per_task: int, k: int, failed_share: float = FAILED_SHARE,
+                 margin: float = 1.1) -> dict[str, Any]:
+    """After the screen (730, amendment 66 (4)): failed screened episodes per task against the round(share x n/k)
+    failed episodes 740's selection takes. Exploration's random π0.5 calls may fail less often than the base rollouts
+    the screen was sized on. A task that falls short gets a proposed top-up, for the user to approve before 740's
+    selection runs: more episodes of the same deterministic sequence (`screen_episodes` at a larger per_task extends
+    it: same ids and seeds for those already screened), sized to expect margin x the shortfall at the task's observed
+    failure rate; where none failed, at the rule-of-three bound 3/n, so that size is a lower bound."""
+    need = int(round(failed_share * -(-per_task // k)))
+    counts: dict[int, list[int]] = {}
+    for r in rows:
+        c = counts.setdefault(int(r["task_id"]), [0, 0])
+        c[0] += 1
+        c[1] += not r["success"]
+    tasks: dict[int, dict[str, Any]] = {}
+    for t, (n, f) in sorted(counts.items()):
+        row: dict[str, Any] = {"screened": n, "failed": f, "needed": need, "short": max(0, need - f),
+                               "failure_rate": f / n}
+        if row["short"]:
+            rate = f / n if f else 3 / n
+            extra = math.ceil(margin * row["short"] / rate)
+            row["top_up"] = {"episodes": extra, "screen_to": n + extra, "rate_used": rate,
+                             "rate_basis": "observed" if f else "rule of three (none failed): a lower bound"}
+        tasks[t] = row
+    short = [t for t, r in tasks.items() if r["short"]]
+    return {"needed_per_task": need, "tasks": tasks, "short_tasks": short,
+            "top_up_episodes": sum(tasks[t]["top_up"]["episodes"] for t in short)}
 
 
 def select_reruns(rows: Iterable[Mapping], *, per_task: int, k: int, seed: int,
@@ -190,6 +221,18 @@ def compare_rerun(read: Callable[[str], Optional[bytes]], rerun: Job,
         if d:
             problems.append(f"{table}: {d}")
     return {"subject": rerun.subject, "passed": not problems, "problems": problems}
+
+
+def record_mismatch(rep: Mapping[str, Any], *, mismatch: Optional[str] = None, stop_flag: Optional[str] = None) -> None:
+    """A difference: the mismatch marker first (740 checks it before it reads a stop as a budget stop), then the spend
+    guard's stop flag, so every re-run stops (amendment 56) and the step ends with 76 (amendment 66 (2))."""
+    from pathlib import Path
+    failed = [{"subject": r["subject"], "problems": r["problems"]} for r in rep["failed"]]
+    if mismatch:
+        Path(mismatch).write_text(json.dumps({"n_failed": len(failed), "failed": failed}, sort_keys=True))
+    if stop_flag:
+        Path(stop_flag).write_text(f"Tranche B: a re-run differs from its screened run ({failed[0]['subject']}): all "
+                                   f"re-runs stop (amendment 56)\n")
 
 
 def compare_all(plan: Plan, read: Callable[[str], Optional[bytes]], marker: Callable[[str], Optional[Mapping]],

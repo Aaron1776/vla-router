@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import io
 import json
 from collections import Counter
@@ -208,15 +209,16 @@ def parquet(rows):
     return buf.getvalue()
 
 
-def bucket_for(screen, rerun, *, steps_b=None, events_b=None, success_b=True, count_b=2):
-    run = lambda rec: [{"run_id": screen.subject, "success": True, "record": rec, "steps": 40}]  # noqa: E731
+def bucket_for(screen, rerun, *, steps_b=None, events_b=None, success_b=True, count_b=2, calib_b="c" * 64):
+    run = lambda rec, cal: [{"run_id": screen.subject, "success": True, "record": rec, "steps": 40,  # noqa: E731
+                             "calibration_hash": cal}]
     steps = [{"run_id": screen.subject, "step": i, "a": float(i)} for i in range(3)]
     ev = lambda rec: [{"run_id": screen.subject, "seq": 0, "t": "start", "step": 0,  # noqa: E731
                        "event": json.dumps({"record": rec, "x": 1})}]
     files = {}
-    for jid, rec, st, evs in ((screen.job_id, "off", steps, ev("off")),
-                              (rerun.job_id, "full", steps_b or steps, events_b or ev("full"))):
-        files[f"records/runs/explore/{jid}.parquet"] = parquet(run(rec))
+    for jid, rec, cal, st, evs in ((screen.job_id, "off", "c" * 64, steps, ev("off")),
+                                   (rerun.job_id, "full", calib_b, steps_b or steps, events_b or ev("full"))):
+        files[f"records/runs/explore/{jid}.parquet"] = parquet(run(rec, cal))
         files[f"records/steps/explore/{jid}.parquet"] = parquet(st)
         files[f"records/events/explore/{jid}.parquet"] = parquet(evs)
     markers = {screen.job_id: {"meta": {"setup_count": 2},
@@ -240,14 +242,15 @@ def test_an_identical_rerun_passes_with_only_the_record_mode_different():
     assert B.compare_rerun(read, rerun, marker) == {"subject": rerun.subject, "passed": True, "problems": []}
 
 
-@pytest.mark.parametrize("change", ["steps", "events", "outcome", "setup"])
+@pytest.mark.parametrize("change", ["steps", "events", "outcome", "setup", "calibration"])
 def test_any_difference_fails_the_comparison(change):
     screen, rerun, rp = a_pair()
     kw = {"steps": {"steps_b": [{"run_id": screen.subject, "step": i, "a": float(i) + (i == 2) * 1e-9}
                                 for i in range(3)]},
           "events": {"events_b": [{"run_id": screen.subject, "seq": 0, "t": "start", "step": 0,
                                    "event": json.dumps({"record": "full", "x": 2})}]},
-          "outcome": {"success_b": False}, "setup": {"count_b": 3}}[change]
+          "outcome": {"success_b": False}, "setup": {"count_b": 3},
+          "calibration": {"calib_b": "d" * 64}}[change]
     read, marker = bucket_for(screen, rerun, **kw)
     r = B.compare_rerun(read, rerun, marker)
     assert r["passed"] is False and r["problems"]
@@ -294,3 +297,100 @@ def test_rerun_points_keep_only_listed_snapshots():
     listed = {f"{rerun.subject}/dp00", f"{rerun.subject}/dp02"}
     pts = B.rerun_points(rerun, ev, listed)
     assert [p.index for p in pts] == [0, 2] and all(p.source == "explore" for p in pts)
+
+
+def test_a_difference_writes_the_mismatch_marker_and_the_stop_flag(tmp_path):
+    screen, rerun, rp = a_pair()
+    read, marker = bucket_for(screen, rerun, success_b=False)
+    rep = B.compare_all(rp, read, marker)
+    B.record_mismatch(rep, mismatch=str(tmp_path / "MISMATCH.json"), stop_flag=str(tmp_path / "STOP"))
+    m = json.loads((tmp_path / "MISMATCH.json").read_text())
+    assert m["n_failed"] == 1 and m["failed"][0]["subject"] == rerun.subject and m["failed"][0]["problems"]
+    assert rerun.subject in (tmp_path / "STOP").read_text()
+
+
+# ---------------------------------------------------------------- 740: a difference ends the step with 76
+
+FAKE_LIB = r"""
+reason() { echo "$*" > "${VLAR_REASON_FILE:-/dev/null}"; echo "$*"; }
+fail() { reason "$*"; exit 1; }
+need_input() { reason "$*"; exit 75; }
+gate_fail() { reason "$*"; exit 76; }
+need_images() { :; }; write_batching_env() { :; }; calibration_frozen() { :; }; wait_servers() { :; }
+golden_check() { :; }
+run_phase() {   # as lib.sh's: a raised stop flag with work left ends it through need_input
+  echo "run_phase $*" >> "$FAKE/log"
+  [[ -n "${FAKE_DIFFERS:-}" ]] && { echo '{"failed": [{"subject": "explore/t0/i1/r0"}]}' > "$FAKE_MISMATCH"; echo differs > "$VLAR_STOP_FLAG"; }
+  [[ -n "${FAKE_BUDGET:-}" ]] && echo "budget" > "$VLAR_STOP_FLAG"
+  [[ -e "$VLAR_STOP_FLAG" ]] && need_input "$1 stopped by the spend guard with work left"
+  return 0
+}
+"""
+
+
+def run_740(tmp_path, *, differs=False, budget=False, earlier=False):
+    import os
+    import subprocess
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    fake, bin_ = tmp_path / "fake", tmp_path / "bin"
+    fake.mkdir(); bin_.mkdir()
+    for name, body in {"gcloud": "exit 0", "docker": 'echo "docker $*" >> "$FAKE/log"; exit 0',
+                       "vlar-ops": 'echo "vlar-ops $*" >> "$FAKE/log"; exit 0', "systemctl": "exit 0",
+                       "sha256sum": "exit 0", "sleep": "exit 1"}.items():
+        (bin_ / name).write_text("#!/bin/bash\n" + body + "\n"); (bin_ / name).chmod(0o755)
+    (fake / "lib.sh").write_text(FAKE_LIB)
+    rd = tmp_path / "work" / "phase1b" / "rerun"
+    rd.mkdir(parents=True)
+    (rd / "plan.json").write_text("{}")
+    if earlier:
+        (rd / "MISMATCH.json").write_text('{"failed": [{"subject": "explore/t0/i1/r0"}]}')
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "FAKE": str(fake), "VLAR_LIB": str(fake / "lib.sh"),
+           "VLAR_WORK_ROOT": str(tmp_path / "work"), "VLAR_STORAGE_URL": "gs://b/v", "VLAR_STOP_FLAG": str(tmp_path / "STOP"),
+           "VLAR_REASON_FILE": str(tmp_path / "reason"), "FAKE_MISMATCH": str(rd / "MISMATCH.json"),
+           "FAKE_DIFFERS": "1" if differs else "", "FAKE_BUDGET": "1" if budget else ""}
+    out = subprocess.run(["bash", str(repo / "ops" / "vm" / "postfreeze" / "740-phase1b.sh")], env=env,
+                         capture_output=True, text=True, timeout=60)
+    log = (fake / "log").read_text() if (fake / "log").exists() else ""
+    return out.returncode, (tmp_path / "reason").read_text() if (tmp_path / "reason").exists() else "", log
+
+
+def test_740_ends_a_rerun_difference_with_76_not_as_a_budget_stop(tmp_path):
+    rc, why, log = run_740(tmp_path, differs=True)
+    assert rc == 76 and "differs from its screened run" in why and "explore/t0/i1/r0" in why
+    assert "run_phase explore" in log and "plan-b" not in log and "run_phase phase1b" not in log
+
+
+def test_740_keeps_a_budget_stop_during_the_reruns_a_budget_stop(tmp_path):
+    rc, why, log = run_740(tmp_path, budget=True)
+    assert rc == 75 and "spend guard" in why and "plan-b" not in log
+
+
+def test_740_refuses_to_rerun_after_a_difference_on_an_earlier_boot(tmp_path):
+    rc, why, log = run_740(tmp_path, earlier=True)
+    assert rc == 76 and "differs" in why and "queue add" not in log and "run_phase" not in log
+
+
+# ---------------------------------------------------------------- the screen's yield (amendment 66 (4))
+
+def test_the_yield_counts_failed_episodes_per_task_and_proposes_a_top_up_where_short():
+    plan = B.screen_plan(115, seed=1, namespace=2_000_000, p_escalate=0.1, tasks=(0, 1, 2))
+    rows = rows_for(plan, {0: 0.4, 1: 0.05, 2: 0.0})
+    rep = B.screen_yield(rows, per_task=64, k=2)
+    t0, t1, t2 = (rep["tasks"][t] for t in (0, 1, 2))
+    assert rep["needed_per_task"] == 21 and rep["short_tasks"] == [1, 2]
+    assert t0["screened"] == 115 and t0["failed"] >= 21 and t0["short"] == 0 and "top_up" not in t0
+    f1 = t1["failed"]
+    assert 0 < f1 < 21 and t1["short"] == 21 - f1
+    assert t1["top_up"]["episodes"] == math.ceil(1.1 * (21 - f1) / (f1 / 115)) and t1["top_up"]["rate_basis"] == "observed"
+    assert t2["failed"] == 0 and t2["top_up"]["episodes"] == math.ceil(1.1 * 21 / (3 / 115))
+    assert "lower bound" in t2["top_up"]["rate_basis"]
+    assert rep["top_up_episodes"] == t1["top_up"]["episodes"] + t2["top_up"]["episodes"]
+
+
+@pytest.mark.parametrize("more", [10, 35, 60, 200])
+def test_a_larger_screen_extends_the_same_sequence(more):
+    """A top-up screens screen_episodes(n + more) less what was screened: the episodes already screened keep their
+    (task, init, repeat), so their ids and seeds."""
+    a, b = set(B.screen_episodes(115, seed=7)), set(B.screen_episodes(115 + more, seed=7))
+    assert a <= b and len(b - a) == 10 * more

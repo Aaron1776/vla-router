@@ -439,6 +439,37 @@ cut short leaves a labelled subset without exact inclusion probabilities; within
 each opened at its start; Tranche B boots only with the user's approval. Plan and analyses:
 `docs/PHASE1-PLAN-2026-11-25.md` (`vlar-ops phase1 budget|analyses|plan-a`).
 
+66. §4, §7, §9, §12 (Tranche B's review, the user, 2026-11-25, before approving the screen). (1) **Amendment 58's
+stop rule for the final tier, re-checked under `cascader_nospread`** (amendment 63 (2); the earlier re-check used
+`cascader_full`'s rates, r_f 0/59, r_s 2/50, the wrong profile): pooled r_f 13/59 = 0.220, r_s 1/50 = 0.020 (the
+pilot report `report-a63.json`); no task has 10 labelled failed-parent points, so no own-rate flag (amendment 63 (5)).
+A 64 points per task (43 failed / 21 successful parents) gives 9.9 positives; B, by episode (21 failed episodes of 2
+points: 42 / 22), 9.7, not the plan doc's 9.9; the extra base points (54: 36 / 18) 8.3. Per task: b4 at every point
+19.6 (the plan doc's 19.8), ~54 more base points 27.9 (28.1); per fold (8 training tasks) 157 and 223. With B capped
+by the failed episodes the screen yields at each task's base failure rate (115 per task; E[min(21, Binomial(115, p))]):
+b4 13.0-19.6 per task, 136-145 per fold; more base points 21.3-27.9 per task, 203-211 per fold. **b4 at every point
+fails** (every task under 20; the folds pass); **~54 more base points passes** (every task and fold), capped or not.
+At $0.6865/h (`vlar-ops`: `phase1.final_tier_check`; `outputs/pilot/a58-recheck-nospread-2026-11-25.json`). (2) **A
+re-run difference ends 740 with exit 76.** `compare-b` writes a mismatch marker (`rerun/MISMATCH.json`) before the
+spend guard's stop flag; 740 runs the re-runs' `run_phase` in a subshell and checks the marker before it treats a stop
+as a budget stop (need_input, 75), and refuses to re-run when an earlier boot left one. (3) **The re-run comparison
+compares `calibration_hash`**: the screen and its re-run both run under the frozen calibration; only the record-mode
+fields are skipped. (4) **The screen's yield:** after the screen, 730 reports the failed screened episodes per task
+against the 21 740's selection takes (`vlar-ops phase1 yield-b`, `reports/screen-yield.json`). Exploration's random
+π0.5 calls may fail less often than the base rollouts the screen was sized on (at the base rates, tasks 2, 3, 5, 7
+and 9 expect 11.5, 9.2, 13.8, 16.1 and 4.6). A task short of 21 gets a proposed top-up before 740's selection runs:
+more episodes of the same deterministic sequence (a larger `per_task` in `screen_episodes` extends it; ids and seeds
+of the screened ones unchanged), sized to expect 1.1 × the shortfall at the task's observed failure rate (3/n where
+none failed: a lower bound); the user decides. 740 is approved separately after the yield is seen. (5) **Handoff
+package:** a screened run and its re-run share a run id under phase `explore`; training exports keep only the
+record-`full` row of each `explore` run id, with a check (no run id twice, every kept row record `full`) and a test,
+written with the package. (6) **The five Tranche B choices, confirmed:** (a) repeated screens of an initial state
+take their seeds from namespace offsets (explore + 1000 r), `plan.rollout_seed` unchanged; (b) the simulator cache
+is managed from `vm_worker.serve` (`CountingRunner`), `ProductionEpisodes` unchanged (the ops waiver holds; the count
+is recorded per job); (c) episode selection lives in `phase1b.py`, not `branchplan.py` (the branch digest stays equal
+to Tranche A's); (d) `datadigest.KINDS["explore"]` also covers `phase1b:screen_plan` and `phase1b:rerun_plan`; (e) a
+screened run and its re-run share a run id under phase `explore`, and consumers take the record-`full` row ((5)).
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:

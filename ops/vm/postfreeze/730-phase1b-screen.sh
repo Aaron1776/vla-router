@@ -9,6 +9,9 @@
 #     params.json (per_task, seed, k for steps 740's selection); SHA-256s into the reports.
 #  2. Both production servers, the image cross-check and the golden-set replay: any mismatch stops (exit 76).
 #  3. The screen through `run_phase explore` (7 workers by amendment 64's RAM rule, at most 2 jobs per process).
+#  4. The yield (`vlar-ops phase1 yield-b`, amendment 66 (4)): failed screened episodes per task against the 21 740's
+#     selection takes, and a proposed top-up for each task short of it (the user decides before 740), into
+#     reports/screen-yield.json and the step's reason.
 # Every report goes to <storage>/phase1b/reports/ when the step ends, however it ends.
 source /opt/vla-router/ops/vm/phase0/lib.sh
 need_images
@@ -60,4 +63,18 @@ vlar-ops queue resume >/dev/null || fail "${PH} queue resume"
 echo "{\"boot_id\": \"${BOOT}\", \"screen_started\": $(date +%s.%N)}" >> "${REP}/timing.jsonl"
 VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase explore "--phase explore"
 echo "{\"boot_id\": \"${BOOT}\", \"screen_ended\": $(date +%s.%N)}" >> "${REP}/timing.jsonl"
-reason "${PH} screen done: golden set and image check passed, every screened episode done"
+
+# ---- 4. the yield per task (the user sees it before approving 740)
+ops_sim() {   # vlar-ops in the sim image (as 740's)
+  docker run --rm --network host -v /etc/vlar:/etc/vlar:ro -v /var/lib/vlar:/var/lib/vlar \
+    -v "${R}/ops/ops.yaml:/etc/vlar-ops/ops.yaml:ro" -e VLAR_OPS_CONFIG=/etc/vlar-ops/ops.yaml \
+    "${CAL_ENV[@]}" "${OPS_RUN[@]}" "vlar-sim:${C}" vlar-ops "$@"
+}
+param() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "${PD}/params.json" "$1"; }
+if ops_sim phase1 yield-b --plan-dir "${PD}" --per-task "$(param per_task)" --k "$(param k)" \
+     --out "${REP}/screen-yield.json" > "${REP}/screen-yield.txt" 2>&1; then
+  Y="$(tail -n 1 "${REP}/screen-yield.txt")"
+else
+  Y="WARNING: not computed (reports/screen-yield.txt)"
+fi
+reason "${PH} screen done: golden set and image check passed, every screened episode done; yield: ${Y}"

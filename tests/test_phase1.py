@@ -165,3 +165,23 @@ def test_fisher_two_sided_matches_scipy():
     scipy = pytest.importorskip("scipy.stats")
     for t in ([[3, 7], [8, 2]], [[0, 5], [6, 1]], [[12, 30], [4, 41]], [[1, 0], [0, 1]]):
         assert P.fisher_two_sided(*t[0], *t[1]) == pytest.approx(scipy.fisher_exact(t)[1], rel=1e-9)
+
+
+def test_the_final_tier_check_under_cascader_nospread():
+    """Amendment 66 (1): A 43/21 and the extra base points 36/18 (the plan doc's 9.9 and 8.3 per task); B by episode,
+    21 failed episodes of 2 points (42/22, not 43/21), capped by the screen's failed episodes at the base rate."""
+    rates = {"failure": 13 / 59, "success": 1 / 50}
+    out = P.final_tier_check(rates, {0: 1.0, 1: 0.0, 2: 0.04, **{t: 1.0 for t in range(3, 10)}})
+    rf, rs = rates["failure"], rates["success"]
+    assert out["per_point"]["A"] == pytest.approx(43 * rf + 21 * rs) and round(out["per_point"]["A"], 1) == 9.9
+    assert out["per_point"]["F_base"] == pytest.approx(36 * rf + 18 * rs) and round(out["per_point"]["F_base"], 1) == 8.3
+    unc, cap = out["uncapped"], out["capped"]
+    assert unc["b4_every_point"]["B"][1] == pytest.approx(42 * rf + 22 * rs)
+    assert unc["b4_every_point"]["expected_per_task"][0] == pytest.approx(85 * rf + 43 * rs)        # 19.59 < 20
+    assert unc["b4_every_point"]["flagged_tasks"] == list(range(10)) and not unc["b4_every_point"]["passes"]
+    assert not unc["b4_every_point"]["folds_short"]                                                  # 8 x 19.6
+    assert unc["more_base_points"]["passes"] and unc["more_base_points"]["expected_per_task"][0] == pytest.approx(
+        121 * rf + 61 * rs)
+    assert cap["b4_every_point"]["B"][0] == pytest.approx(42 * rf + 22 * rs)                         # p = 1: no cap
+    assert cap["b4_every_point"]["B"][1] == pytest.approx(64 * rs)                                   # p = 0: none failed
+    assert 64 * rs < cap["b4_every_point"]["B"][2] < unc["b4_every_point"]["B"][2]

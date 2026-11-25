@@ -403,7 +403,7 @@ def cmd_step2(a: argparse.Namespace) -> None:
     sys.exit(step2.run(a.cmd, a))
 
 
-B_CMDS = ("plan-b-screen", "select-b", "compare-b", "plan-b")
+B_CMDS = ("plan-b-screen", "select-b", "yield-b", "compare-b", "plan-b")
 
 
 def cmd_phase1b(a) -> None:
@@ -431,6 +431,16 @@ def cmd_phase1b(a) -> None:
     if not a.plan_dir:
         sys.exit(f"{a.cmd}: --plan-dir is required")
     pd = Path(a.plan_dir)
+    if a.cmd == "yield-b":
+        if not a.per_task:
+            sys.exit("yield-b: --per-task is required")
+        rep = B.screen_yield(B.screened(Plan.read(pd / "plan.json"), marker), per_task=a.per_task, k=a.k)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rep, indent=1, sort_keys=True))
+        print(json.dumps({"needed_per_task": rep["needed_per_task"], "short_tasks": rep["short_tasks"],
+                          "failed": {t: r["failed"] for t, r in rep["tasks"].items()},
+                          "top_up_episodes": rep["top_up_episodes"]}))
+        return
     if a.cmd == "select-b":
         if not a.per_task or a.seed is None:
             sys.exit("select-b: --per-task and --seed are required")
@@ -453,9 +463,7 @@ def cmd_phase1b(a) -> None:
         out.write_text(json.dumps(rep, indent=1, sort_keys=True))
         print(json.dumps({k: rep[k] for k in ("compared", "pending", "passed", "all_done")}))
         if not rep["passed"]:
-            if a.stop_flag:
-                Path(a.stop_flag).write_text(f"Tranche B: a re-run differs from its screened run "
-                                             f"({rep['failed'][0]['subject']}): all re-runs stop (amendment 56)\n")
+            B.record_mismatch(rep, mismatch=a.mismatch, stop_flag=a.stop_flag)
             sys.exit(76)
         if a.require_all and not rep["all_done"]:
             sys.exit(f"compare-b: {rep['pending']} re-runs without a marker")
@@ -668,9 +676,11 @@ def main(argv: list[str] | None = None) -> None:
     p1 = sub.add_parser("phase1", help="Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py)")
     p1.add_argument("cmd", choices=["budget", "analyses", "plan-a", *B_CMDS])
     p1.add_argument("--per-task-screen", type=int, help="plan-b-screen: screened episodes per task (~115)")
-    p1.add_argument("--k", type=int, default=2, help="select-b, plan-b: points per re-run episode")
+    p1.add_argument("--k", type=int, default=2, help="select-b, yield-b, plan-b: points per re-run episode")
     p1.add_argument("--compare", help="plan-b: the comparison report (compare-b's --out)")
     p1.add_argument("--stop-flag", help="compare-b: the spend guard's stop flag, written on any difference")
+    p1.add_argument("--mismatch", help="compare-b: the mismatch marker, written before the stop flag on any "
+                    "difference (740 ends with 76 on it, not as a budget stop)")
     p1.add_argument("--require-all", action="store_true", help="compare-b: fail while any re-run has no marker")
     p1.add_argument("--ops-config")
     p1.add_argument("--credit-usd", type=float, help="budget: the coupon credit left, less charges not yet posted")

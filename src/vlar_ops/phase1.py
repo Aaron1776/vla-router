@@ -16,6 +16,7 @@ sample size, applied to the positives), for a failed-parent share and for oversa
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
@@ -339,3 +340,41 @@ def run_analyses(root, plan_dir, *, n: float, cfg=None) -> dict[str, Any]:
             "n_per_task": n, "frame": {f"{t}/{o}": v for (t, o), v in sorted(frame.items())},
             "i": stretch_rule(fail, by_stretch, frame, n, r_s),
             "ii": better_share(frame, n, r_f, r_s)}
+
+def final_tier_check(rates: Mapping[str, float], base_failure: Mapping[int, float], *, per_task_a: int = 64,
+                     per_task_b: int = 64, k: int = 2, screen_per_task: int = 115, more_base: int = 54,
+                     share: float = FAILED_SHARE, own_flagged: Sequence[int] = ()) -> dict[str, Any]:
+    """Amendment 58's stop rule for the final tier's two options (amendment 65): b4 at every A and B point (b4 adds
+    no points and does not enter the positive) or `more_base` more base points per task. `rates`: the pooled
+    positive rates by parent outcome under cascader_nospread (amendment 63 (2)); `own_flagged`: tasks flagged by
+    their own rates (amendment 63 (5), from 10 labelled failed-parent points). A and the extra base points:
+    stratified, round(share x n) from failed parents. B: by episode, round(share x n/k) failed episodes of k points
+    each (phase1b.select_reruns), capped by the failed episodes the screen yields at the task's base failure rate,
+    E[min(need, Binomial(screen, p))]; exploration parents at base-parent rates (amendment 58). `uncapped`: B with
+    every failed episode it asks for. Amendment 66 (1)."""
+    r_f, r_s = float(rates["failure"]), float(rates["success"])
+
+    def stratified(n: int) -> float:
+        n_f = int(round(share * n))
+        return n_f * r_f + (n - n_f) * r_s
+    n_ep = -(-per_task_b // k)
+    need = int(round(share * n_ep))
+
+    def b_points(p: Optional[float]) -> float:
+        if p is None:
+            e_f = float(need)
+        else:
+            n = screen_per_task
+            e_f = sum(min(need, x) * math.comb(n, x) * p ** x * (1 - p) ** (n - x) for x in range(n + 1))
+        return k * e_f * r_f + (per_task_b - k * e_f) * r_s
+    a, f = stratified(per_task_a), stratified(more_base)
+    out: dict[str, Any] = {"rates": {"failure": r_f, "success": r_s}, "points_per_task": {
+        "A": per_task_a, "B": per_task_b, "F_base": more_base}, "B_failed_episodes_needed": need,
+        "screen_per_task": screen_per_task, "per_point": {"A": a, "F_base": f}}
+    for basis, cap in (("capped", True), ("uncapped", False)):
+        b = {t: b_points(p if cap else None) for t, p in sorted(base_failure.items())}
+        for name, extra in (("b4_every_point", 0.0), ("more_base_points", f)):
+            exp = {t: a + b[t] + extra for t in b}
+            out.setdefault(basis, {})[name] = {"B": b, "expected_per_task": exp,
+                                               **pilot.stop_rule(exp, also_flagged=own_flagged)}
+    return out
