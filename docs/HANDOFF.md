@@ -33,6 +33,15 @@ tasks 4 and 7 flagged by their own rates (4/43 and 5/43 failed-parent positives;
 F), task 9 too under b4 capped (18.4): at most 3, so the rule passes.
 **730 boot log:** VM started 18:48:07Z; preempted ~19:02Z, 12 min into 730; automatic restart 1/3 hit a stockout at
 19:03:30Z, retrying every 10 min (`retry.log`).
+**Watcher limit (the user, ~19:15Z): 8 automatic restarts per step for the rest of Phase 1** (`MAX_AUTO` default 8 in
+`outputs/l4-retry/watch_restart.sh`; still preemption-only, spend check before each). Replaced at 19:16:31Z with
+`MAX_AUTO=7` for 730 (1 used); `restart.pid` holds the watcher's own bash pid (`pgrep -f '^bash outputs/l4-retry/watch_restart.sh'`).
+If us-central1-a is still stocked out at 20:30Z: report what a move to another us-central1 zone takes (disk, images,
+time, cost); no move without the user's approval.
+**Final-tier costing to redo with the screen's observed failure rates, three versions** (the user, ~19:15Z), each
+with expected positives and distinct failed episodes per task and the amendment 58 result: (a) all base points;
+(b) exploration for 2, 3, 5, 7, 9, base for the rest; (c) exploration in every task whose failed base episodes are used
+up (2, 3, 4, 5, 7, 8, 9), base only in 0, 1, 6.
 **Amendment 68 (the user, ~19:00Z): after 730, one pre-approved top-up, then 740.** On the Mac when 730 ends: yield
 (`phase1 yield-b`, or reports/screen-yield.json); `phase1b.top_up_decision(rep, usd_per_episode=<phase1b-screen VM $
 less the boot and gate overhead, / episodes>, overhead_usd=<that overhead>)`; if `go`: write its `sizes` to a file,
