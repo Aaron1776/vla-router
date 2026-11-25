@@ -171,6 +171,47 @@ def screen_yield(rows: Iterable[Mapping], *, per_task: int, k: int, failed_share
             "top_up_episodes": sum(tasks[t]["top_up"]["episodes"] for t in short)}
 
 
+def top_up_90(n: int, f: int, *, need: int = 21, target: float = 0.9, max_extra: int = 20_000) -> Optional[int]:
+    """Amendment 68: the fewest more screened episodes m for which f + Binomial(m, f/n) reaches `need` with
+    probability >= target, at the task's observed screen failure rate f/n; 0 when f >= need; None when f == 0."""
+    if f >= need:
+        return 0
+    if f == 0:
+        return None
+    p, k = f / n, need - f
+
+    def reach(m: int) -> float:
+        pmf, below = (1 - p) ** m, 0.0
+        for x in range(k):
+            below += pmf
+            pmf *= (m - x) / (x + 1) * p / (1 - p)
+        return 1 - below
+    m = k
+    while reach(m) < target:
+        m += 1
+        if m > max_extra:
+            raise TrancheBError(f"no top-up of {max_extra} episodes reaches {need} failed at rate {p:.4f}")
+    return m
+
+
+def top_up_decision(rep: Mapping[str, Any], *, usd_per_episode: float, overhead_usd: float, cap_usd: float = 1.00,
+                    min_rate: float = 0.02) -> dict[str, Any]:
+    """Amendment 68: the one pre-approved top-up after the screen. Short tasks get `top_up_90` more episodes (the same
+    sequence); it runs without the user only if it costs <= cap_usd (episodes x usd_per_episode + one boot's
+    overhead) and no task's observed screen failure rate is below min_rate. `sizes`: every task's new screen size."""
+    tasks = {int(t): r for t, r in rep["tasks"].items()}
+    extra = {t: top_up_90(r["screened"], r["failed"], need=rep["needed_per_task"]) for t, r in tasks.items()}
+    stops = [f"task {t}: observed screen failure rate {r['failure_rate']:.3f} < {min_rate}"
+             for t, r in sorted(tasks.items()) if r["failure_rate"] < min_rate]
+    n_extra = sum(m or 0 for m in extra.values())
+    cost = n_extra * usd_per_episode + (overhead_usd if n_extra else 0.0)
+    if cost > cap_usd:
+        stops.append(f"the top-up costs ${cost:.2f} > ${cap_usd:.2f}")
+    return {"extra": {t: m for t, m in sorted(extra.items()) if m}, "episodes": n_extra, "cost_usd": cost,
+            "sizes": {t: r["screened"] + (extra[t] or 0) for t, r in sorted(tasks.items())},
+            "go": n_extra > 0 and not stops, "stops": stops}
+
+
 def select_reruns(rows: Iterable[Mapping], *, per_task: int, k: int, seed: int,
                   failed_share: float = FAILED_SHARE) -> dict[str, dict]:
     """Per task n/k episodes (rounded up), round(s x n/k) failed, each stratum's shortfall made up from the other;

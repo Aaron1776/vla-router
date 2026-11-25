@@ -31,6 +31,30 @@ r_s 7/210 = 0.033 (pilot 0.220 / 0.020). Amendment 58 at A's rates: b4 at every 
 screen's yield 18.4-27.3), folds 191-219; ~54 more base points 38.9 (30.0-38.9), folds 284-311: **both pass**;
 tasks 4 and 7 flagged by their own rates (4/43 and 5/43 failed-parent positives; own projections 11.3 and 12.9 with
 F), task 9 too under b4 capped (18.4): at most 3, so the rule passes.
+**730 boot log:** VM started 18:48:07Z; preempted ~19:02Z, 12 min into 730; automatic restart 1/3 hit a stockout at
+19:03:30Z, retrying every 10 min (`retry.log`).
+**Amendment 68 (the user, ~19:00Z): after 730, one pre-approved top-up, then 740.** On the Mac when 730 ends: yield
+(`phase1 yield-b`, or reports/screen-yield.json); `phase1b.top_up_decision(rep, usd_per_episode=<phase1b-screen VM $
+less the boot and gate overhead, / episodes>, overhead_usd=<that overhead>)`; if `go`: write its `sizes` to a file,
+`plan-b-screen --sizes-file <it> --seed 20261126`, check the new plan is a superset of the old one's job ids, keep the
+old plan locally, upload the new `plan.json` to phase1b/screen/, `phase-close phase1b-screen`, `phase-open
+phase1b-topup` (allocation = the estimate, line <= $1.00), queue 735, watcher with `PHASE=phase1b-topup`. If not `go`
+(> $1.00 or a rate < 2%), or after the top-up a task has < 15 failed: report and wait. Otherwise 740 with the yield
+there is (select-b fills shortfalls from successes): `phase-close`, `phase-open phase1b --allocation-usd 11.32
+--line-usd 11.32`, queue 740, watcher with `PHASE=phase1b`.
+**Episodes (68 (3)), for the handoff package:** Tranche A's positives as distinct episodes with a positive, per task
+0-9: 11, 10, 4, 5, 4, 5, 8, 4, 10, 2 (63; points 16, 15, 16, 17, 4, 13, 12, 5, 15, 25); distinct failed parent episodes
+18, 13, 5, 4, 15, 6, 15, 7, 11, 2 (every base failed episode in tasks 2-5 and 7-9 is already used).
+`outputs/phase1a/positives-by-episode.json`. **Oscar should group or weight by episode** (task 9's 25 positives are 2
+episodes). The 37 points not scored under `cascader_nospread` are all failed-parent points where that profile's clock
+at the point already exceeds the task's limit (amendment 22's exclusion); the rates count them as not positive
+(in the denominator), and so does the stop rule.
+**Final tier, two versions costed (68 (3); same $4.18; A's pooled rates; neither built):** all base, 54 points per
+task: 11.6 expected positives per task (116 in all), new distinct failed episodes only in tasks 0, 1, 6 (2, 3, 1;
+the others have none left). Exploration for tasks 2, 3, 5, 7, 9 (~$0.375 each after one more boot, ~$0.20) and base
+points for the rest: 14-16 points each (task 9: 10), 3.2 expected positives each (task 9: 2.0), 73 in all, but 5 new
+failed episodes each (task 9: 3), so A + F distinct failed episodes 10, 9, 11, 12, 5 instead of 5, 4, 6, 7, 2 (at base
+failure rates; B adds up to 21 failed exploration episodes per task either way). The user decides after 740.
 **Runner option for later (the user: not now):** let the runner wait on a wrong-phase spend check (poll ~20 min) so a
 step can follow another in a new phase without the VM stopping (730 behind 720 was refused as built: see below).
 

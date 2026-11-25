@@ -415,11 +415,13 @@ def cmd_phase1b(a) -> None:
     out = Path(a.out)
     if a.cmd == "plan-b-screen":
         from .tunables import explore_fields
-        if not a.per_task_screen or a.seed is None:
-            sys.exit("plan-b-screen: --per-task-screen and --seed are required")
+        if not (a.per_task_screen or a.sizes_file) or a.seed is None:
+            sys.exit("plan-b-screen: --per-task-screen (or --sizes-file) and --seed are required")
         ns = int(load_collection_config()["rollout_seed_namespaces"]["explore"])
         sizes = a.per_task_screen
-        if a.front_load_base_runs:          # amendment 67: each task's top-up front-loaded at its base failure rate
+        if a.sizes_file:                    # amendment 68: the top-up's sizes (top_up_decision's `sizes`)
+            sizes = {int(t): int(n) for t, n in json.loads(Path(a.sizes_file).read_text()).items()}
+        elif a.front_load_base_runs:          # amendment 67: each task's top-up front-loaded at its base failure rate
             sizes = B.front_loaded_sizes(B.base_failure_rates(a.front_load_base_runs), per_task=a.per_task_screen)
         plan = B.screen_plan(sizes, a.seed, namespace=ns, p_escalate=explore_fields()["p_escalate"])
         out.mkdir(parents=True, exist_ok=True)
@@ -679,6 +681,7 @@ def main(argv: list[str] | None = None) -> None:
     p1 = sub.add_parser("phase1", help="Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py)")
     p1.add_argument("cmd", choices=["budget", "analyses", "plan-a", *B_CMDS])
     p1.add_argument("--per-task-screen", type=int, help="plan-b-screen: screened episodes per task (~115)")
+    p1.add_argument("--sizes-file", help="plan-b-screen: JSON {task: screened episodes} (amendment 68's top-up)")
     p1.add_argument("--front-load-base-runs", help="plan-b-screen: a base-runs CSV; each task's screen grows by "
                     "amendment 66 (4)'s top-up at its base failure rate (amendment 67)")
     p1.add_argument("--k", type=int, default=2, help="select-b, yield-b, plan-b: points per re-run episode")

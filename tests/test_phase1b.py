@@ -417,3 +417,33 @@ def test_per_task_sizes_extend_the_uniform_screen_and_keep_its_ids_and_seeds():
     b = {j.job_id: j.spec["rollout_seed"] for j in big.jobs}
     assert a.items() <= b.items() and len(b) == sum(sizes.values()) and big.params["per_task"] == {"0": 115, "1": 278, "2": 566}
     assert {t: sum(j.spec["task_id"] == t for j in big.jobs) for t in sizes} == sizes
+
+
+# ---------------------------------------------------------------- the pre-approved top-up (amendment 68)
+
+def _reach(f, m, p, need=21):
+    return 1 - sum(math.comb(m, x) * p ** x * (1 - p) ** (m - x) for x in range(need - f))
+
+
+def test_top_up_90_is_the_fewest_episodes_reaching_21_with_90_percent():
+    assert B.top_up_90(115, 25) == 0 and B.top_up_90(115, 0) is None
+    for n, f in ((220, 15), (566, 12), (154, 20)):
+        m, p = B.top_up_90(n, f), f / n
+        assert _reach(f, m, p) >= 0.9 > _reach(f, m - 1, p)
+
+
+def test_the_top_up_decision_goes_only_under_a_dollar_and_without_a_rate_under_two_percent():
+    rep = {"needed_per_task": 21, "tasks": {
+        "0": {"screened": 115, "failed": 40, "failure_rate": 40 / 115},
+        "2": {"screened": 220, "failed": 17, "failure_rate": 17 / 220}}}
+    d = B.top_up_decision(rep, usd_per_episode=0.0017, overhead_usd=0.2)
+    m = B.top_up_90(220, 17)
+    assert d["go"] and d["extra"] == {2: m} and d["sizes"] == {0: 115, 2: 220 + m}
+    assert d["cost_usd"] == pytest.approx(m * 0.0017 + 0.2)
+    assert not B.top_up_decision(rep, usd_per_episode=0.01, overhead_usd=0.2)["go"]
+    low = {"needed_per_task": 21, "tasks": {**rep["tasks"], "9": {"screened": 566, "failed": 9, "failure_rate": 9 / 566}}}
+    d = B.top_up_decision(low, usd_per_episode=0.0001, overhead_usd=0.0)
+    assert not d["go"] and any("task 9" in s for s in d["stops"])
+    full = {"needed_per_task": 21, "tasks": {"0": rep["tasks"]["0"]}}
+    assert B.top_up_decision(full, usd_per_episode=0.0017, overhead_usd=0.2) == {
+        "extra": {}, "episodes": 0, "cost_usd": 0.0, "sizes": {0: 115}, "go": False, "stops": []}

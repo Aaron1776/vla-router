@@ -493,6 +493,25 @@ preemption-only restarts as Tranche A (at most 3, then the user). (6) **The mani
 57's stratified draw** (`dp_sampling` with scheme `stratified`, `per_task`, `failed_share` and a seed; the uniform
 `fraction` form as before): it predated the scheme and flagged all 3,200 Tranche A markers, whose specs record it.
 
+68. §4, §12 (the user, 2026-11-25, while the screen runs). (1) **One pre-approved top-up.** When 730 ends with any
+task under 21 failed screened episodes, one top-up runs without the user: each short task screens the fewest more
+episodes (the same sequence, `screen_episodes` at the larger size) for which its failed count reaches 21 with
+probability >= 0.9 at its observed screen failure rate (`phase1b.top_up_90`; amendment 66 (4)'s rule with this
+target), as step 735 (730's screen under spend phase `phase1b-topup`; `queue add` keeps the episodes already
+screened), with the same zone retry and preemption-only restarts. It runs only if it costs <= $1.00 in all (episodes
+at the screen's measured cost per episode plus one boot's overhead), paid from the reserve (the final tier trimmed if
+the reserve runs short), and no task's observed screen failure rate is below 2% (`phase1b.top_up_decision`); else the
+user decides. (2) **Then 740 with the yield there is** (amendment 67 (4)'s 21-per-task condition replaced): any
+remaining shortfall is filled from successful episodes, as amendment 57's selection does (`select_reruns`), unless a
+task still has fewer than 15 failed screened episodes after the top-up: then the user decides. Without a shortfall
+after 730, 740 runs directly. A re-run mismatch stops everything (amendment 66 (2)). (3) **Episodes, not only points.**
+In the low-failure tasks Tranche A's failed-parent points come from few episodes (all 43 of task 9's from 2, task 3's
+from 4, task 2's from 5, task 5's from 6, task 7's from 7); positives are reported also as distinct episodes with a
+positive, and the handoff package tells Oscar to group or weight by episode. A final-tier alternative (exploration
+points from new episodes for tasks 2, 3, 5, 7 and 9, base points for the rest, within the same money) is costed
+(`outputs/phase1a/final-tier-alternatives-2026-11-25.json`); neither version is built or booted before the user
+decides after 740.
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
