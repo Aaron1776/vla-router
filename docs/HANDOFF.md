@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-24: frozen; smoke passed; proposals decided; amendments 56-59; check (iii) explained; pilot resume running; amendment 61)
+# Handoff: state of the harness build (2026-11-25: pilot done; check (iii) passed; amendment 58 rule says STOP; re-plan pending at max effort)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -7,6 +7,39 @@ fails if they reappear in a tracked file.
 For a session that starts without the previous conversation. Read this file at startup; read `docs/SPEC.md` (the
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
+
+## START HERE (2026-11-25, ~01:00Z): pilot report done; the rule says stop; re-plan with the user (max effort)
+
+**Read `docs/PILOT-REPORT-2026-11-25.md`** (all numbers). The VM is **TERMINATED** (spend guard stopped `710-pilot`
+at the phase's stop point, exit 75, 00:34:31Z; 1,221 of 1,638 jobs, 417 pending); everything is downloaded to
+`outputs/pilot/` (reports, records, markers, `710-pilot.log`, `report.json`). Pilot phase VM $2.3702 (line $2.50),
+**left open**; ledger $12.48 ($27.52 to $40); the disk still exists.
+
+- **Corrected check (iii): passed 7/7** bit for bit at the replicated load count (t8/i30 at 4 reproduces its 396
+  steps; t8/i13 at 7). No checkpoint. Golden set passed on boot `929f6ca2`.
+- **Amendment 58 rule (positives under `cascader_full`): STOP**, robustly: 0/59 failed-parent positives (34 of them
+  past `cascader_full`'s time limit at the point, so unscorable), 2/50 successful; ~2-3 expected per task at every
+  budget; bootstrap pass share 0.00; same at measured prices; not close, so no pilot extension.
+- **But π0.5 rescues when the clock isn't charged for measurement:** raw failed-parent success b1 10%, b2 24%, b3
+  31%, b4 40%; positives under `router`/`cascader_nospread` 13/56 (pooled r_f 0.22, CI 0.13-0.31): pooled projections
+  pass at 194/227 points per task (own-rate flags 4, 7, 8) but fail at measured prices (6 own-rate flags; 10-11
+  labelled points per task, so amendment 62's 10-point own-rate test applies everywhere). Information only.
+- **Measured prices ×1.65 per base point** (92.6 VM-s vs 56; b4 is 56% of it): the label money buys ~131 / ~154
+  points per task (current / DAgger dropped), not ~194 / ~227. Screening ~6.8 VM-s per episode at 312 steps, ~11.4 at
+  520 (6 workers). Memory: 7 workers fit by amendment 62 (4) (5.6 GB to spare), 8 don't (0.28 GB over); the boot rule
+  allows 6.
+
+**Next:**
+1. **Effort checkpoint (SPEC §16 item 7, re-planning after the pilot): max effort.** The re-plan is the user's
+   (amendment 58: stop → re-plan with the user). Levers the numbers point at (none decided): the stop rule's profile
+   (`cascader_full` vs `router`); `cascader_full` as a learned decider; dropping b4 from Phase 1 branches (56% of a
+   point's cost); the own-rate test at 10-11 points per task; exploration vs base parents.
+2. After the re-plan: amendment 61 (4)'s revised budget (phase lines, stop points, points per task under both
+   schemes) and the other account's cost sheet, at the measured prices above (also max effort: §16 item 7).
+3. Before Phase 1 (amendment 62 (2)): setup-count recording and replay code; the proposed rule for fresh-start runs
+   (fresh simulator per episode vs LIBERO's evaluation-loop count, warm-up cost, fixture shifts).
+4. **Pause rule:** delete the VM and its disk if idle past ~09:45Z Nov 25 unless the next work is booting (needs the
+   user's go-ahead at the time; results are all in the bucket and in `outputs/pilot/`).
 
 ## 2026-11-24 (~22:35Z, session 8): amendment 62 logged before the resume's results; report code follows it
 
@@ -23,7 +56,7 @@ Code: `pilot.project` (pooled, `own_expected`, `flagged_by_own_rate`, `MIN_OWN_P
 `fit_table` (`fits`, `headroom_bytes`, `max_workers_fit`), report note; tests in `tests/test_pilot.py` (4 mutations
 caught).
 
-## START HERE (2026-11-24, ~22:30Z): pilot resume running; amendment 61 logged; fresh session does the report and re-plan
+## Earlier 2026-11-24 (~22:30Z): pilot resume running; amendment 61 logged
 
 This session stopped at the stopping rule (half of context). **The pilot resume is running on the VM** (started
 21:41:55Z, host source `bb7112f`; 400 of 1,638 markers at 22:07Z, ~9.7 VM-s per job). The runner stops the VM when
