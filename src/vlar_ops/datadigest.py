@@ -49,7 +49,7 @@ ARCHIVE_ROOT = "src/vlar_ops/"
 COMMON_ROOTS = ("vm_worker:ProductionEpisodes", "plan:rollout_seed")
 KINDS = {
     "base": ("plan:episode_plan", "cli:cmd_plan"),
-    "explore": ("plan:episode_plan", "cli:cmd_plan"),
+    "explore": ("plan:episode_plan", "cli:cmd_plan", "phase1b:screen_plan", "phase1b:rerun_plan"),  # Tranche B (amd. 65)
     "branch": ("branchplan:*",),
 }
 DEFINITION_FILES = ("configs/collection-v1.yaml", "configs/collection-v1-tunables.yaml")

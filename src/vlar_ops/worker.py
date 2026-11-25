@@ -57,14 +57,16 @@ def run_worker(queue: JobQueue, storage: Storage, runner: Callable, worker_id: s
                stop: Callable[[], bool] = lambda: False, max_jobs: Optional[int] = None,
                phases: Optional[Sequence[str]] = None, refuse: Optional[Callable[[Job], Optional[str]]] = None,
                meta: Optional[Mapping] = None, cleanup: Optional[Callable[[Job], None]] = None,
-               progress: Optional[Progress] = None) -> dict[str, int]:
+               progress: Optional[Progress] = None,
+               job_meta: Optional[Callable[[Job], Mapping]] = None) -> dict[str, int]:
     """Process jobs until none is left, `stop()` is true (spend guard, operator), `max_jobs` were taken, or a job
     this worker cannot run comes up.
 
     `phases` limits the claims to those phases. `refuse(job)` says why this worker cannot run a job (for example,
     the job needs other harness options): the job goes back to pending untouched, spending none of its attempts,
     and the worker stops instead of claiming it again and again. `meta` goes into every result marker (provenance,
-    worker id). `cleanup(job)` runs after every job, whatever happened. A SystemExit or KeyboardInterrupt during
+    worker id); `job_meta(job)`, if given, is used instead, after the job ran (e.g. its setup count,
+    `vlar_ops.setupcount`). `cleanup(job)` runs after every job, whatever happened. A SystemExit or KeyboardInterrupt during
     a job (SIGTERM, Ctrl-C) releases the job, so it leaves no marker and no lease, and propagates. The lease is
     renewed while a job runs (amendment 40), but only while `progress`'s token changes (PROPOSALS §0.6; without
     sources it changes only with uploads); a job whose lease was nevertheless lost to another worker is counted as
@@ -91,7 +93,8 @@ def run_worker(queue: JobQueue, storage: Storage, runner: Callable, worker_id: s
                 upload(storage, artifacts, on_put=progress.bump)
             record = {"summary": dict(summary),
                       "artifacts": [{k: a[k] for k in ("key", "sha256", "size")} for a in artifacts]}
-            stats["done" if queue.complete(job, record, {**(meta or {}), "claimed_at": claimed_at},
+            m = job_meta(job) if job_meta is not None else (meta or {})
+            stats["done" if queue.complete(job, record, {**m, "claimed_at": claimed_at},
                                            worker_id=worker_id) else "done_local"] += 1
         except LeaseLost:
             stats["lost"] += 1

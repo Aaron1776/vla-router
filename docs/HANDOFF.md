@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-25: handoff to the Spark after Phase 1 (amendment 65); Tranche A booting)
+# Handoff: state of the harness build (2026-11-25: Phase 1 handoff (amendment 65); Tranche A preempted in setup; Tranche B code built)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,43 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-25, ~06:45Z): Tranche A is booting; next: Tranche B code, the restarter, HANDOFF-SPARK
+## START HERE (2026-11-25, ~09:30Z, scheduled session): Tranche A preempted in setup; Tranche B code built
+
+**Tranche A is not running.** The Spot VM was **preempted at 06:41:42Z** (compute operation `instances.preempted`)
+during setup step `030-rerun-sim`; 010/015/020 done; no golden replay, no branch job. The retry watcher saw it
+TERMINATED and ended (no restarts, as designed). phase1a spent $0.18 of its $6.27 stop. The unattended session did not
+restart it (cloud spend). To resume: `gcloud compute instances start $VM_NAME --zone us-central1-a` (the runner
+resumes at 030, then 720); if the zone is out of Spot, `ops/gcp/33_create_retry.sh` again. The disk bills meanwhile.
+
+**Tranche B code (xhigh; tests: main 419 passed / 38 skipped; simulator 164 passed / 21 skipped + test_phase1b 17):**
+- `vlar_ops/setupcount.py`: every marker records `setup_count`, `setups_in_job`, `setup_count_spec` (sims count their
+  own `setup_episode` calls); an episode job whose spec has `setup_count` n runs on a simulator whose next setup is n
+  (cached one kept if it is there, else closed, rebuilt, warmed up) and fails if it set up other than once at n.
+  Wired in `vm_worker.serve` (`CountingRunner`, `run_worker(job_meta=...)`). **`ProductionEpisodes` unchanged:** the
+  common, base and branch data digests equal HEAD's, so the ops waiver still applies.
+- `vlar_ops/phase1b.py` + `vlar-ops phase1 plan-b-screen|select-b|compare-b|plan-b`: screen plan (1,150 episodes at
+  115/task: every state twice + 15 drawn; repeat r at namespace explore + 1000 r; ids `explore/t<t>/i<i>/r<r>`;
+  record off, profile none, setup_count 2), selection by episode (32/task, 21 failed), re-runs (record full, seed
+  index 2, same run id, the screen's measured count), the bit-for-bit comparison, k = 2 points per re-run episode with
+  π = P(episode) × P(point | episode), and `branchplan.branch_plan` unchanged (phase `phase1b`, b1+b2, 3 seeds).
+- Steps `730-phase1b-screen.sh` (spend phase `phase1b-screen`) and `740-phase1b.sh` (`phase1b`: select, gate,
+  re-runs with a 2-min comparison watcher that raises the stop flag on any difference, compare all, branch plan,
+  branches). Not queued, not uploaded. Before booting: upload `phase1b/screen/plan.json` (from `plan-b-screen
+  --per-task-screen 115 --seed <s>`) and `params.json` (`{"per_task": 64, "k": 2, "seed": <s>}`), open the spend phase.
+- **Choices for the user to confirm (not in SPEC §17 yet):** (1) seeds for repeated screens via namespace offsets
+  (+1000 r), `plan.rollout_seed` unchanged; (2) the sims cache managed from `serve` instead of changing
+  `ProductionEpisodes` (keeps the waiver; the count is recorded per job instead); (3) episode selection in `phase1b.py`,
+  not `branchplan.py` (keeps the branch digest equal to Tranche A's); (4) `datadigest.KINDS["explore"]` now also
+  covers `phase1b:screen_plan` and `phase1b:rerun_plan` (no explore record exists yet); (5) a screened run and its
+  re-run share a run id under phase `explore`: consumers take the record-`full` row.
+- **Amendment 58 re-check at $0.6865/h** (`outputs/pilot/a58-recheck-2026-11-25.json`; pooled r_f 0/59, r_s 2/50;
+  B projected at base rates): b4 at every point: 127 points/task, 1.7-3.0 positives/task, 15.9-17.7 per fold;
+  ~54 more base points: 181 points/task, 2.4-3.8 per task, 21.6-23.4 per fold. **Fails at both** (all 10 tasks under
+  20, every fold under 100), as at the pilot (amendment 63 re-planned on that basis; b4 does not enter the positive).
+  At these rates 2/3 failed share lowers raw expected positives (r_f = 0).
+- Deferred to after Nov 28: the restarter, HANDOFF-SPARK.md, the handoff package, the never-mix draft.
+
+## Earlier 2026-11-25 (~06:45Z): Tranche A is booting; next: Tranche B code, the restarter, HANDOFF-SPARK
 
 **The user's message of ~05:40Z** (their text is the source; summary): Oscar takes over after Phase 1 (training,
 DAgger, both evaluations on his DGX Spark, own port of the harness); the coupon funds only Phase 1, storage and the

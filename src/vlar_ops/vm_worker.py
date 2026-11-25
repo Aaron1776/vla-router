@@ -280,6 +280,8 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     storage = open_storage(ops_cfg["storage_url"])
     queue = JobQueue(root / "queue.sqlite", storage, root / "local")
     episodes = ProductionEpisodes(cfg, clients["xvla"], clients["pi05"], make_sim=make_sim)
+    from .setupcount import CountingRunner, SetupCounts, meta_with_counts
+    counts = SetupCounts(episodes)        # every marker records its setup count; specs with one replay it (amd. 62)
     tracked = TrackedEpisodes(episodes)
     runner = Runner(cfg, tracked, storage.get_bytes, root / "staging" / _safe(worker_id), p_escalate=p_escalate,
                     header=header)
@@ -292,10 +294,11 @@ def serve(ops_cfg: Mapping[str, Any], *, worker_id: str, options: Mapping[str, s
     if waiver is not None:
         meta["ops_waiver"] = waiver
     try:
-        return run_worker(queue, storage, runner, worker_id, stop=stop.is_set, max_jobs=max_jobs, phases=phases,
+        counted = CountingRunner(runner, counts)
+        return run_worker(queue, storage, counted, worker_id, stop=stop.is_set, max_jobs=max_jobs, phases=phases,
                           refuse=lambda job: runner.refuse(job) or tunables_refusal(job, p_escalate), meta=meta,
                           cleanup=lambda job: shutil.rmtree(runner.job_dir(job), ignore_errors=True),
-                          progress=Progress(tracked.token))
+                          progress=Progress(tracked.token), job_meta=meta_with_counts(meta, counts))
     finally:
         episodes.close()
         queue.close()

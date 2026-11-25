@@ -314,7 +314,8 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
     name it exactly (the pilot: `pilot`, approved up to $2.50, SPEC §17 amendment 59)."""
     import re
     steps = sorted((REPO / "ops" / "vm" / "postfreeze").glob("*.sh"))
-    assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh", "720-phase1a.sh"]
+    assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh", "720-phase1a.sh", "730-phase1b-screen.sh",
+                                       "740-phase1b.sh"]
     for p in steps:
         assert subprocess.run(["bash", "-n", str(p)]).returncode == 0, p.name
         assert re.search(r"^# cap-seconds: [0-9]+ *$", p.read_text(), re.M), p.name
@@ -333,6 +334,16 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
     # queue and the reorder, and the workers by amendment 64's RAM rule
     a = (REPO / "ops" / "vm" / "postfreeze" / "720-phase1a.sh").read_text()
     assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", a, re.M) == ["phase1a"] and "PH=phase1a" in a
+    # Tranche B (amendments 56, 65): the screen and the rest in their own spend phases, each behind the golden gate;
+    # 740 compares re-runs while they run (a difference raises the stop flag) and again before any branch plan
+    sc = (REPO / "ops" / "vm" / "postfreeze" / "730-phase1b-screen.sh").read_text()
+    assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", sc, re.M) == ["phase1b-screen"]
+    assert sc.index("golden_check ||") < sc.index('run_phase explore "--phase explore"')
+    b = (REPO / "ops" / "vm" / "postfreeze" / "740-phase1b.sh").read_text()
+    assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", b, re.M) == ["phase1b"]
+    assert (b.index("phase1 select-b") < b.index("golden_check ||") < b.index("--stop-flag \"${STOP_FLAG}\" >/dev/null")
+            < b.index('run_phase explore "--phase explore"') < b.index("--require-all") < b.index("phase1 plan-b")
+            < b.index('run_phase "${PH}" "--phase ${PH}"'))
     assert (a.index("golden_check ||") < a.index("export VLAR_GOLDEN_DONE=1") < a.index('vlar-ops queue add "')
             < a.index("vlar-ops queue resume >") < a.index("vlar-ops pilot reorder --plan-dir")
             < a.index('VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase "${PH}"'))

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import signal
@@ -402,6 +403,92 @@ def cmd_step2(a: argparse.Namespace) -> None:
     sys.exit(step2.run(a.cmd, a))
 
 
+B_CMDS = ("plan-b-screen", "select-b", "compare-b", "plan-b")
+
+
+def cmd_phase1b(a) -> None:
+    """Tranche B (vlar_ops/phase1b.py): the screen plan (Mac); selection, re-run comparison and branch plan (VM, from
+    the bucket's markers and records)."""
+    from . import phase1b as B
+    from .plan import Plan, load_collection_config
+    from .queue import result_key
+    out = Path(a.out)
+    if a.cmd == "plan-b-screen":
+        from .tunables import explore_fields
+        if not a.per_task_screen or a.seed is None:
+            sys.exit("plan-b-screen: --per-task-screen and --seed are required")
+        ns = int(load_collection_config()["rollout_seed_namespaces"]["explore"])
+        plan = B.screen_plan(a.per_task_screen, a.seed, namespace=ns, p_escalate=explore_fields()["p_escalate"])
+        out.mkdir(parents=True, exist_ok=True)
+        plan.write(out / "plan.json")
+        print(json.dumps({"phase": plan.phase, "plan_id": plan.plan_id, "n_jobs": len(plan.jobs)}))
+        return
+    storage = open_storage(_ops_config(a.ops_config)["storage_url"])
+
+    def marker(jid):
+        data = storage.get_bytes(result_key(B.SCREEN_PHASE, jid))
+        return None if data is None else json.loads(data)
+    if not a.plan_dir:
+        sys.exit(f"{a.cmd}: --plan-dir is required")
+    pd = Path(a.plan_dir)
+    if a.cmd == "select-b":
+        if not a.per_task or a.seed is None:
+            sys.exit("select-b: --per-task and --seed are required")
+        rows = B.screened(Plan.read(pd / "plan.json"), marker)
+        chosen = B.select_reruns(rows, per_task=a.per_task, k=a.k, seed=a.seed)
+        rp = B.rerun_plan(rows, chosen)
+        out.mkdir(parents=True, exist_ok=True)
+        rp.write(out / "plan.json")
+        (out / "episodes.json").write_text(json.dumps({"settings": {"per_task": a.per_task, "k": a.k, "seed": a.seed,
+                                                                    "failed_share": B.FAILED_SHARE},
+                                                       "plan_id": rp.plan_id, "chosen": chosen}, indent=1, sort_keys=True))
+        print(json.dumps({"screened": len(rows), "failed": sum(not r["success"] for r in rows), "reruns": len(rp.jobs),
+                          "plan_id": rp.plan_id}))
+        return
+    rp = Plan.read(pd / "plan.json")
+    if a.cmd == "compare-b":
+        prev = json.loads(out.read_text()) if out.exists() else {}
+        done = {k: v for k, v in prev.get("rows", {}).items() if v.get("passed")}
+        rep = B.compare_all(rp, storage.get_bytes, marker, done)
+        out.write_text(json.dumps(rep, indent=1, sort_keys=True))
+        print(json.dumps({k: rep[k] for k in ("compared", "pending", "passed", "all_done")}))
+        if not rep["passed"]:
+            if a.stop_flag:
+                Path(a.stop_flag).write_text(f"Tranche B: a re-run differs from its screened run "
+                                             f"({rep['failed'][0]['subject']}): all re-runs stop (amendment 56)\n")
+            sys.exit(76)
+        if a.require_all and not rep["all_done"]:
+            sys.exit(f"compare-b: {rep['pending']} re-runs without a marker")
+        return
+    # plan-b: the branch plan over the re-runs' points
+    import pyarrow.parquet as pq
+    from vlar_harness.config import load_config
+    cfg = load_config()
+    if not a.per_task or a.seed is None:
+        sys.exit("plan-b: --per-task and --seed are required")
+    if not json.loads(Path(a.compare).read_text())["all_done"] or not json.loads(Path(a.compare).read_text())["passed"]:
+        sys.exit("plan-b: the comparison report must show every re-run compared and passed")
+    chosen = json.loads((pd / "episodes.json").read_text())["chosen"]
+    points = []
+    for j in rp.jobs:
+        m = marker(j.job_id)
+        listed = {x["key"][len("snapshots/"):-len(".npz")] for x in m["result"]["artifacts"]
+                  if x["key"].startswith("snapshots/") and x["key"].endswith(".npz")}
+        data = storage.get_bytes(f"records/events/{B.SCREEN_PHASE}/{j.job_id}.parquet")
+        points += B.rerun_points(j, pq.read_table(io.BytesIO(data)).to_pylist(), listed)
+    step_limit, interval = int(cfg["env"]["step_limit"]), int(cfg["decision"]["interval_steps"])
+    sel = B.select_points(points, chosen, k=a.k, seed=a.seed, step_limit=step_limit, interval=interval)
+    plan, labels = B.branch_plan_b(points, sel, per_task=a.per_task, seed=a.seed, branches=cfg["branches"],
+                                   step_limit=step_limit, interval=interval)
+    out.mkdir(parents=True, exist_ok=True)
+    plan.write(out / "plan.json")
+    (out / "labels.json").write_text(json.dumps(labels, indent=1, sort_keys=True, default=int))
+    selection = {"phase": plan.phase, "plan_id": plan.plan_id, "n_points": len(sel), "n_jobs": len(plan.jobs),
+                 "settings": B.branch_settings(a.per_task, a.seed), "k": a.k, "rerun_plan_id": rp.plan_id}
+    (out / "selection.json").write_text(json.dumps(selection, indent=1, sort_keys=True))
+    print(json.dumps({k: selection[k] for k in ("phase", "n_points", "n_jobs", "plan_id")}))
+
+
 def cmd_phase1(a) -> None:
     """Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py): the budget, the pre-stated analyses (i) and (ii),
     and the Tranche A plan (on the Mac, from local copies of the base runs, events and markers)."""
@@ -427,6 +514,8 @@ def cmd_phase1(a) -> None:
         print(json.dumps({"i_apply": rep["i"]["apply"], "ii_pick": rep["ii"]["pick"],
                           "i_splits": {k: round(v["gain_min"], 4) for k, v in rep["i"]["splits"].items()}}))
         return
+    if a.cmd in B_CMDS:
+        return cmd_phase1b(a)
     if not a.per_task or a.seed is None:      # plan-a
         sys.exit("plan-a: --per-task and --seed are required")
     sel = pilot.make_plan(Path(a.root), Path(a.markers), out, **phase1.tranche_a_settings(a.per_task, a.seed))
@@ -577,14 +666,21 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--ops-config")
     pi.set_defaults(fn=cmd_pilot)
     p1 = sub.add_parser("phase1", help="Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py)")
-    p1.add_argument("cmd", choices=["budget", "analyses", "plan-a"])
+    p1.add_argument("cmd", choices=["budget", "analyses", "plan-a", *B_CMDS])
+    p1.add_argument("--per-task-screen", type=int, help="plan-b-screen: screened episodes per task (~115)")
+    p1.add_argument("--k", type=int, default=2, help="select-b, plan-b: points per re-run episode")
+    p1.add_argument("--compare", help="plan-b: the comparison report (compare-b's --out)")
+    p1.add_argument("--stop-flag", help="compare-b: the spend guard's stop flag, written on any difference")
+    p1.add_argument("--require-all", action="store_true", help="compare-b: fail while any re-run has no marker")
+    p1.add_argument("--ops-config")
     p1.add_argument("--credit-usd", type=float, help="budget: the coupon credit left, less charges not yet posted")
     p1.add_argument("--untracked-usd", type=float, default=0.0, help="budget: charges outside the ledger in Phase 1")
     p1.add_argument("--ledger-total-usd", type=float, help="budget: the ledger's total now (for the guard's limits)")
     p1.add_argument("--pilot-report", help="budget: the pilot report's JSON (its measured costs)")
     p1.add_argument("--hourly-usd", type=float, default=0.6865, help="the Spot price with its L4 (catalog 2026-11-25)")
     p1.add_argument("--root", help="analyses: local records/{runs,events}/{base,pilot}; plan-a: records/*/base")
-    p1.add_argument("--plan-dir", help="analyses: the pilot's plan directory (labels.json)")
+    p1.add_argument("--plan-dir", help="analyses: the pilot's plan directory (labels.json); select-b: the screen "
+                    "plan; compare-b, plan-b: the re-run plan")
     p1.add_argument("--markers", help="plan-a: local copy of results/base")
     p1.add_argument("--per-task", type=int, help="analyses, plan-a: base points per task")
     p1.add_argument("--seed", type=int, help="plan-a: the selection seed")
