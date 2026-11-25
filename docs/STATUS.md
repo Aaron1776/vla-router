@@ -117,6 +117,8 @@ bit for bit. Cloud spend so far $7.53. Before Phase 1: the short post-freeze lis
 
 **Phase 1's pilot is done (2026-11-25):** 150 base decision points branched, 109 labelled, ~$2.37 of VM; its stop rule said re-plan. The user's re-plan (SPEC §17 amendments 63-64): `cascader_nospread` is now the headline cascader (`cascader_full`'s probes use up its clock: under its charges alone only 34 of X-VLA's 398 successes fit the time limit), branches 3 and 4 are dropped from collection, 7 workers. Re-applied at the new budgets the rule says keep; the plan (`docs/REPLAN-2026-11-25.md`) waits for the user's approval before the rest of Phase 1. The VM and its disk are deleted until then. Cloud spend $12.50.
 
+**Phase 1 started (2026-11-25, amendment 65):** after Phase 1, Oscar trains the deciders and runs the DAgger round and both evaluations on his DGX Spark; the coupon pays for Phase 1, storage and the final download. The billing check found the VM costs $0.6865/h, not $0.472 (ledger corrected to $17.30; guard re-based). Tranche A (640 base points, b1 and b2 with 3 seeds) booted 06:27Z in us-central1-a; Tranche B (exploration) and a final tier (b4 or more base points) follow, B only with the user's approval. Plan: `docs/PHASE1-PLAN-2026-11-25.md`.
+
 Earlier, before Phase 0 ran: DAgger and evaluation jobs
 wait for learned deciders (Phases 2-3).
 

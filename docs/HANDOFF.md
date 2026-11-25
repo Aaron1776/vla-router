@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-25: re-plan done (amendments 63-64; rule says KEEP); waiting for the user's approval before Phase 1)
+# Handoff: state of the harness build (2026-11-25: handoff to the Spark after Phase 1 (amendment 65); Tranche A booting)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,62 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-25, ~03:30Z): re-plan proposed; Phase 1 waits for the user's approval
+## START HERE (2026-11-25, ~06:45Z): Tranche A is booting; next: Tranche B code, the restarter, HANDOFF-SPARK
+
+**The user's message of ~05:40Z** (their text is the source; summary): Oscar takes over after Phase 1 (training,
+DAgger, both evaluations on his DGX Spark, own port of the harness); the coupon funds only Phase 1, storage and the
+final download. Items 1-3 at max effort (done), 4 the boot, 5-6 at xhigh while Tranche A runs.
+1. **Billing check: done.** The gap to the console ($16.88 spent vs the ledger's $12.50) is the VM's price: g2-standard-16
+   Spot with its L4 bills **$0.6865/h** (price catalog), not 0.46-0.472 (+$4.70 over 20.91 VM-h), plus ~$0.10 for the
+   external IP and bucket operations; both via `spend charge`: ledger **$17.30**. Guard re-based in
+   `ops/ops.example.yaml`: hard $45.00, soft $42.67, `vm_hourly_usd` 0.6865. **Open:** confirm in the console's
+   per-project report that the billing account's other project (a course project; no compute, Vertex AI and BigQuery
+   enabled) spends nothing; the console needs the user's sign-in in the app's browser pane.
+2. **Re-plan: SPEC §17 amendment 65** and `docs/PHASE1-PLAN-2026-11-25.md` (rules for analyses (i)/(ii) pushed first,
+   `686588b`): (i) not applied, (ii) share 2/3, the pilot's 109 points out; credit $32.70, labels $20.30, reserve $2.33;
+   Tranche A 64 base points/task, B 64 exploration points/task (screen ~1,150 episodes so 2/3 of ~320 re-runs can be
+   failed parents; the earlier re-plan's 500 would have given ~100), final tier $4.18 (b4 at every A and B point, or
+   ~54 more base points/task). `vlar-ops phase1 budget|analyses|plan-a`; commit `458866e`.
+3. **Tranche A** (approved to boot up to its line, <= $10 with setup): plan `b8f1e38ed8c69551` (640 points, 3,200
+   jobs; `gs://$BUCKET/vla-router/phase1a/plan/`, local `outputs/phase1a/plan/`), step `ops/vm/postfreeze/720-phase1a.sh`
+   (golden gate, RAM-rule supervisor, 7 workers). Spend phase `phase1a` open since 06:19Z: allocation $5.68, line
+   $6.50, stop $6.27. Queue: 010-090 (new disk setup) then 720.
+4. **Boot.** us-central1-a/-b/-c were all out of L4 Spot at 06:19Z; the user chose: retry a, b, c every 10 min for up to
+   6 h, no other region, and dry-run the guard's stop against the VM before Tranche A works. `ops/gcp/33_create_retry.sh`
+   runs detached (pid in `outputs/l4-retry/retry.pid`, log `outputs/l4-retry/retry.log`): **VM created 06:27:47Z in
+   us-central1-a** (env.sh points there), dry run 1/4 (stop command resolves to the Spot VM) and 2/4 (the guard's local
+   shutdown) passed; it queues 720 only after 3/4 (the guard ticking at 0.6865) and 4/4 (`spend check --phase
+   phase1a`) pass, then logs the VM, runner state and ledger every 5 min until the VM stops (no restarts). 720 is held
+   at `phase0/held/` meanwhile. The pilot's `710-pilot.sh` moved to `phase0/retired/`; the old disk's setup logs and
+   re-run results copied to `phase0/archive/l4-disk-2026-11-23/` before the new disk's 010-090 overwrite them.
+
+**First, in a new session:** `tail -n 30 outputs/l4-retry/retry.log`; `gcloud storage cat
+gs://$BUCKET/vla-router/phase0/STATE.json` and the tail of `history.jsonl`; `.venv-ops/bin/vlar-ops spend status
+--ops-config ops/ops.yaml`; reports in `gs://$BUCKET/vla-router/phase1a/reports/`. Any failed re-run row, golden
+replay or image check stops the VM by itself (exit 76): no debugging, tell the user. Then send the user the short
+"Tranche A is running" summary if not yet sent. The restarter is not built: a preemption leaves the VM STOPPED
+(restart: `gcloud compute instances start $VM_NAME --zone $ZONE`; the runner resumes 720, `queue resume` releases
+leases). When 720 ends: `spend phase-close --phase phase1a`; the VM stops (queue empty), disk kept for Tranche B
+($0.33/day; delete if the gap is long). Usage at the pause: 5-hour 68% (resets 07:40Z), weekly 81% (resets 11-28
+05:00Z); this session's context 45%.
+
+**Next (xhigh, while A runs; Tranche B boots only with the user's approval):**
+- Item 5: Tranche B: setup-count code with option (A) (a fresh simulator per fresh-start episode, count 2; a
+  `setup_count` marker field; replay checks in re-runs), screening (~1,150 episodes, record off, `phase1.budget`),
+  selection from re-run episodes (by episode, 2/3 failed, then k = 2 points; amendment 57), the re-run comparison,
+  the branch step (`phase1b`); the preemption restarter (design approved). The full-recording cost comparison is done
+  (PHASE1-PLAN: $8.09 for 500 episodes, 60 points/task vs screening's 64: screening stays).
+- Item 6 (non-blocking): the handoff package design (training slice: features, measurements, labels, weights, fold
+  definitions, branch event logs; frozen calibration and supplement; manifest with hashes and the code commit; size
+  and the bucket's monthly cost after Phase 1); `docs/HANDOFF-SPARK.md` (identical on the Spark: frozen calibration,
+  decider inputs, 520-step cap, 260-step π0.5 budget, branches, seeds and initial states, the setup-count rule; may
+  change: images, library versions, batching, worker counts; Spark checks before DAgger: X-VLA and π0.5 parity against
+  405/500 and 478/500, input equivalence on stored observations, a Spark freeze with its own golden set; re-scoring
+  labels from event logs; every evaluation number from the Spark; the defining amendments); a draft amendment
+  revising the never-mix rule (DAgger retraining may combine L4 and Spark labels, each label records its platform,
+  label statistics compared across platforms, all evaluation numbers from one platform), not logged until approved.
+
+## Earlier 2026-11-25 (~03:30Z): re-plan proposed (superseded by amendment 65)
 
 **Since (Oscar's request, relayed by the user; separate from the Phase 1 handoff package):** `References/l4-phase0/`
 holds the L4's Phase 0 reference files for the DGX Spark (README there; pins in `src/vlar_ops/configs/l4-phase0.sha256`;

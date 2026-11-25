@@ -397,7 +397,7 @@ Approved by the user in the same message (item 7, the re-plan's inputs), logged 
 
 64. §12 (ops): the boot-time worker sizing follows amendment 62 (4)'s RAM rule. N workers at the per-worker limit L run only if N × L plus the servers' peak resident memory fits inside the VM's RAM (MemTotal); at boot the servers' peak is taken as the larger of 1.25 × their resident memory at start and the last measured peak (`supervise --servers-peak-gb`; 20.45 GB on the pilot's resumed boot). L stays 5.5 GiB (1.30 × the largest measured worker peak, 4.54 GB; `supervise --limit-gib`). The old rule's 95% of RAM and 4 GiB host reserve are dropped (it allowed 6). At the pilot's numbers (MemTotal 67.42 GB; servers 18.96 GB at start, 20.45 GB peak): **7 workers** (41.34 GB of limits + 23.70 GB = 65.04 GB; 2.38 GB to spare at the boot estimate, 5.63 GB at the measured peak); 8 do not fit. The supervisor's summary records the rule, its inputs, and whether the servers' measured peak kept it. Worker peaks were measured only on branch runs (record `off`); record-`full` re-runs are first measured in Phase 1, and a worker killed at its limit is handled as on the pilot's first boot (restarts, then the step stops).
 
-Approved by the user on 2026-11-25 (the message of ~05:40Z, items 1-4: the handoff), logged at ~07:30Z, after the
+Approved by the user on 2026-11-25 (the message of ~05:40Z, items 1-4: the handoff), logged at 06:17Z (`458866e`), after the
 pre-stated rules for analyses (i) and (ii) were pushed (`686588b`) and both analyses ran:
 
 65. §4, §7, §9, §10, §12, §13 (the handoff; Phase 1 on the coupon). (1) **Handoff.** After Phase 1, Oscar (the

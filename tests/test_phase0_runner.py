@@ -337,3 +337,23 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
             < a.index("vlar-ops queue resume >") < a.index("vlar-ops pilot reorder --plan-dir")
             < a.index('VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase "${PH}"'))
     assert "--min-limit-gib" not in a and "pilot check" not in a
+
+
+def test_create_retry_tries_only_the_three_zones_and_queues_held_steps_only_after_the_guard_dry_run():
+    """ops/gcp/33_create_retry.sh (the user, 2026-11-25): us-central1-a, -b, -c every 10 minutes for up to 6 hours, no
+    other region; env.sh pointed at the zone that starts; the guard's stop dry run against that VM before any held
+    step reaches the queue; a non-stockout error stops it."""
+    import re
+    p = REPO / "ops" / "gcp" / "33_create_retry.sh"
+    s = p.read_text()
+    assert subprocess.run(["bash", "-n", str(p)]).returncode == 0
+    assert "ZONES=(us-central1-a us-central1-b us-central1-c)" in s
+    assert set(re.findall(r"us-[a-z]+\d-[a-z]", s)) == {"us-central1-a", "us-central1-b", "us-central1-c"}
+    assert 'TRY_S="${RETRY_TRY_S:-600}"' in s and "${RETRY_HOURS:-6} * 3600" in s
+    body = s[s.index("log \"retry: zones"):]
+    assert body.index('sed -i \'\' "s/^export ZONE=') < body.index('if ! dry_run "${z}"') < body.index(
+        'gcloud storage cp -q "${f}" "gs://${BUCKET}/vla-router/phase0/queue/')
+    assert "exit 2" in body and "exit 3" in body and "exit 4" in body
+    dr = s[s.index("dry_run() {"):s.index("watch_vm() {")]
+    for part in ("SPOT*STOP", "shutdown_command", "guard_sessions_since_create", "spend check --phase \"${PHASE}\""):
+        assert part in dr, part
