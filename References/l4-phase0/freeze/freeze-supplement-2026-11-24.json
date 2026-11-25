@@ -1,0 +1,25 @@
+{
+  "supplement_version": 1,
+  "supplements": "freeze.json",
+  "freeze_sha256": "5e2826f6a4864a4cbbd7e1542b9a1f4dbd2502276b842d793b94676efe4585ad",
+  "frozen_at": "2026-11-24T09:46:21+00:00",
+  "calibration_hash": "b80124b2c19ba8a5e7dcc538eb777a6ca033463020e77b28464b068118c5f51c",
+  "image_digests": {
+    "commit": "03f311c4cd18a392285709987426bdfc42413fcd",
+    "pi05": "sha256:39acf6e7acefd64030ba123094ffd73f464f0da218b972f20da7d7ae8a74c8cf",
+    "sim": "sha256:20d1948170ecc2cfecb3f889fb121fb030faa2694aac0e9789473ccd170bd577",
+    "xvla": "sha256:83896f24691d5b04f0fd7bf08d6b6d59d682803afd749f73b62c64887193042e"
+  },
+  "evidence": {
+    "markers": 600,
+    "latest_marker_at": "2026-11-24T08:40:52+00:00",
+    "notes": [
+      "600 result markers, all written before the freeze and all with these digests: 500 base (phase base) and 100 pi0.5 parity (phase pi05_parity), ops 0a0cd4c, calibration aa38aac7",
+      "step 600 wrote none: freeze.json has image_digests {}, phase0/step7/golden-pass.json and its history entry carry no digests",
+      "the image build's own record containers/03f311c4cd18a392285709987426bdfc42413fcd/image-digests.json is identical",
+      "approved by the user 2026-11-24 as a dated supplement, not a re-freeze (SPEC 17, amendment 54); cross-check against /etc/vlar/image-digests.json at the next boot"
+    ]
+  },
+  "date": "2026-11-24",
+  "written_at": "2026-11-24T10:16:02+00:00"
+}

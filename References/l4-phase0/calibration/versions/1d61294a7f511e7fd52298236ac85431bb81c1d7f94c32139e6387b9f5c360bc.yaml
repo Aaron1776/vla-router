@@ -1,0 +1,80 @@
+schema: 1
+config: harness-v1
+frozen: false
+values:
+  latency:
+    status: measured
+    source: 'Phase 0 step 2 on the L4: servers at max_batch 1 (X-VLA sample_rows 5),
+      median of 30 seeded calls after 5 warm-ups, client wall time over localhost
+      HTTP'
+    xvla_act_s: 0.7023352364999482
+    xvla_features_s: 0.1406405374999622
+    xvla_sample_k_s: 1.5493083959999012
+    pi05_infer_s: 0.7161023695000495
+  servers:
+    workers: 8
+    batching:
+      status: measured
+      max_batch: 4
+      xvla_sample_rows: 20
+  measurement:
+    gripper_thresholds:
+      status: calibrated
+      shut_width_m: 0.0090040180005096
+      open_width_m: 0.07154587918174309
+  options:
+    network:
+      choices:
+        default:
+          upload_image_bytes: 20425
+          upload_image_bytes_status: measured
+  time_limit:
+    per_task_s:
+      0: 57.111183196299024
+      1: 51.75604567599908
+      2: 38.90203425699927
+      3: 38.992034256999275
+      4: 34.51736378399933
+      5: 30.202693310999393
+      6: 42.5567047299992
+      7: 39.62203425699928
+      8: 62.26632071659896
+      9: 45.89137520299913
+    margin: 2.0
+    status: calibrated
+history:
+- at: '2026-11-23T21:57:18+00:00'
+  paths:
+  - latency.status
+  - latency.source
+  - latency.xvla_act_s
+  - latency.xvla_features_s
+  - latency.xvla_sample_k_s
+  - latency.pi05_infer_s
+  - servers.workers
+  - servers.batching.status
+  - servers.batching.max_batch
+  - servers.batching.xvla_sample_rows
+  - measurement.gripper_thresholds.status
+  - measurement.gripper_thresholds.shut_width_m
+  - measurement.gripper_thresholds.open_width_m
+  - options.network.choices.default.upload_image_bytes
+  - options.network.choices.default.upload_image_bytes_status
+  note: Phase 0 step 2 on images 03f311c4cd18a392285709987426bdfc42413fcd
+  previous: null
+- at: '2026-11-24T08:48:21+00:00'
+  paths:
+  - time_limit.per_task_s.0
+  - time_limit.per_task_s.1
+  - time_limit.per_task_s.2
+  - time_limit.per_task_s.3
+  - time_limit.per_task_s.4
+  - time_limit.per_task_s.5
+  - time_limit.per_task_s.6
+  - time_limit.per_task_s.7
+  - time_limit.per_task_s.8
+  - time_limit.per_task_s.9
+  - time_limit.margin
+  - time_limit.status
+  note: 'Phase 0 step 6: time limits from base and parity logs'
+  previous: aa38aac7fb61850e3550a256885fe634f48810aaeeb7f182f00b9552cf5e3890

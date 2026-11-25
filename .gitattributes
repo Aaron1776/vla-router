@@ -1,2 +1,4 @@
 # The reference run's files are kept byte for byte (their SHA-256 is pinned): no line-ending changes.
 References/** -text
+# The L4's Phase 0 reference files for the DGX Spark (pinned in src/vlar_ops/configs/l4-phase0.sha256): byte for byte too.
+References/l4-phase0/** -text

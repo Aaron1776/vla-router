@@ -10,6 +10,15 @@ re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline
 
 ## START HERE (2026-11-25, ~03:30Z): re-plan proposed; Phase 1 waits for the user's approval
 
+**Since (Oscar's request, relayed by the user; separate from the Phase 1 handoff package):** `References/l4-phase0/`
+holds the L4's Phase 0 reference files for the DGX Spark (README there; pins in `src/vlar_ops/configs/l4-phase0.sha256`;
+`tests/test_l4_phase0_refs.py`). Base and π0.5-parity runs tables carry a setup count **reconstructed** from worker
+order (k-th episode of a task in a worker = load k + 1), checked on all base episodes of tasks 2, 3, 8, 9 (200/200).
+The frozen calibration and `236439b4` name the bucket in a history note, so they are committed as `*.redacted.yaml`
+(`$BUCKET`), with the originals' SHA-256 in `calibration/redactions.json` and a restore that reproduces `b80124b2`.
+Base event logs included (0.55 MB tar.gz); parity event logs not (in the bucket). Nothing else changed: the re-plan
+still waits for the user's approval.
+
 **Read `docs/REPLAN-2026-11-25.md`** (all numbers; `outputs/pilot/replan.json` from `vlar-ops pilot replan`). The
 user's eighth message (their text is the source) decided the re-plan's design:
 - **SPEC §17 amendment 63** (items 1-5, logged 02:13Z and pushed as `b6b41ec` before analyses (a)-(c) ran):

@@ -1,0 +1,23 @@
+{
+ "calibration/calibration.redacted.yaml": {
+  "occurrences": 1,
+  "original_name": "calibration.yaml",
+  "original_sha256": "b80124b2c19ba8a5e7dcc538eb777a6ca033463020e77b28464b068118c5f51c",
+  "placeholder": "$BUCKET",
+  "redacted_sha256": "931310675e959dab07382d766332d1d9bf7f5460326c1e240ec683cea99ec08a"
+ },
+ "calibration/versions/236439b4f06c68e2d4ecef86e8c57d71876f1bbd6dca8e58a75a9f9125c6657c.redacted.yaml": {
+  "occurrences": 1,
+  "original_name": "236439b4f06c68e2d4ecef86e8c57d71876f1bbd6dca8e58a75a9f9125c6657c.yaml",
+  "original_sha256": "236439b4f06c68e2d4ecef86e8c57d71876f1bbd6dca8e58a75a9f9125c6657c",
+  "placeholder": "$BUCKET",
+  "redacted_sha256": "1d313cd43a7618d75dc46c219436defab732a1b27bb5d3e496d0e9d65ac7da9b"
+ },
+ "calibration/versions/b80124b2c19ba8a5e7dcc538eb777a6ca033463020e77b28464b068118c5f51c.redacted.yaml": {
+  "occurrences": 1,
+  "original_name": "b80124b2c19ba8a5e7dcc538eb777a6ca033463020e77b28464b068118c5f51c.yaml",
+  "original_sha256": "b80124b2c19ba8a5e7dcc538eb777a6ca033463020e77b28464b068118c5f51c",
+  "placeholder": "$BUCKET",
+  "redacted_sha256": "931310675e959dab07382d766332d1d9bf7f5460326c1e240ec683cea99ec08a"
+ }
+}
