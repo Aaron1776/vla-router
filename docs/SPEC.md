@@ -397,6 +397,48 @@ Approved by the user in the same message (item 7, the re-plan's inputs), logged 
 
 64. §12 (ops): the boot-time worker sizing follows amendment 62 (4)'s RAM rule. N workers at the per-worker limit L run only if N × L plus the servers' peak resident memory fits inside the VM's RAM (MemTotal); at boot the servers' peak is taken as the larger of 1.25 × their resident memory at start and the last measured peak (`supervise --servers-peak-gb`; 20.45 GB on the pilot's resumed boot). L stays 5.5 GiB (1.30 × the largest measured worker peak, 4.54 GB; `supervise --limit-gib`). The old rule's 95% of RAM and 4 GiB host reserve are dropped (it allowed 6). At the pilot's numbers (MemTotal 67.42 GB; servers 18.96 GB at start, 20.45 GB peak): **7 workers** (41.34 GB of limits + 23.70 GB = 65.04 GB; 2.38 GB to spare at the boot estimate, 5.63 GB at the measured peak); 8 do not fit. The supervisor's summary records the rule, its inputs, and whether the servers' measured peak kept it. Worker peaks were measured only on branch runs (record `off`); record-`full` re-runs are first measured in Phase 1, and a worker killed at its limit is handled as on the pilot's first boot (restarts, then the step stops).
 
+Approved by the user on 2026-11-25 (the message of ~05:40Z, items 1-4: the handoff), logged at ~07:30Z, after the
+pre-stated rules for analyses (i) and (ii) were pushed (`686588b`) and both analyses ran:
+
+65. §4, §7, §9, §10, §12, §13 (the handoff; Phase 1 on the coupon). (1) **Handoff.** After Phase 1, Oscar (the
+user's partner) trains the router and the cascaders and runs the DAgger round and both evaluation rounds on his DGX
+Spark with his own port of the harness (`docs/HANDOFF-SPARK.md`). The coupon funds only Phase 1, storage and the
+final download. Amendment 61's evaluation on another account, 63 (2)'s DAgger collectors and λ sweep, and the DAgger
+budget of amendment 58's rule move to Oscar; that rule decides nothing on the coupon now. (2) **Billing check**
+(before any boot). The console showed $33.12 of the $50 coupon left ($16.88 spent) against the ledger's $12.50. The
+gap is the VM's price: a g2-standard-16 Spot VM with its L4 in us-central1 bills $0.6865/h (price catalog: 16 cores
+x $0.01495, 64 GiB x $0.001751, L4 Spot $0.3352), the ledger counted $0.46-0.472, so its 20.91 VM-h (boot allowances
+included) were $4.70 short; about $0.10 more is the Spot VM's external IPv4 ($0.0025/h) and bucket operations. Both
+were added with `spend charge` (ledger $17.30, conservatively above the console's figure, which may not have posted
+the last hours). Nothing else bills: no Artifact Registry or Cloud Build in the project (the images are tarballs in
+the bucket), no leftover disks, addresses, images or snapshots; the billing account's one other project runs no
+compute (to be confirmed in the console's per-project report). Recurring: the bucket, 24.7 GB (11.0 GB of container
+tarballs) at $0.020/GB-month, ~$0.50/month, ~$0.70 after Phase 1. (3) **Money.** Credit $32.70 ($50 less the
+ledger), less ~$5 kept for storage after Phase 1 and the final download (about six months of the bucket and a
+few-GB download), less Phase 1's disk ($1.65), storage ($0.30) and the external IP ($0.15), leaves planned VM spend
+$23.27 and the 10% reserve $2.33, at $0.6865/h; the DAgger round's label and rollout money is in Phase 1. The guard
+is re-based on the real credit: hard limit $45.00 (the coupon less the $5), soft $42.67 (the reserve begins),
+`vm_hourly_usd` 0.6865 (`ops/ops.example.yaml`). (4) **Labels.** b1 and b2, 3 seeds each, at points drawn by
+amendment 57 with failed-parent share 2/3 (analysis (ii): 2/3 gives more expected effective positives in the worst
+fold than 3/4, 44.3 against 40.4 at 64 points per task), uniform within strata (analysis (i): positives cluster in
+the first third of failed episodes and none fell in the last, p = 0.0013 and 0.012, but oversampling raises the worst
+fold's effective positives by 8.4-9.5%, under the pre-stated 10%: not applied); no b3, no extra seeds. The pilot's
+109 labelled points stay out of training: which of its 150 points got labelled depended on the spend guard's stop and
+the jobs' run times, so they have no exact inclusion probability. (5) **Tranches.** A: 64 base points per task (640
+points, 3,200 jobs), from the stored base snapshots (no screening, no re-runs), `vlar-ops phase1 plan-a`, step
+`720-phase1a.sh`. B: 64 exploration points per task, screened then re-run (amendment 56), the screen sized so that 2/3
+of the n/k re-run episodes can come from failed parents at X-VLA's failure rate with a 10% margin (~1,150 screened,
+~320 re-runs; the earlier re-plan's 500 screened episodes would have supplied only ~100 failed ones); every
+fresh-start run on a fresh simulator (setup count 2, REPLAN §5 option (A)). F, the final tier: the share of the label
+money that buys one b4 seed at every A and B point (20.6%, $4.18), run as b4 from the stored snapshots if Oscar asks
+for branch 4, otherwise as more base points (~54 per task), drawn uniformly within the same strata from the points A
+did not draw, so A and F together are one stratified draw. (6) **Order and spend phases.** `phase1a` holds the new
+disk's setup (010-090) and Tranche A: allocation $5.68, line $6.50 (headroom so the whole draw completes: a tranche
+cut short leaves a labelled subset without exact inclusion probabilities; within the user's $10 for Tranche A),
+7 workers by amendment 64's rule. Then `phase1b-screen` ($1.92, line +8%), `phase1b` ($11.32) and `phase1f` ($4.36),
+each opened at its start; Tranche B boots only with the user's approval. Plan and analyses:
+`docs/PHASE1-PLAN-2026-11-25.md` (`vlar-ops phase1 budget|analyses|plan-a`).
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:

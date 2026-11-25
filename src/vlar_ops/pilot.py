@@ -98,22 +98,27 @@ def strata_table(points: Sequence[DecisionPointRef], success: Mapping[str, bool]
     return dict(sorted(out.items()))
 
 
-def make_plan(root: Path, markers_dir: Path, out_dir: Path, *, cfg=None) -> dict[str, Any]:
+def make_plan(root: Path, markers_dir: Path, out_dir: Path, *, cfg=None, phase: str = PHASE,
+              selection: Optional[Mapping[str, Any]] = None, enabled: Sequence[str] = BRANCH_ORDER,
+              seeds: int = SEEDS, tier_one_seeds: int = TIER_ONE_SEEDS, order_seed: int = ORDER_SEED) -> dict[str, Any]:
+    """The branch plan over a stratified draw of base points: the pilot's by default; Phase 1's Tranche A (and the
+    final tier's extra base points) with its own phase, selection settings and branches (`vlar_ops.phase1`)."""
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
     cfg = cfg or load_config()
+    sel_settings = dict(selection or SELECTION)
     step_limit, interval = int(cfg["env"]["step_limit"]), int(cfg["decision"]["interval_steps"])
     points, success, kinds = base_points(read_table(root, "runs").to_pylist(), read_table(root, "events").to_pylist())
     if len(success) != 500:
         raise PilotError(f"{len(success)} base runs, not 500: download all of records/runs/base")
-    sel = stratified_selection(points, success, step_limit=step_limit, interval=interval, dp_sampling=SELECTION)
+    sel = stratified_selection(points, success, step_limit=step_limit, interval=interval, dp_sampling=sel_settings)
     listed = snapshots_listed(markers_dir)
     missing = sorted(set(sel) - listed)
     if missing:
         raise PilotError(f"{len(missing)} selected snapshots are not listed by any base result marker: {missing[:3]}")
-    plan, labels = branch_plan(PHASE, points, branches=cfg["branches"], step_limit=step_limit, interval=interval,
-                               seeds=SEEDS, enabled=BRANCH_ORDER, tier_one_seeds=TIER_ONE_SEEDS,
-                               order_seed=ORDER_SEED, dp_sampling=SELECTION, selection=sel)
+    plan, labels = branch_plan(phase, points, branches=cfg["branches"], step_limit=step_limit, interval=interval,
+                               seeds=seeds, enabled=list(enabled), tier_one_seeds=tier_one_seeds,
+                               order_seed=order_seed, dp_sampling=sel_settings, selection=sel)
     by_task: dict[int, list[str]] = defaultdict(list)
     for sid, s in sorted(sel.items()):
         by_task[s["stratum"]["task_id"]].append(sid)
@@ -128,9 +133,9 @@ def make_plan(root: Path, markers_dir: Path, out_dir: Path, *, cfg=None) -> dict
     strata = {t: {**row, "selected_failed": sum(1 for s in by_task[t] if sel[s]["stratum"]["parent_outcome"] == "failure"),
                   "selected_success": sum(1 for s in by_task[t] if sel[s]["stratum"]["parent_outcome"] == "success")}
               for t, row in strata_table(points, success, step_limit=step_limit, interval=interval,
-                                         min_calls=SELECTION["min_calls"]).items()}
+                                         min_calls=sel_settings["min_calls"]).items()}
     phase1 = strata_table(points, success, step_limit=step_limit, interval=interval, min_calls=1)
-    selection = {"settings": SELECTION, "n_points": len(sel), "n_jobs": len(plan.jobs), "plan_id": plan.plan_id,
+    selection = {"settings": sel_settings, "phase": phase, "n_points": len(sel), "n_jobs": len(plan.jobs), "plan_id": plan.plan_id,
                  "strata": strata, "phase1_strata": phase1,
                  "base_episode_success": {t: sum(success[e] for e in success if int(e.split("/t")[1].split("/")[0]) == t)
                                           for t in sorted(strata)}}
@@ -521,11 +526,14 @@ def resume_order(jobs: Sequence[tuple[str, str, Job]], labels: Mapping[str, Mapp
 
 
 def reorder_queue(q, plan_dir: Path) -> dict[str, Any]:
-    """Set the claim order of the pilot's open jobs (`resume_order`); only the queue's claim columns change."""
+    """Set the claim order of the plan's open jobs (`resume_order`); only the queue's claim columns change. The phase
+    is the plan's (selection.json's `phase`: the pilot's plans have none, so `pilot`)."""
     labels = json.loads((Path(plan_dir) / "labels.json").read_text())
-    jobs = q.phase_jobs(PHASE)
+    sel = Path(plan_dir) / "selection.json"
+    phase = json.loads(sel.read_text()).get("phase", PHASE) if sel.exists() else PHASE
+    jobs = q.phase_jobs(phase)
     points, order = resume_order(jobs, labels)
-    q.set_order(PHASE, order)
+    q.set_order(phase, order)
     subjects = {j.subject for _, _, j in jobs}
     done_by = defaultdict(int)
     for _, s, j in jobs:

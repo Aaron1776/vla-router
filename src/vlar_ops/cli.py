@@ -402,6 +402,37 @@ def cmd_step2(a: argparse.Namespace) -> None:
     sys.exit(step2.run(a.cmd, a))
 
 
+def cmd_phase1(a) -> None:
+    """Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py): the budget, the pre-stated analyses (i) and (ii),
+    and the Tranche A plan (on the Mac, from local copies of the base runs, events and markers)."""
+    from . import phase1, pilot, replan
+    out = Path(a.out)
+    if a.cmd == "budget":
+        if a.credit_usd is None or not a.pilot_report:
+            sys.exit("budget: --credit-usd and --pilot-report are required")
+        costs = json.loads(Path(a.pilot_report).read_text())["costs"]
+        p = replan.Prices.from_pilot(costs)
+        plan = phase1.Phase1Plan(credit_usd=a.credit_usd, untracked_usd=a.untracked_usd)
+        b = phase1.budget(p, plan, hourly_usd=a.hourly_usd)
+        rep = {"budget": b, "lines": phase1.lines(b, hourly_usd=a.hourly_usd), "prices": p.__dict__, "plan": plan.__dict__}
+        if a.ledger_total_usd is not None:
+            rep["guard"] = phase1.guard_limits(a.ledger_total_usd, b)
+        out.write_text(json.dumps(rep, indent=1, default=str))
+        print(json.dumps({"tranche_a": b["tranche_a"], "final": b["final"], "labels_usd": b["labels_usd"],
+                          "guard": rep.get("guard")}, default=lambda x: round(x, 3)))
+        return
+    if a.cmd == "analyses":
+        rep = phase1.run_analyses(Path(a.root), Path(a.plan_dir), n=a.per_task)
+        out.write_text(json.dumps(rep, indent=1, default=str))
+        print(json.dumps({"i_apply": rep["i"]["apply"], "ii_pick": rep["ii"]["pick"],
+                          "i_splits": {k: round(v["gain_min"], 4) for k, v in rep["i"]["splits"].items()}}))
+        return
+    if not a.per_task or a.seed is None:      # plan-a
+        sys.exit("plan-a: --per-task and --seed are required")
+    sel = pilot.make_plan(Path(a.root), Path(a.markers), out, **phase1.tranche_a_settings(a.per_task, a.seed))
+    print(json.dumps({k: sel[k] for k in ("phase", "n_points", "n_jobs", "plan_id")}))
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="vlar-ops")
     sub = ap.add_subparsers(dest="group", required=True)
@@ -545,6 +576,20 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--out", required=True, help="plan: the output directory; check: the JSON report")
     pi.add_argument("--ops-config")
     pi.set_defaults(fn=cmd_pilot)
+    p1 = sub.add_parser("phase1", help="Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py)")
+    p1.add_argument("cmd", choices=["budget", "analyses", "plan-a"])
+    p1.add_argument("--credit-usd", type=float, help="budget: the coupon credit left, less charges not yet posted")
+    p1.add_argument("--untracked-usd", type=float, default=0.0, help="budget: charges outside the ledger in Phase 1")
+    p1.add_argument("--ledger-total-usd", type=float, help="budget: the ledger's total now (for the guard's limits)")
+    p1.add_argument("--pilot-report", help="budget: the pilot report's JSON (its measured costs)")
+    p1.add_argument("--hourly-usd", type=float, default=0.6865, help="the Spot price with its L4 (catalog 2026-11-25)")
+    p1.add_argument("--root", help="analyses: local records/{runs,events}/{base,pilot}; plan-a: records/*/base")
+    p1.add_argument("--plan-dir", help="analyses: the pilot's plan directory (labels.json)")
+    p1.add_argument("--markers", help="plan-a: local copy of results/base")
+    p1.add_argument("--per-task", type=int, help="analyses, plan-a: base points per task")
+    p1.add_argument("--seed", type=int, help="plan-a: the selection seed")
+    p1.add_argument("--out", required=True, help="budget, analyses: the JSON report; plan-a: the output directory")
+    p1.set_defaults(fn=cmd_phase1)
     go = sub.add_parser("golden", help="the golden-set self-check (§15; vlar_ops/golden.py)")
     go.add_argument("cmd", choices=["select", "check"])
     go.add_argument("--root", help="select: local copy of the bucket's records")

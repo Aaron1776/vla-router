@@ -314,7 +314,7 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
     name it exactly (the pilot: `pilot`, approved up to $2.50, SPEC §17 amendment 59)."""
     import re
     steps = sorted((REPO / "ops" / "vm" / "postfreeze").glob("*.sh"))
-    assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh"]
+    assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh", "720-phase1a.sh"]
     for p in steps:
         assert subprocess.run(["bash", "-n", str(p)]).returncode == 0, p.name
         assert re.search(r"^# cap-seconds: [0-9]+ *$", p.read_text(), re.M), p.name
@@ -329,3 +329,11 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
             < pilot.index('VLAR_SUPERVISE_ARGS="--min-limit-gib 5 --max-jobs 2" run_phase pilot'))
     lib = (REPO / "ops" / "vm" / "phase0" / "lib.sh").read_text()
     assert "${VLAR_SUPERVISE_ARGS:-}" in lib[lib.index("run_phase() {"):]
+    # Tranche A (amendment 65): its own spend phase, the golden gate before any job, the plan's own phase for the
+    # queue and the reorder, and the workers by amendment 64's RAM rule
+    a = (REPO / "ops" / "vm" / "postfreeze" / "720-phase1a.sh").read_text()
+    assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", a, re.M) == ["phase1a"] and "PH=phase1a" in a
+    assert (a.index("golden_check ||") < a.index("export VLAR_GOLDEN_DONE=1") < a.index('vlar-ops queue add "')
+            < a.index("vlar-ops queue resume >") < a.index("vlar-ops pilot reorder --plan-dir")
+            < a.index('VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase "${PH}"'))
+    assert "--min-limit-gib" not in a and "pilot check" not in a
