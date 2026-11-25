@@ -33,3 +33,31 @@ Every step's log, `history.jsonl` entry and results folder carry `platform.json`
 containers/aarch64/build.sh <commit>
 tmux new -d -s vlar 'ops/spark/run.sh 010 015 020 030 040 050 090 > ~/vlar-run.log 2>&1'
 ```
+
+## Phase 0 reproduction (`ops/spark/repro.py`, step `620`)
+The L4's π0.5 parity (100 episodes) and X-VLA base rollouts (500), re-run on the Spark episode by episode and
+compared paired, from `References/l4-phase0/`. `repro.py plan` rebuilds both plans with `vlar_ops.plan` exactly as
+steps 300 and 400 did and refuses unless every L4 row matches its job (job id, task, init, rollout seed, mode,
+profile, record). `run` brings a fresh simulator to the row's reconstructed setup count (`vlar_ops.pilot.warm_up`)
+and runs the job with `vlar_harness.collect.Runner`, under the calibration the L4 runs used (`aa38aac7`), against
+both production servers at the calibrated geometry; records stay in the output folder.
+
+```bash
+REPRO_PHASE=pi05_parity ops/spark/run.sh 620      # 1 shard: π0.5 requests stay alone in their batch
+REPRO_PHASE=base ops/spark/run.sh 620             # 8 shards
+```
+
+**Pass criteria (written 2026-11-25, before any reproduction run).** For each phase, both must hold:
+1. Against the L4, paired by episode: every L4 episode re-run, and the two-sided exact McNemar test on the
+   discordant pairs (L4 success and Spark failure, and the reverse) gives p >= 0.05.
+2. Against the reference run, the L4's own gate: `vlar_ops.reference_runs.compare(..., limit=520)` (π0.5:
+   `load_pi05`, as `vlar_ops.parity`; X-VLA: `load_xvla`, as the X-VLA parity of SPEC §11 step 5) has
+   `within_sampling_error` (exact McNemar p >= 0.05).
+
+**Known exceptions, not failures:** episodes are compared by outcome only. Trajectories, success steps and step
+counts are not expected to match the L4's (other GPU kernels), and a Spark episode re-run is not expected to repeat
+bit for bit (4x MSAA, ASSUMPTIONS D5; 5 exact-replay tests of step 030 fail for this reason). The parity runs' setup
+counts are reconstructed and unchecked (no snapshots); base counts were checked on the L4's snapshots.
+**Open:** π0.5 at the calibrated `max_batch` 4 is not batch-invariant on the GB10 (step 210: 6 of 10 exact checks,
+up to 0.017), while it is at 8 and on the L4 at 4. The parity run keeps every request alone (one shard) and the base
+rollouts never call π0.5, so the reproduction is not affected; concurrent π0.5 use (evaluation) is.
