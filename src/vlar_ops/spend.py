@@ -231,6 +231,28 @@ def end_phase(storage: Storage, name: str, at: float) -> dict[str, Any]:
     return update_ledger(storage, edit)[1]
 
 
+def raise_phase(storage: Storage, name: str, *, raise_usd: float, reason: str, at: float) -> dict[str, Any]:
+    """Raise the open phase's line and stop point by `raise_usd` (a conditional write; the margin between them and
+    the allocation stay as they were), with the reason and both old values recorded in its `raises` list. The guard
+    reads the ledger at every tick, so a running VM follows the new stop point without being touched (amendment 69).
+    Refused for a phase that is not the open one, a raise that is not positive, or no reason."""
+    if not raise_usd > 0:
+        raise PhaseError(f"raise ${raise_usd}: must be positive")
+    if not reason.strip():
+        raise PhaseError("a raise needs its reason")
+
+    def edit(ledger):
+        live = open_phase(ledger)
+        if live is None or live["name"] != name:
+            raise PhaseError(f"phase {name!r} is not the open phase (open: {live['name'] if live else 'none'})")
+        live.setdefault("raises", []).append({"at": float(at), "raise_usd": float(raise_usd), "reason": reason,
+                                              "line_before": live["line_usd"], "stop_before": live["stop_usd"]})
+        live["line_usd"] = round(float(live["line_usd"]) + float(raise_usd), 4)
+        live["stop_usd"] = round(float(live["stop_usd"]) + float(raise_usd), 4)
+        return dict(live)
+    return update_ledger(storage, edit)[1]
+
+
 CHECK_OK, CHECK_STOP, CHECK_WRONG_PHASE = 0, 3, 4
 
 

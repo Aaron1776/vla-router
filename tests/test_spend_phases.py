@@ -194,3 +194,21 @@ def test_the_cli_exit_status_is_the_checks(tmp_path, capsys):
                   "--ops-config", str(cfg)])
     cli.main(["spend", "phase-close", "--phase", "pilot", "--ops-config", str(cfg)])
     assert spend.open_phase(spend.load_ledger(LocalStorage(store))) is None
+
+
+def test_raising_the_open_phase_moves_line_and_stop_and_the_guard_follows(tmp_path):
+    """Amendment 69: a raise is a conditional ledger write; phase_state (what the guard reads at every tick) uses it."""
+    st, clock = LocalStorage(tmp_path), Clock()
+    spend.start_phase(st, "screen", allocation_usd=3.3, line_usd=3.56, margin_usd=0.23, at=clock.t)
+    spend.update_ledger(st, lambda led: led["sessions"].append(session("s1", clock.t, 7.0 * HOUR)))   # $3.50: past the stop
+    assert spend.phase_state(spend.load_ledger(st), clock.t + 7 * HOUR)["state"] == "stop"
+    p = spend.raise_phase(st, "screen", raise_usd=1.33, reason="projected overrun", at=clock.t + 7 * HOUR)
+    assert p["line_usd"] == pytest.approx(4.89) and p["stop_usd"] == pytest.approx(4.66)
+    assert p["allocation_usd"] == 3.3 and p["raises"][0]["stop_before"] == pytest.approx(3.33)
+    assert spend.phase_state(spend.load_ledger(st), clock.t + 7 * HOUR)["state"] == "ok"
+    with pytest.raises(spend.PhaseError, match="not the open phase"):
+        spend.raise_phase(st, "other", raise_usd=1.0, reason="x", at=clock.t)
+    with pytest.raises(spend.PhaseError, match="positive"):
+        spend.raise_phase(st, "screen", raise_usd=0, reason="x", at=clock.t)
+    with pytest.raises(spend.PhaseError, match="reason"):
+        spend.raise_phase(st, "screen", raise_usd=0.5, reason=" ", at=clock.t)

@@ -42,6 +42,9 @@ time, cost); no move without the user's approval.
 with expected positives and distinct failed episodes per task and the amendment 58 result: (a) all base points;
 (b) exploration for 2, 3, 5, 7, 9, base for the rest; (c) exploration in every task whose failed base episodes are used
 up (2, 3, 4, 5, 7, 8, 9), base only in 0, 1, 6.
+**730 money (amendment 69, ~20:35Z):** 333/1,974 done for $0.92 at 327-351 episodes/h; completion projected $4.18-4.41
+(~01:10-01:30Z). `spend phase-raise` +$1.33: line $4.89, stop $4.66 (allocation $3.30); reserve now $0.02, so a top-up
+comes out of the final tier. Watch the projection again near the end (markers: `results/explore/`).
 **Amendment 68 (the user, ~19:00Z): after 730, one pre-approved top-up, then 740.** On the Mac when 730 ends: yield
 (`phase1 yield-b`, or reports/screen-yield.json); `phase1b.top_up_decision(rep, usd_per_episode=<phase1b-screen VM $
 less the boot and gate overhead, / episodes>, overhead_usd=<that overhead>)`; if `go`: write its `sizes` to a file,

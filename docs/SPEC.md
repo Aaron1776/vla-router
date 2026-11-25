@@ -512,6 +512,17 @@ points from new episodes for tasks 2, 3, 5, 7 and 9, base points for the rest, w
 (`outputs/phase1a/final-tier-alternatives-2026-11-25.json`); neither version is built or booted before the user
 decides after 740.
 
+69. §12 (the user, 2026-11-25 ~20:30Z). **The screen's money against its progress.** At 20:35Z, 333 of 1,974 screened
+episodes were done for $0.92; this boot screens 327-351 episodes/h (the plan assumed ~411/h from $1.92 for 1,150), so
+completion projects at $4.18-4.41 (~01:10-01:30Z), above the $3.33 stop; the preempted boot ($0.17) and the restart's
+repeated opening checks were not in the allocation either. Rule: when a phase projects past its stop point from its
+measured progress, its line and stop are raised by the projected overrun plus $0.25, from the reserve (the final tier
+trimmed if the reserve runs short), without touching the VM: `vlar-ops spend phase-raise` (a conditional ledger write
+with the reason and old values in the phase's `raises`; the guard reads the ledger at every tick). Applied:
+`phase1b-screen` +$1.33 (overrun $1.08 on the higher projection), line $3.56 -> $4.89, stop $3.33 -> $4.66,
+allocation unchanged ($3.30). Reserve $1.35 -> $0.02, so amendment 68's top-up (<= $1.00), if it runs, comes out of
+the final tier ($4.18 -> as low as $3.18).
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:

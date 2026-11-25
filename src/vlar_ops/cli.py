@@ -103,6 +103,13 @@ def cmd_spend(a: argparse.Namespace) -> None:
         except spend.PhaseError as e:
             sys.exit(str(e))
         print(json.dumps(p))
+    elif a.action == "phase-raise":
+        if a.phase is None or a.raise_usd is None or not a.reason:
+            sys.exit("--phase, --raise-usd and --reason are required")
+        try:
+            print(json.dumps(spend.raise_phase(storage, a.phase, raise_usd=a.raise_usd, reason=a.reason, at=now)))
+        except spend.PhaseError as e:
+            sys.exit(str(e))
     elif a.action == "phase-close":
         if a.phase is None:
             sys.exit("--phase is required")
@@ -548,9 +555,11 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("spend")
     s.add_argument("action", choices=["status", "reconcile", "charge", "disk-created", "disk-deleted", "daemon",
-                                      "check", "phase-open", "phase-close"])
+                                      "check", "phase-open", "phase-close", "phase-raise"])
     s.add_argument("--phase", help="check: the step's spend phase (must be the open one); phase-open/-close: its name")
     s.add_argument("--allocation-usd", type=float, help="phase-open: the phase's planned VM spend")
+    s.add_argument("--raise-usd", type=float, help="phase-raise: add this to the open phase's line and stop point")
+    s.add_argument("--reason", help="phase-raise: why (recorded in the ledger)")
     s.add_argument("--line-usd", type=float, help="phase-open: the most the phase's VM time may cost")
     s.add_argument("--margin-usd", type=float, help="phase-open: stop this far below the line (default: the drain "
                                                     "grace plus 5 minutes at the hourly price)")
