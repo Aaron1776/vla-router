@@ -145,6 +145,26 @@ def test_training_data_needs_the_frozen_calibration(tmp_path):
         D.from_records(tmp_path, tmp_path / "labels.json", cfg=SimpleNamespace())
 
 
+def test_heads_3_and_4_absent_everywhere_train_nothing_but_heads_1_and_2_still_do(ps):
+    """Phase 1 and DAgger run branches 1 and 2 only (SPEC §17 amendment 63 (4)): with heads 3 and 4 absent at every
+    point (mask 0), whatever values stand there change nothing, bit for bit, while heads 1 and 2 still train."""
+    m = F.masks(ps.task, 0)
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    y, ym = ps.targets("router")
+    tr, va = m["train"], m["val"]
+    ym = ym.copy()
+    ym[:, 2:] = 0.0
+    y0, y1 = y.copy(), y.copy()
+    y0[:, 2:], y1[:, 2:] = 0.0, 1.0
+    a = train(x[tr], y0[tr], ym[tr], x[va], y0[va], ym[va], seed=seed_for(0, "router"), cfg=FAST)
+    b = train(x[tr], y1[tr], ym[tr], x[va], y1[va], ym[va], seed=seed_for(0, "router"), cfg=FAST)
+    assert np.array_equal(a.predict(x[va]), b.predict(x[va])) and a.val_loss == b.val_loss
+    y2 = y0.copy()
+    y2[:, 1] = 1.0 - y2[:, 1]                                 # a different head-2 target must change the model
+    c = train(x[tr], y2[tr], ym[tr], x[va], y2[va], ym[va], seed=seed_for(0, "router"), cfg=FAST)
+    assert not np.array_equal(a.predict(x[va])[:, 1], c.predict(x[va])[:, 1])
+
+
 def test_absent_branch_labels_are_masked_out_of_training(ps):
     """Branch 3 dropped from collection (PROPOSALS-2026-11-24 §0.1 (c)): where a point has no b3 label, head 3 gets
     mask 0, so whatever value stands there changes nothing, bit for bit; the other heads still train."""

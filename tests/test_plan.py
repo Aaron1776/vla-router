@@ -125,7 +125,9 @@ def test_the_planner_records_its_settings_and_applies_the_sampling():
     with pytest.raises(B.BranchPlanError, match="subset"):
         plan_for(pts, enabled=["b5"])
     settings = B.plan_settings(load_tunables())
-    assert settings["seeds"] == 3 and settings["enabled"] == ALL and settings["dp_sampling"]["fraction"] is None
+    # the shipped tunables: b3 and b4 dropped from Phase 1 and DAgger (SPEC §17 amendment 63 (4))
+    assert settings["seeds"] == 3 and settings["enabled"] == ["b1_continue", "b2_one_call"]
+    assert settings["dp_sampling"]["fraction"] is None
 
 
 def test_dp_sampling_is_deterministic_and_near_the_fraction():

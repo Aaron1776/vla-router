@@ -8,8 +8,8 @@ exploration:
 
 branches:
   seeds: 3                    # §12 reduction step 5 lowers this to 2
-  enabled: [b1_continue, b2_one_call, b3_three_calls, b4_max]   # §12 reduction step 2 drops b3
-  # Graceful-stop tiers (§12): 1 = first two seeds of b1, b2, b4; 2 = their later seeds; 3 = b3.
+  enabled: [b1_continue, b2_one_call]   # SPEC §17 amendment 63 (4): b3 and b4 dropped from Phase 1 and DAgger
+  # Graceful-stop tiers (§12): 1 = first two seeds of each enabled branch; 2 = their later seeds (3 = b3 when enabled).
   tier_one_seeds: 2
 
 dp_sampling:
