@@ -1,0 +1,13 @@
+# Build context for containers/aarch64/Dockerfile (BuildKit reads this instead of the root .dockerignore): the root
+# file's list plus the X-VLA checkout and LIBERO assets that build.sh puts in the context.
+*
+!pyproject.toml
+!src/
+!tests/
+!References/
+!containers/
+!xvla-src/
+!libero-assets/
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

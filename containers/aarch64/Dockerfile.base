@@ -1,0 +1,15 @@
+# The aarch64 base image (vlar-aarch64-base): the harness's base (ubuntu:24.04 by index digest, CPython 3.13.16 from
+# python-build-standalone 20261020, SHA-256 from that release's SHA256SUMS) built for aarch64, plus the rendering
+# libraries and build tools. torch comes from PyPI into the venvs.
+FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289
+ARG PY_SHA256=908e16f2083b59cc1eea70b8afb7995acae3f524b2e26409beae01392e07561b
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git build-essential \
+      libegl1 libgl1 libgles2 libglvnd0 libosmesa6 libglib2.0-0t64 \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL -o /tmp/python.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.13.16%2B20261020-aarch64-unknown-linux-gnu-install_only.tar.gz" \
+ && echo "${PY_SHA256}  /tmp/python.tar.gz" | sha256sum -c - \
+ && mkdir -p /opt/python && tar -xzf /tmp/python.tar.gz -C /opt/python --strip-components=1 && rm /tmp/python.tar.gz \
+ && /opt/python/bin/python3 -V
+ENV PATH=/opt/python/bin:$PATH NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
