@@ -187,3 +187,92 @@ def test_absent_branch_labels_are_masked_out_of_training(ps):
                      ps.excluded)
     yt, mt = nan.targets("router")
     assert (mt[absent, 2] == 0).all() and (yt[absent, 2] == 0).all() and (mt[~absent] == ym[~absent]).all()
+
+
+def test_weights_of_one_reproduce_unweighted_training_bit_for_bit(ps):
+    """Amendment 57 (4): with every weight 1, training reproduces unweighted training bit for bit (predictions and
+    the whole validation-loss history), also when the equal weights come in another scale (normalised to mean 1)."""
+    m = F.masks(ps.task, 0)
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    y, ym = ps.targets("router")
+    ym = ym.copy()
+    ym[:, 2:] = 0.0                                           # b1 and b2 only, as in Phase 1
+    tr, va = m["train"], m["val"]
+    kw = dict(seed=seed_for(0, "router"), cfg=FAST)
+    plain = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], **kw)
+    ones = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], w_tr=np.ones(tr.sum()), w_va=np.ones(va.sum()), **kw)
+    scaled = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], w_tr=np.full(tr.sum(), 8.0),
+                   w_va=np.full(va.sum(), 0.25), **kw)
+    for other in (ones, scaled):
+        assert np.array_equal(other.predict(x[va]), plain.predict(x[va])) and other.val_loss == plain.val_loss
+        assert other.best_epoch == plain.best_epoch
+
+
+def test_the_weighted_loss_is_bce_times_mask_times_w_over_the_sum_of_mask_times_w():
+    """Amendment 57 (4), on numbers worked by hand: two rows, two labelled heads in the first, one in the second."""
+    from vlar_train.train import _loss
+    logits = torch.tensor([[0.0, 2.0], [-1.0, 0.5]])
+    y = torch.tensor([[1.0, 0.0], [1 / 3, 1.0]])
+    mask = np.array([[1.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+    w = np.array([0.5, 1.5], dtype=np.float32)
+    bce = lambda z, t: -(t * math.log(1 / (1 + math.exp(-z))) + (1 - t) * math.log(1 - 1 / (1 + math.exp(-z))))
+    want = (0.5 * bce(0.0, 1.0) + 0.5 * bce(2.0, 0.0) + 1.5 * bce(-1.0, 1 / 3)) / (0.5 + 0.5 + 1.5)
+    got = float(_loss(logits, y, torch.from_numpy(mask * w[:, None]), 0.5))
+    assert got == pytest.approx(want, rel=1e-6)
+    assert float(_loss(logits, y, torch.zeros(2, 2), 0.5)) == 0.0          # nothing labelled: no loss, no division by 0
+
+
+def test_weights_change_training_and_early_stopping(ps):
+    m = F.masks(ps.task, 0)
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    y, ym = ps.targets("router")
+    tr, va = m["train"], m["val"]
+    kw = dict(seed=seed_for(0, "router"), cfg=FAST)
+    plain = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], **kw)
+    w = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], w_tr=ps.weight[tr], w_va=ps.weight[va], **kw)
+    assert not np.array_equal(w.predict(x[va]), plain.predict(x[va]))
+    only_val = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], w_va=ps.weight[va], **kw)
+    assert only_val.val_loss != plain.val_loss                # the stopping loss is the weighted one
+    # the weighted validation loss, recomputed from the stopped model's predictions
+    p = np.clip(w.predict(x[va]), 1e-7, 1 - 1e-7)
+    wv = ps.weight[va] / ps.weight[va].mean()
+    bce = -(y[va] * np.log(p) + (1 - y[va]) * np.log(1 - p)) * ym[va] * wv[:, None]
+    assert w.val_loss[w.best_epoch] == pytest.approx(bce.sum() / (ym[va] * wv[:, None]).sum(), rel=1e-4)
+    with pytest.raises(ValueError, match="weights"):
+        train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], w_tr=np.zeros(tr.sum()), **kw)
+
+
+def test_lambda_uses_weighted_means():
+    """Amendment 57 (4): the gain (b2 - b1 where the decider escalates) and the escalation rate are weighted means
+    over the validation points; equal weights of any scale give the unweighted rule."""
+    p0 = np.zeros(4)
+    p1 = np.array([0.1, 0.2, 0.3, 0.4])
+    y0, y1 = np.array([0.0, 0.0, 1.0, 0.0]), np.array([0.0, 1.0, 0.0, 1.0])      # b2 - b1: 0, +1, -1, +1
+    ok = np.ones(4, bool)
+    w = np.array([1.0, 6.0, 1.0, 2.0])
+    c = LAM.curve(p0, p1, y0, y1, ok, [0.15, 0.35], weight=w)
+    assert c[0]["gain"] == pytest.approx(7 / 10) and c[0]["rate"] == pytest.approx(9 / 10)
+    assert c[1]["gain"] == pytest.approx(2 / 10) and c[1]["rate"] == pytest.approx(2 / 10)
+    plain = LAM.choose(p0, p1, y0, y1, ok)                    # unweighted: the top point alone earns the best gain
+    assert plain["lambda"] == pytest.approx(0.3) and plain["gain"] == pytest.approx(1 / 4)
+    same = LAM.choose(p0, p1, y0, y1, ok, weight=np.full(4, 7.0))
+    assert same["lambda"] == plain["lambda"] and same["gain"] == pytest.approx(plain["gain"])
+    heavy = LAM.choose(p0, p1, y0, y1, ok, weight=w)          # the point at 0.2 is most of the population: reach it
+    assert heavy["lambda"] == pytest.approx(0.1) and heavy["rate"] == pytest.approx(9 / 10)
+    with pytest.raises(ValueError, match="weights"):
+        LAM.choose(p0, p1, y0, y1, ok, weight=np.array([1.0, -1.0, 1.0, 1.0]))
+
+
+def test_inclusion_probabilities_come_from_the_label_entries():
+    """Amendment 57 (3): w_i = 1/π_i from the planner's `selection`; the uniform draw's π is its fraction."""
+    assert D.inclusion_prob("s", {"selection": {"inclusion_prob": 0.25, "by": "point"}}) == 0.25
+    assert D.inclusion_prob("s", {"settings": {"dp_sampling": {"fraction": 0.1, "seed": 1}}}) == 0.1
+    for bad in ({"selection": {"by": "point"}}, {"selection": {"inclusion_prob": 0.0}}, {},
+                {"settings": {"dp_sampling": {"scheme": "stratified", "per_task": 64}}}):
+        with pytest.raises(D.DataError, match="inclusion probability"):
+            D.inclusion_prob("s", bad)
+    ps2 = D.synthetic(n_per_task=20, feature_dim=8)
+    assert set(np.round(ps2.weight, 6)) == {1.25, 10.0} and ps2.subset(np.arange(5)).weight.shape == (5,)
+    with pytest.raises(D.DataError, match="weights"):
+        D.PointSet(ps2.cols, ps2.task, ps2.snapshot_id, ps2.can_escalate, ps2.remaining_s, ps2.y, ps2.excluded,
+                   np.zeros(len(ps2)))

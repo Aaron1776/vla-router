@@ -10,7 +10,13 @@ to and including the point's `decision_point` event, and `vlar_harness.labels.po
 Per point and per profile: the four branch labels (NaN where the planner ran no such branch), whether the point is
 excluded for that profile (its clock already beyond the limit, amendment 22) and the remaining-time input recomputed
 under that profile (amendment 23); the measured inputs from the points table, gripper fractions computed offline
-(amendment 35)."""
+(amendment 35).
+
+Per point, its sampling weight (amendment 57 (3)): w_i = 1/π_i, π_i the inclusion probability the planner recorded in
+the point's label entry (`selection.inclusion_prob`; for re-run parents P(episode) × P(point | episode)). An entry
+planned with the uniform per-point draw has no `selection`; its π_i is the planner's recorded `dp_sampling.fraction`.
+The weights are kept un-normalised here; each fold normalises them to mean 1 within its training rows and within its
+validation rows (`run.normalised`)."""
 
 from __future__ import annotations
 
@@ -38,6 +44,14 @@ class PointSet:
     remaining_s: dict[str, np.ndarray]       # profile -> (n,)
     y: dict[str, np.ndarray]                 # profile -> (n, 4) labels, NaN where a branch was not run
     excluded: dict[str, np.ndarray]          # profile -> (n,)
+    weight: Optional[np.ndarray] = None      # (n,) 1/π_i (amendment 57 (3)), un-normalised; all 1 when not given
+
+    def __post_init__(self) -> None:
+        if self.weight is None:
+            self.weight = np.ones(len(self.task), dtype=np.float64)
+        self.weight = np.asarray(self.weight, dtype=np.float64)
+        if self.weight.shape != (len(self.task),) or not (np.isfinite(self.weight) & (self.weight > 0)).all():
+            raise DataError("sampling weights must be one finite positive number per point (amendment 57)")
 
     def __len__(self) -> int:
         return len(self.task)
@@ -52,7 +66,7 @@ class PointSet:
         return PointSet({k: v[idx] for k, v in self.cols.items()}, self.task[idx],
                         [self.snapshot_id[i] for i in idx], self.can_escalate[idx],
                         {p: v[idx] for p, v in self.remaining_s.items()}, {p: v[idx] for p, v in self.y.items()},
-                        {p: v[idx] for p, v in self.excluded.items()})
+                        {p: v[idx] for p, v in self.excluded.items()}, self.weight[idx])
 
 
 def prefix_of(parent_events: Sequence[Mapping], index: int) -> list[Mapping]:
@@ -74,6 +88,22 @@ def group_events(events: Sequence[Mapping]) -> dict[str, list[dict]]:
             raise DataError(f"run {rid}: incomplete event log")
         out[rid] = [json.loads(e["event"]) for e in rs]
     return out
+
+
+def inclusion_prob(snapshot_id: str, entry: Mapping[str, Any]) -> float:
+    """π_i of a labelled point (amendment 57 (3)): the planner's `selection.inclusion_prob` (stratified draws: n/N
+    in the point's stratum for base parents, P(episode) × P(point | episode) for re-run parents); for the uniform
+    per-point draw, which records no selection, the recorded `dp_sampling.fraction`."""
+    sel = entry.get("selection")
+    if sel is not None:
+        pi = sel.get("inclusion_prob")
+    else:
+        dp = (entry.get("settings") or {}).get("dp_sampling") or {}
+        pi = None if dp.get("scheme") else dp.get("fraction")
+    if pi is None or not 0.0 < float(pi) <= 1.0:
+        raise DataError(f"label entry {snapshot_id} records no inclusion probability in (0, 1] (amendment 57 (3)): "
+                        f"{pi!r}")
+    return float(pi)
 
 
 def _vec(v, n: int) -> np.ndarray:
@@ -118,12 +148,14 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         raise DataError("no point of the label map is in the points table")
     cols: dict[str, list] = defaultdict(list)
     task, sid, can, rem, ys, exc = [], [], [], defaultdict(list), defaultdict(list), defaultdict(list)
+    weight = []
     for p in rows:
         parent = run[p["run_id"]]
         t = int(parent["task_id"])
         entry = label_map[p["snapshot_id"]]
         if not (entry.get("settings") or {}).get("seeds"):
             raise DataError(f"label entry {p['snapshot_id']} records no planner settings (amendment 49)")
+        pi = inclusion_prob(p["snapshot_id"], entry)
         parent_log = logs[p["run_id"]]
         pl = L.point_labels(prefix_of(parent_log, p["index"]), entry, own.get(p["snapshot_id"], {}),
                             seeds=int(entry["settings"]["seeds"]),
@@ -134,6 +166,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         task.append(t)
         sid.append(p["snapshot_id"])
         can.append(int(p["budget_remaining_steps"]) >= 10)
+        weight.append(1.0 / pi)
         for prof in profiles:
             rem[prof].append(pl.remaining_s[prof])
             exc[prof].append(prof in pl.excluded)
@@ -142,7 +175,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
     return PointSet({k: np.stack(v) for k, v in cols.items()}, np.array(task), sid, np.array(can),
                     {k: np.array(v, dtype=np.float64) for k, v in rem.items()},
                     {k: np.array(v, dtype=np.float64) for k, v in ys.items()},
-                    {k: np.array(v, dtype=bool) for k, v in exc.items()})
+                    {k: np.array(v, dtype=bool) for k, v in exc.items()}, np.array(weight, dtype=np.float64))
 
 
 def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> PointSet:
@@ -171,7 +204,9 @@ def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> P
 def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: float = 3.0,
               feature_dim: int = 1024) -> PointSet:
     """A synthetic point set with the records' shapes, for tests and dry runs: escalation helps (branch 2 beats
-    branch 1) exactly where a hidden direction of the features and the spread inputs is high."""
+    branch 1) exactly where a hidden direction of the features and the spread inputs is high. Sampling weights as
+    under amendment 57: two strata per task with inclusion probabilities 0.8 and 0.1 (drawn from a generator of
+    their own, so every other array is what it was before the weights existed)."""
     rng = np.random.default_rng(seed)
     n = n_per_task * n_tasks
     task = np.repeat(np.arange(n_tasks), n_per_task)
@@ -196,4 +231,6 @@ def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: fl
     remaining = {p: rng.uniform(5, 60, n) for p in DECIDERS}
     excluded = {p: np.zeros(n, dtype=bool) for p in DECIDERS}
     excluded["router"][rng.choice(n, size=n // 50, replace=False)] = True
-    return PointSet(cols, task, [f"s{i}" for i in range(n)], cols["budget_frac"][:, 0] >= 0.1, remaining, y, excluded)
+    pi = np.where(np.random.default_rng([seed, 57]).random(n) < 2 / 3, 0.8, 0.1)
+    return PointSet(cols, task, [f"s{i}" for i in range(n)], cols["budget_frac"][:, 0] >= 0.1, remaining, y, excluded,
+                    1.0 / pi)

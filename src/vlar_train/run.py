@@ -5,7 +5,9 @@
 
 Per fold and decider: the profile's excluded points are dropped (amendment 22); train on the 8 training tasks,
 early-stop on the validation task, choose λ on the validation task from the branch labels (`lam.choose`), predict
-the test task (kept for Phase 4 evaluation, not used here). Everything lands in <out>/fold<i>/<decider>/ (a
+the test task (kept for Phase 4 evaluation, not used here). Sampling weights (amendment 57 (3)-(4)): w_i = 1/π_i,
+normalised to mean 1 separately within the fold's training rows and its validation rows (the rows the decider
+uses, after its profile's exclusions), in the loss, in early stopping and in λ's gain and escalation rate. Everything lands in <out>/fold<i>/<decider>/ (a
 checkpoint per epoch, best.json, result.json) and <out>/summary.json."""
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from . import folds as F
 from . import lam as LAM
 from .data import PointSet
 from .deciders import BRANCHES, DECIDERS, inputs
-from .train import TrainConfig, seed_for, train
+from .train import TrainConfig, seed_for, train, unit_mean
 
 
 def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cfg: TrainConfig) -> dict:
@@ -31,11 +33,13 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
     y, ym = ps.targets(decider)
     tr, va, te = (m[k] & keep for k in ("train", "val", "test"))
     d = None if out is None else out / f"fold{i}" / decider
+    w_tr, w_va = unit_mean(ps.weight[tr], int(tr.sum())), unit_mean(ps.weight[va], int(va.sum()))   # amendment 57 (3)
     model = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(i, decider), cfg=cfg,
-                  ckpt_dir=None if d is None else d / "checkpoints")
+                  ckpt_dir=None if d is None else d / "checkpoints", w_tr=w_tr, w_va=w_va)
     pv = model.predict(x[va])
     both = (ym[va][:, 0] > 0) & (ym[va][:, 1] > 0)          # λ needs labels of branches 1 and 2 at the point
-    lam = LAM.choose(pv[both, 0], pv[both, 1], y[va][both, 0], y[va][both, 1], ps.can_escalate[va][both])
+    lam = LAM.choose(pv[both, 0], pv[both, 1], y[va][both, 0], y[va][both, 1], ps.can_escalate[va][both],
+                     weight=w_va[both])
     res = {"fold": i, "decider": decider, "width": int(x.shape[1]), "best_epoch": model.best_epoch,
            "val_loss": model.val_loss[model.best_epoch], "epochs_run": len(model.val_loss),
            "points": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum()),
@@ -45,7 +49,7 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
         d.mkdir(parents=True, exist_ok=True)
         (d / "result.json").write_text(json.dumps(res, indent=1, default=float))
         if te.any():
-            np.savez(d / "test_predictions.npz", p=model.predict(x[te]), y=y[te], mask=ym[te],
+            np.savez(d / "test_predictions.npz", p=model.predict(x[te]), y=y[te], mask=ym[te], weight=ps.weight[te],
                      snapshot_id=np.array([s for s, k in zip(ps.snapshot_id, te) if k]))
     return res
 
