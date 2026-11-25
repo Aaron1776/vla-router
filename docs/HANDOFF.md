@@ -1,4 +1,4 @@
-# Handoff: state of the harness build (2026-11-25: pilot done; check (iii) passed; amendment 58 rule says STOP; re-plan pending at max effort)
+# Handoff: state of the harness build (2026-11-25: re-plan done (amendments 63-64; rule says KEEP); waiting for the user's approval before Phase 1)
 
 Account values (project, bucket, VM name, billing account, service account) are written as `$PROJECT_ID`, `$BUCKET`, `$VM_NAME`, `$BILLING_ACCOUNT`,
 `$SA_NAME`: the git-ignored `ops/gcp/env.sh` holds them (`source ops/gcp/env.sh`); `tests/test_no_identifiers.py`
@@ -8,7 +8,59 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-25, ~01:00Z): pilot report done; the rule says stop; re-plan with the user (max effort)
+## START HERE (2026-11-25, ~03:30Z): re-plan proposed; Phase 1 waits for the user's approval
+
+**Read `docs/REPLAN-2026-11-25.md`** (all numbers; `outputs/pilot/replan.json` from `vlar-ops pilot replan`). The
+user's eighth message (their text is the source) decided the re-plan's design:
+- **SPEC §17 amendment 63** (items 1-5, logged 02:13Z and pushed as `b6b41ec` before analyses (a)-(c) ran):
+  - `cascader_nospread` is the headline cascader; `cascader_full` and `cascader_chunkspread` are ablations.
+  - The stop rule scores positives under `cascader_nospread`'s profile.
+  - The DAgger collectors are the router and `cascader_nospread`, both halves screened then re-run.
+  - Planned analyses (a)-(d) are logged.
+  - b3 and b4 are dropped from Phase 1 and DAgger (tunables: b1 and b2; heads 3-4 masked).
+  - Own-rate flags apply only from 10 failed-parent points, with shrinkage reported beside.
+  - λ fallback by cross-fitting; tasks 4 and 8 reported apart.
+  - §5-§10 name the roles, and §10's key comparisons are rewritten.
+- **Amendment 64** (item 7): boot sizing by the RAM rule. `supervise --limit-gib/--servers-peak-gb`, default 5.5 GiB,
+  gives 7 workers at the pilot's numbers.
+- **Item 9 done:** the bucket was checked (every marker's 22,227 files present at their recorded sizes; calibration,
+  logs, images); then **the VM and its disk were deleted** at 02:03:52Z, and `spend disk-deleted` was recorded.
+- **Item 8 done:** the pilot phase is closed (VM $2.3702). Ledger **$12.50**, $27.50 left to $40.
+
+**Results:**
+- **Rule re-applied** (positives under `cascader_nospread`, new budgets): **keep**. About 222 points per task with
+  the DAgger round (252 without) give 34.1 expected positives per task (95% CI 20.8-47.5) and 273 per fold;
+  bootstrap pass share 0.981; shrinkage agrees.
+- **(a):** under `cascader_full`'s charges only 34 of X-VLA's 398 successes fit the time limit, and none do in tasks
+  2-5 and 7-9. Under `cascader_nospread` 397 fit, under `cascader_chunkspread` 394.
+- **(b):** under `cascader_chunkspread`, failed parents give 13 of 59 positives (r_s 0.06). That row is added to the
+  pilot report.
+- **(c):** a π0.5 request costs 0.896 s on average. The measurement charge per decision point is 0.092 s for
+  `cascader_nospread`, 0.384 s for `cascader_chunkspread` and 1.307 s for `cascader_full` (1.46 π0.5 requests).
+- **Tasks 4 and 8:** 0 failed-parent positives even under `none`. Task 7 is the same.
+- **Budget:** label money $21.21 (Phase 1 $14.14, DAgger $7.07); lines are in REPLAN §3. The other account's sheet:
+  $15.66 planned, $20.33 upper, ~$25 cap, plus optional `cascader_chunkspread` $1.12 and λ sweep $1.46.
+- **Setup-count survey (Mac):** fixtures in tasks 3, 8 and 9 move 7-13 mm (median) at every count. Proposed rule
+  (A): a fresh simulator per episode, so count 2.
+
+**Next:**
+1. **The user's approval of REPLAN §6:**
+   - the plan;
+   - setup-count rule (A);
+   - whether the pilot's 109 labelled points join training.
+
+   No Phase 1 before approval. Revisions to the re-plan are SPEC §16 item 7 again (max effort).
+2. **Before Phase 1 (xhigh; max for any replay mismatch):**
+   - The setup-count code: each marker's `setup_count`; a fresh simulator for each fresh-start episode in
+     `ProductionEpisodes`; the replay check in re-runs, audits and π0.5-alone episodes.
+   - The re-run-parent selection (amendment 57: by episode, then k points).
+   - The Phase 1 steps, with spend-phase headers and `VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45
+     --max-jobs 2"`.
+   - Queueing the new disk's setup steps (`010`-`090`) before the VM exists (a new VM is needed:
+     `ops/gcp/30_create_vm.sh`).
+3. **Billing reconcile** for Nov 24-25 (`spend reconcile`) before the total passes ~$25.
+
+## Earlier 2026-11-25 (~01:00Z): pilot report done; the rule says stop; re-plan with the user (max effort)
 
 **Read `docs/PILOT-REPORT-2026-11-25.md`** (all numbers). The VM is **TERMINATED** (spend guard stopped `710-pilot`
 at the phase's stop point, exit 75, 00:34:31Z; 1,221 of 1,638 jobs, 417 pending); everything is downloaded to

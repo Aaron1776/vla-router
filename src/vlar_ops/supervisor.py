@@ -48,10 +48,37 @@ class Sizing:
     workers: int
     limit: int          # bytes per worker container
     max_jobs: int
+    rule: str = "share"         # "ram": amendment 64; "share": the rule before it (the pilot's boots)
+    servers_peak: int = 0       # the servers' peak the RAM rule planned with (bytes)
 
     def docker_args(self) -> str:
         m = f"{self.limit // MiB}m"
         return f"--memory={m} --memory-swap={m}"
+
+
+DEFAULT_WORKER_LIMIT = 22 * 256 * MiB     # 5.5 GiB: 1.30 x the largest measured worker peak, 4.54 GB (amendment 64)
+
+
+def size_workers_ram(mem_total: int, servers: int, workers: int, *, limit: int = DEFAULT_WORKER_LIMIT,
+                     servers_peak: Optional[int] = None, server_margin: float = 1.25,
+                     worker_base: int = 2 * GiB, per_task: int = 768 * MiB, max_jobs: Optional[int] = None) -> Sizing:
+    """SPEC §17 amendment 64 (amendment 62 (4)'s RAM rule): N workers at `limit` each run only if N x limit plus the
+    servers' peak resident memory fits inside the VM's RAM (MemTotal). At boot the peak is taken as the larger of the
+    servers' resident memory now x `server_margin` and `servers_peak`, the last measured peak, if given. N is the
+    largest count up to `workers` that fits; whatever RAM is left is the host's. At the pilot's numbers (MemTotal
+    67.42 GB, servers 18.96 GB at start, 20.45 GB peak) that is 7 workers at 5.5 GiB."""
+    if workers < 1:
+        raise SizingError("no workers")
+    if limit < 256 * MiB:
+        raise SizingError(f"a worker limit of {limit} bytes is not a limit")
+    peak = int(max(servers * server_margin, servers_peak or 0))
+    n = min(workers, int((mem_total - peak) // limit))
+    if n < 1:
+        raise SizingError(f"not one worker at {limit / GiB:.2f} GiB fits beside {peak / GiB:.1f} GiB of servers' peak "
+                          f"in {mem_total / GiB:.1f} GiB of RAM")
+    if max_jobs is None:
+        max_jobs = max(1, int((limit - worker_base) // per_task))
+    return Sizing(mem_total, servers, n, int(limit), int(max_jobs), rule="ram", servers_peak=peak)
 
 
 def size_workers(mem_total: int, servers: int, workers: int, *, server_margin: float = 1.25,
@@ -62,7 +89,8 @@ def size_workers(mem_total: int, servers: int, workers: int, *, server_margin: f
     to 256 MiB. `max_jobs` defaults to the number of tasks' simulators that fit in the limit beside a worker's base
     (*est.* from the w8 evidence: 8-9 GB at up to 10 tasks; the pilot measures it). With `fit`, as many workers (at
     most `workers`) as get `min_limit` each, instead of refusing (the pilot's resume, the user 2026-11-24: a limit at
-    least 25% above the measured peak)."""
+    least 25% above the measured peak). Superseded at boot by `size_workers_ram` (amendment 64); kept for the pilot's
+    sizing and its tests."""
     if workers < 1:
         raise SizingError("no workers")
     avail = mem_total * usable - servers * server_margin - host_reserve
@@ -281,18 +309,27 @@ class Supervisor:
 
 def supervise(ops_cfg: Mapping, *, phase: str, workers: int, worker_args: str, worker_env: Path,
               history: Optional[Path], step: str, max_jobs: Optional[int] = None, units: Optional[Units] = None,
-              total: Optional[int] = None, min_limit: Optional[int] = None, **kw) -> dict:
-    """Size the workers from the running servers, write worker.env, start and supervise them. With `min_limit`
-    (bytes), as many workers as get at least that much each (at most `workers`)."""
+              total: Optional[int] = None, min_limit: Optional[int] = None, limit: Optional[int] = None,
+              servers_peak: Optional[int] = None, **kw) -> dict:
+    """Size the workers from the running servers, write worker.env, start and supervise them. By amendment 64's RAM
+    rule (`size_workers_ram`: `limit` bytes each, default 5.5 GiB; `servers_peak` the last measured peak); with
+    `min_limit` (bytes), the pilot's rule instead: as many workers as get at least that much each (at most
+    `workers`). The summary's `ram_rule` says whether the servers' measured peak kept the rule."""
     from .cli import _queue
     units = units or SystemdUnits()
     mem = units.memory()
     missing = [n for n in SERVER_CONTAINERS if n not in mem]
     if missing:
         raise SizingError(f"server containers not running: {missing}")
-    fit = {"min_limit": int(min_limit), "fit": True} if min_limit else {}
-    sizing = size_workers(total if total is not None else mem_total(), sum(mem[n] for n in SERVER_CONTAINERS),
-                          workers, max_jobs=max_jobs, **fit)
+    total = total if total is not None else mem_total()
+    servers = sum(mem[n] for n in SERVER_CONTAINERS)
+    if min_limit:
+        if limit is not None or servers_peak is not None:
+            raise SizingError("--min-limit-gib is the pilot's rule; --limit-gib and --servers-peak-gb are the RAM rule's")
+        sizing = size_workers(total, servers, workers, max_jobs=max_jobs, min_limit=int(min_limit), fit=True)
+    else:
+        sizing = size_workers_ram(total, servers, workers, limit=int(limit or DEFAULT_WORKER_LIMIT),
+                                  servers_peak=servers_peak, max_jobs=max_jobs)
     write_worker_env(worker_env, worker_args, sizing)
     print(json.dumps({"sizing": asdict(sizing), "docker_args": sizing.docker_args()}))
     q = _queue(dict(ops_cfg))
@@ -300,6 +337,12 @@ def supervise(ops_cfg: Mapping, *, phase: str, workers: int, worker_args: str, w
         sup = Supervisor(q, units, phase=phase, workers=sizing.workers,
                          stop_flag=Path(ops_cfg["local_root"]) / "STOP",
                          history=history, step=step, **kw)
-        return {"sizing": asdict(sizing), **sup.run()}
+        out = {"sizing": asdict(sizing), **sup.run()}
+        measured = sum(v for k, v in (out.get("peak_memory_bytes") or {}).items() if k in SERVER_CONTAINERS)
+        if sizing.rule == "ram":
+            out["ram_rule"] = {"workers": sizing.workers, "limit": sizing.limit, "mem_total": sizing.mem_total,
+                               "servers_peak_planned": sizing.servers_peak, "servers_peak_measured": measured,
+                               "fits_at_measured_peak": sizing.workers * sizing.limit + measured <= sizing.mem_total}
+        return out
     finally:
         q.close()

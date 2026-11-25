@@ -36,8 +36,10 @@ SELECTION = {"scheme": STRATIFIED, "seed": 20261124, "per_task": 15, "failed_sha
 SEEDS, TIER_ONE_SEEDS, ORDER_SEED = 3, 2, 7
 CHECK_SEED = "pilot-checks-2026-11-24"
 N_EPISODE_CHECKS = 3
-POSITIVE = 1 / 3                 # p_2 - p_1 >= 1/3 under cascader_full's profile (§4)
-STOP_PROFILE = "cascader_full"
+POSITIVE = 1 / 3                 # p_2 - p_1 >= 1/3 under the stop rule's profile (§4)
+STOP_PROFILE = "cascader_nospread"     # SPEC §17 amendment 63 (2): the headline cascader's profile (the router's)
+PILOT_RULE_PROFILE = "cascader_full"   # amendment 58 as the pilot report applied it (the headline before 63)
+FULL_PROFILE = "cascader_full"         # the profile whose probe charges cut rescues (counted descriptively)
 
 
 class PilotError(RuntimeError):
@@ -563,9 +565,10 @@ def stop_rule(expected: Mapping[int, float], *, per_task: float = 20, per_fold: 
             "folds_short": short, "fold_expected": fold_sum}
 
 
-DECISIONS = {"keep": "keep the DAgger round (the current plan)",
-             "drop": "drop the DAgger round and its post-DAgger evaluation; move its money into Phase 1 points; "
-                     "evaluate cascader_nospread in the single round",
+DECISIONS = {"keep": "keep the DAgger round (router and cascader_nospread collectors) and both evaluation rounds "
+                     "(amendment 63 (2))",
+             "drop": "drop the DAgger round and move its money into Phase 1 points; one evaluation round (router, "
+                     "cascader_nospread, cascader_full, the baselines) (amendment 63 (2))",
              "stop": "stop before Phase 1 and re-plan with the user"}
 
 
@@ -623,12 +626,47 @@ def pooled_rates(cells: Mapping[tuple[int, str], tuple[int, int]]) -> dict[str, 
     return out
 
 
-MIN_OWN_POINTS = 10     # amendment 62 (1): a task's own rate flags it only from 10 labelled points
+MIN_OWN_POINTS = 10     # a task's own rates flag it only from 10 labelled points of the basis below
+OWN_BASIS = "failure"   # amendment 63 (5): its labelled failed-parent points ("all": amendment 62 (1), every point)
+
+
+def shrunk_rates(cells: Mapping[tuple[int, str], tuple[int, int]], *, mus: Optional[Sequence[float]] = None,
+                 kappas: Optional[Sequence[float]] = None) -> dict[str, Any]:
+    """Amendment 63 (5): an empirical-Bayes estimate of each task's positive rate in each parent-outcome stratum. A
+    beta-binomial across tasks (mean mu, concentration kappa = alpha + beta) is fitted to the (positives, points) of
+    every task by maximum marginal likelihood on a grid, and each task gets its posterior mean
+    (k_t + mu kappa) / (n_t + kappa). Points count as independent here (the pooled projection's bootstrap carries
+    the episode clustering). A fit at the grid's largest kappa means no between-task spread is detected: the
+    estimates are then the pooled rate."""
+    mus = list(mus or [i / 400 for i in range(1, 400)])
+    kappas = list(kappas or [10 ** (e / 20) for e in range(-20, 101)])          # 0.1 .. 1e5
+
+    def lbeta(a: float, b: float) -> float:
+        return math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+    fit: dict[str, Any] = {}
+    rates: dict[tuple[int, str], float] = {}
+    for o in OUTCOMES:
+        data = [(t, k, n) for (t, oo), (k, n) in sorted(cells.items()) if oo == o and n > 0]
+        if not data:
+            continue
+        best = (-math.inf, mus[0], kappas[0])
+        for kap in kappas:
+            for mu in mus:
+                a, b = mu * kap, (1 - mu) * kap
+                ll = sum(lbeta(k + a, n - k + b) for _, k, n in data) - len(data) * lbeta(a, b)
+                if ll > best[0]:
+                    best = (ll, mu, kap)
+        _, mu, kap = best
+        fit[o] = {"mu": mu, "kappa": kap, "kappa_at_grid_top": kap == kappas[-1],
+                  "mu_at_grid_edge": mu in (mus[0], mus[-1])}
+        for t, k, n in data:
+            rates[(t, o)] = (k + mu * kap) / (n + kap)
+    return {"fit": fit, "rates": rates}
 
 
 def project(points: Sequence[Mapping], strata: Mapping[int, Mapping[str, Any]], budgets: Mapping[str, float], *,
             pools: Mapping[str, int], share: float = 2 / 3, n_boot: int = 2000, seed: int = 0,
-            min_own: int = MIN_OWN_POINTS) -> dict[str, Any]:
+            min_own: int = MIN_OWN_POINTS, own_basis: str = OWN_BASIS) -> dict[str, Any]:
     """Expected positives per task and fold under both schemes at each budget (points per task), with cluster-
     bootstrap 95% intervals and the share of replicates that pass the stop rule. `points`: one dict per labelled
     pilot point (task_id, parent_outcome, episode_id, positive). `strata[t]`: phi and points_failed (Phase 1's
@@ -639,10 +677,15 @@ def project(points: Sequence[Mapping], strata: Mapping[int, Mapping[str, Any]], 
     Amendment 62 (1), set before the results: the projections the stop rule runs on apply the stratum rates pooled
     across tasks to each task's own failure rate (phi, failed points available) and budget. Each task's projection
     from its own rates is shown beside them (`own_expected`), and flags the task only if it has at least `min_own`
-    labelled points. Every replicate resamples episodes within each (task, outcome) cell, then pools."""
+    labelled points of `own_basis`: its failed-parent points (amendment 63 (5)) or all its points (amendment 62 (1)).
+    Every replicate resamples episodes within each (task, outcome) cell, then pools. Beside them, not deciding
+    (amendment 63 (5): the user decides if it would change the decision), the projection from `shrunk_rates`."""
+    if own_basis not in ("failure", "all"):
+        raise PilotError(f"own_basis {own_basis!r}: 'failure' (amendment 63) or 'all' (amendment 62)")
     tasks = sorted(strata)
     n_task = {t: sum(1 for p in points if p["task_id"] == t) for t in tasks}
-    judged = [t for t in tasks if n_task[t] >= min_own]
+    n_failed = {t: sum(1 for p in points if p["task_id"] == t and p["parent_outcome"] == "failure") for t in tasks}
+    judged = [t for t in tasks if (n_failed if own_basis == "failure" else n_task)[t] >= min_own]
 
     def exp_for(rate_of, b, scheme):
         n = budgets[b]
@@ -666,6 +709,7 @@ def project(points: Sequence[Mapping], strata: Mapping[int, Mapping[str, Any]], 
 
     cells = cell_counts(points)
     point, own_rates, pooled = one(cells)
+    shrink = shrunk_rates(cells)
     rng = random.Random(seed)
     boots = [one(cell_counts(points, rng)) for _ in range(n_boot)]
 
@@ -686,13 +730,20 @@ def project(points: Sequence[Mapping], strata: Mapping[int, Mapping[str, Any]], 
             "own_expected": own_exp,
             "own_expected_ci95": {t: q([bt[0][key][1][t] for bt in boots]) for t in tasks},
             "bootstrap_pass_share": sum(rule(bt[0][key])["passes"] for bt in boots) / len(boots)}
+        sh = exp_for(lambda t, o: shrink["rates"].get((t, o), pooled[o]), b, scheme)
+        sr = stop_rule(sh)
+        out[f"{b}/{scheme}"].update({"shrinkage_expected": sh, "shrinkage_flagged": sr["flagged_tasks"],
+                                     "shrinkage_folds_short": sr["folds_short"], "shrinkage_passes": sr["passes"]})
     out["pooled_rates"] = {o: {"rate": pooled[o], "positives": sum(c[0] for (t, oo), c in cells.items() if oo == o),
                                "n": sum(c[1] for (t, oo), c in cells.items() if oo == o),
                                "ci95": q([bt[2][o] for bt in boots])} for o in OUTCOMES}
     out["rates"] = {f"t{t}/{o}": {"rate": own_rates[(t, o)], "positives": cells[(t, o)][0], "n": cells[(t, o)][1],
                                   "ci95": q([bt[1].get((t, o), 0.0) for bt in boots])}
                     for (t, o) in sorted(cells)}
+    out["shrinkage"] = {"fit": shrink["fit"], "rates": {f"t{t}/{o}": r for (t, o), r in sorted(shrink["rates"].items())}}
     out["labelled_per_task"] = n_task
+    out["labelled_failed_per_task"] = n_failed
+    out["own_basis"] = own_basis
     out["own_rate_judged_tasks"] = judged
     return out
 
@@ -711,12 +762,14 @@ def _gain(labels: Mapping[str, Mapping[str, Any]], b: str, prof: str):
 
 
 def point_rows(runs: Sequence[Mapping], events: Sequence[Mapping], label_map: Mapping[str, Mapping], *,
-               limits_s: Mapping[int, float], charges, profiles: Optional[Sequence[str]] = None
-               ) -> tuple[list[dict], list[str]]:
+               limits_s: Mapping[int, float], charges, profiles: Optional[Sequence[str]] = None,
+               stop_profile: str = STOP_PROFILE) -> tuple[list[dict], list[str]]:
     """One row per pilot point: its stratum and inclusion probability, p_b per branch and profile (as
     `vlar_harness.labels.point_labels` scores them from the base parent's log and the pilot's branch logs), the
-    excluded profiles, and `positive` (p_2 - p_1 >= 1/3 under cascader_full, §4; False where that profile is
-    excluded, which `positive_scored` records). Points that cannot be labelled are listed, not guessed."""
+    excluded profiles, and `positive` (p_2 - p_1 >= 1/3 under `stop_profile`, §4: cascader_full in amendment 58 as the
+    pilot report applied it, cascader_nospread since amendment 63; False where that profile is excluded, which
+    `positive_scored` records), and `positive_by` (the same test under every profile; None where excluded). Points
+    that cannot be labelled are listed, not guessed."""
     from vlar_harness import labels as L
     from vlar_harness.config import PROFILES
     from vlar_train.data import group_events, prefix_of
@@ -741,14 +794,17 @@ def point_rows(runs: Sequence[Mapping], events: Sequence[Mapping], label_map: Ma
         except (L.LabelError, KeyError) as e:
             problems.append(f"{sid}: {e}")
             continue
-        g = _gain(pl.labels, "b2_one_call", STOP_PROFILE)
+        g = _gain(pl.labels, "b2_one_call", stop_profile)
+        pos_by = {prof: (None if (gp := _gain(pl.labels, "b2_one_call", prof)) is None else bool(gp >= POSITIVE_EXACT))
+                  for prof in profiles}
         rows.append({"snapshot_id": sid, "task_id": int(p["task_id"]), "episode_id": p["episode_id"],
                      "index": int(p["index"]), "parent_outcome": sel["stratum"]["parent_outcome"],
                      "inclusion_prob": float(sel["inclusion_prob"]), "excluded": list(pl.excluded),
                      "gain": {b: {prof: (None if (d := _gain(pl.labels, b, prof)) is None else float(d))
                                   for prof in profiles} for b in COMPARED if b in pl.labels},
                      "p": {b: {prof: lab.value for prof, lab in d.items()} for b, d in pl.labels.items()},
-                     "positive": bool(g is not None and g >= POSITIVE_EXACT), "positive_scored": g is not None})
+                     "positive": bool(g is not None and g >= POSITIVE_EXACT), "positive_scored": g is not None,
+                     "positive_by": pos_by})
     return rows, problems
 
 
@@ -786,13 +842,17 @@ def rate_table(rows: Sequence[Mapping], profiles: Sequence[str]) -> dict[str, An
             st = [r for r in rs if r["parent_outcome"] == o]
             g[f"positive_{o}"] = {"n": len(st), "positives": sum(r["positive"] for r in st),
                                   "unscored": sum(not r["positive_scored"] for r in st)}
+            g[f"positive_{o}_by_profile"] = {
+                prof: {"positives": sum(bool(r.get("positive_by", {}).get(prof)) for r in st),
+                       "unscored": sum(r.get("positive_by", {}).get(prof) is None for r in st)}
+                for prof in profiles}
         pos = [r for r in rs if r["positive_scored"]]
         if pos:
             g["positive_reweighted"] = weighted_rate([r["positive"] for r in pos], [r["inclusion_prob"] for r in pos])
         lost = [r for r in rs if (r["gain"].get("b2_one_call", {}).get("none") or 0) > 0
-                and not ((r["gain"]["b2_one_call"].get(STOP_PROFILE) or 0) > 0)]
+                and not ((r["gain"]["b2_one_call"].get(FULL_PROFILE) or 0) > 0)]
         g["rescues_lost_to_cascader_full_cut"] = {"n": len(lost), "excluded_at_the_point": sum(
-            STOP_PROFILE in r["excluded"] for r in lost)}
+            FULL_PROFILE in r["excluded"] for r in lost)}
         out[name] = g
     return out
 
@@ -979,9 +1039,11 @@ def restart_overhead(markers: Sequence[Mapping], *, gap_s: float = 20.0) -> dict
 
 
 def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, phase_vm_usd: Optional[float] = None,
-           cfg=None, n_boot: int = 2000) -> dict[str, Any]:
+           cfg=None, n_boot: int = 2000, stop_profile: str = STOP_PROFILE, own_basis: str = OWN_BASIS) -> dict[str, Any]:
     """The pilot report (§4, §0.4, amendment 58) from local copies: <root>/records/{runs,events}/{base,pilot}/,
-    <root>/results/pilot/ (markers), the plan directory and <storage>/pilot/reports/."""
+    <root>/results/pilot/ (markers), the plan directory and <storage>/pilot/reports/. `docs/PILOT-REPORT-2026-11-25.md`
+    is `stop_profile=PILOT_RULE_PROFILE, own_basis="all"` (amendments 58 and 62 as set before the results); the
+    defaults are amendment 63's."""
     from vlar_harness import clock as clk
     from vlar_harness.config import PROFILES, load_config
     from vlar_harness.dataset import read_table
@@ -992,7 +1054,8 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
     label_map = json.loads((Path(plan_dir) / "labels.json").read_text())
     selection = json.loads((Path(plan_dir) / "selection.json").read_text())
     rows, problems = point_rows(read_table(root, "runs").to_pylist(), read_table(root, "events").to_pylist(),
-                                label_map, limits_s=limits, charges=clk.Charges.from_config(cfg))
+                                label_map, limits_s=limits, charges=clk.Charges.from_config(cfg),
+                                stop_profile=stop_profile)
     markers = [json.loads(f.read_text()) for f in sorted((Path(root) / "results" / PHASE).glob("*.json"))]
     rd = Path(reports_dir)
     read_jsonl = lambda f: [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []  # noqa
@@ -1004,7 +1067,7 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
         budgets.update({"measured_current": mb["current"], "measured_moved": mb["moved"]})
     pools = {k: (3 if k.endswith("current") else 2) for k in budgets}
     strata = {int(t): v for t, v in selection["phase1_strata"].items()}
-    proj = project(rows, strata, budgets, pools=pools, n_boot=n_boot) if rows else {}
+    proj = project(rows, strata, budgets, pools=pools, n_boot=n_boot, own_basis=own_basis) if rows else {}
     dec = {"rule": decision(proj["current/stratified"]["passes"], proj["moved/stratified"]["passes"])} if rows else {}
     if "measured_current/stratified" in proj:
         dec["at_measured_prices"] = decision(proj["measured_current/stratified"]["passes"],
@@ -1038,11 +1101,16 @@ def report(root: Path, plan_dir: Path, reports_dir: Path, *, hourly_usd: float, 
             "supervisor_events": {e: sum(1 for x in sup.get("events", []) if x.get("outcome") == e)
                                   for e in sorted({x.get("outcome") for x in sup.get("events", [])})},
             "restart_overhead": restart_overhead(markers),
+            "stop_profile": stop_profile, "own_basis": own_basis,
             "notes": ["Amendment 62 (logged 2026-11-24 22:34Z, before any result of the resumed boot was downloaded "
                       "or read): the stop rule runs on stratum rates pooled across tasks, applied to each task's own "
-                      "failure rate and budget; a task's own rate flags it only from 10 labelled points; costs and "
-                      "measured-price budgets come from the resumed boot's jobs only (the first boot's apart); a "
-                      "worker count fits only if its limits plus the servers' peaks fit inside RAM.",
+                      "failure rate and budget; costs and measured-price budgets come from the resumed boot's jobs "
+                      "only (the first boot's apart); a worker count fits only if its limits plus the servers' peaks "
+                      "fit inside RAM.",
+                      f"Positives scored under {stop_profile} (amendment 58: cascader_full; amendment 63: "
+                      f"cascader_nospread); a task's own rates flag it only from {MIN_OWN_POINTS} labelled "
+                      + ("failed-parent points (amendment 63 (5))." if own_basis == "failure"
+                         else "points (amendment 62 (1))."),
                       "Exploration and DAgger parents are projected with base-parent rates (none exist yet).",
                       "The pilot's eligible points end at index 49 (b3's three calls); Phase 1's at 51.",
                       "The re-run cost r = 74 VM-s is an estimate; the pilot does not measure it."]}

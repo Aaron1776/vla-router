@@ -170,7 +170,9 @@ def cmd_supervise(a: argparse.Namespace) -> None:
         summary = S.supervise(cfg, phase=a.phase, workers=a.workers, worker_args=a.worker_args,
                               worker_env=Path(a.worker_env), history=Path(a.history) if a.history else None,
                               step=a.step, max_jobs=a.max_jobs, max_restarts=a.max_restarts, poll_s=a.poll_s,
-                              min_limit=int(a.min_limit_gib * S.GiB) if a.min_limit_gib else None)
+                              min_limit=int(a.min_limit_gib * S.GiB) if a.min_limit_gib else None,
+                              limit=int(a.limit_gib * S.GiB) if a.limit_gib else None,
+                              servers_peak=int(a.servers_peak_gb * 1e9) if a.servers_peak_gb else None)
     except S.SizingError as e:
         sys.exit(f"supervise: {e}")
     if a.summary:                       # peak memory, restarts and recycles for the step's report (pilot §0.4 (iv))
@@ -315,6 +317,11 @@ def cmd_smoke(a: argparse.Namespace) -> None:
         sys.exit(f"SMOKE {a.cmd.upper()} MISMATCH: {rep.get('problems') or [j['problems'] for j in rep.get('jobs', [])]}")
 
 
+def pilot_defaults(name: str):
+    from . import pilot
+    return getattr(pilot, name)
+
+
 def cmd_pilot(a: argparse.Namespace) -> None:
     from . import pilot
     out = Path(a.out)
@@ -324,10 +331,19 @@ def cmd_pilot(a: argparse.Namespace) -> None:
         return
     if a.cmd == "report":                    # on the Mac, from local copies of the records and reports
         rep = pilot.report(Path(a.root), Path(a.plan_dir), Path(a.reports), hourly_usd=a.hourly_usd,
-                           phase_vm_usd=a.phase_vm_usd)
+                           phase_vm_usd=a.phase_vm_usd, stop_profile=a.stop_profile, own_basis=a.own_basis)
         out.write_text(json.dumps(rep, indent=1, default=str))
         print(json.dumps({"labelled": rep["labelled"], "problems": len(rep["problems"]), "decision": rep["decision"],
                           "budgets": rep["budgets_points_per_task"]}, default=str))
+        return
+    if a.cmd == "replan":                    # on the Mac: SPEC §16 item 7 (amendments 61, 63, 64; vlar_ops/replan.py)
+        from . import replan
+        if a.available_usd is None or not a.pilot_report:
+            sys.exit("replan: --available-usd and --pilot-report are required")
+        rep = replan.report(Path(a.root), Path(a.plan_dir), json.loads(Path(a.pilot_report).read_text()),
+                            available_usd=a.available_usd, hourly_usd=a.hourly_usd)
+        out.write_text(json.dumps(rep, indent=1, default=str))
+        print(json.dumps({"decision": rep["decision"], "budgets": rep["budgets_points_per_task"]}, default=str))
         return
     if a.cmd == "long-episodes":             # on the Mac: the corrected check (iii)'s subjects file in the plan dir
         print(json.dumps(pilot.write_long_episode_checks(Path(a.root), Path(a.plan_dir), out)))
@@ -434,7 +450,11 @@ def main(argv: list[str] | None = None) -> None:
     su.add_argument("--worker-args", required=True, help="VLAR_WORKER_ARGS without --max-jobs")
     su.add_argument("--max-jobs", type=int, help="default: from the memory limit")
     su.add_argument("--min-limit-gib", type=float,
-                    help="as many workers (at most --workers) as get this memory limit each, or more")
+                    help="the pilot's rule: as many workers (at most --workers) as get this memory limit each, or more")
+    su.add_argument("--limit-gib", type=float,
+                    help="amendment 64's RAM rule (the default): each worker's memory limit (default 5.5)")
+    su.add_argument("--servers-peak-gb", type=float,
+                    help="RAM rule: the servers' last measured peak resident memory, GB (else 1.25 x at start)")
     su.add_argument("--worker-env", default="/etc/vlar/worker.env")
     su.add_argument("--history")
     su.add_argument("--step", default="")
@@ -504,7 +524,7 @@ def main(argv: list[str] | None = None) -> None:
     sm.add_argument("--ops-config")
     sm.set_defaults(fn=cmd_smoke)
     pi = sub.add_parser("pilot", help="the pilot (PROPOSALS-2026-11-24 §4, §0.4; vlar_ops/pilot.py)")
-    pi.add_argument("cmd", choices=["plan", "check", "report", "reorder", "long-episodes"])
+    pi.add_argument("cmd", choices=["plan", "check", "report", "reorder", "long-episodes", "replan"])
     pi.add_argument("--subjects", default="checks.json",
                     help="check: the subjects file in --plan-dir (checks-iii.json: the corrected check (iii))")
     pi.add_argument("--root", help="plan: local copy of records/{runs,events}/base; report: also records/*/pilot "
@@ -514,6 +534,13 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--reports", help="report: local copy of <storage>/pilot/reports/")
     pi.add_argument("--hourly-usd", type=float, default=0.472, help="report: VM price per hour")
     pi.add_argument("--phase-vm-usd", type=float, help="report: the ledger's VM spend in the pilot phase")
+    pi.add_argument("--available-usd", type=float, help="replan: $40 less the ledger's total")
+    pi.add_argument("--pilot-report", help="replan: the pilot report's JSON (its measured costs)")
+    pi.add_argument("--stop-profile", default=pilot_defaults("STOP_PROFILE"),
+                    help="report: the profile positives are scored under (amendment 63: cascader_nospread; the "
+                         "pilot report's amendment 58 rule: cascader_full)")
+    pi.add_argument("--own-basis", choices=["failure", "all"], default=pilot_defaults("OWN_BASIS"),
+                    help="report: count a task's labelled failed-parent points (amendment 63) or all (amendment 62)")
     pi.add_argument("--staging", default="/var/lib/vlar/pilot/staging", help="check: where the re-runs are written")
     pi.add_argument("--out", required=True, help="plan: the output directory; check: the JSON report")
     pi.add_argument("--ops-config")

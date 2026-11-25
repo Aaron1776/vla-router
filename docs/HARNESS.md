@@ -954,6 +954,11 @@ its first X-VLA call (event 1; 378 vs 396 steps). The re-run was not set up as t
   and replay code, and a proposed rule for runs that start fresh (exploration screening, evaluation trunks).
 - The pilot's corrected check (iii) (`checks-iii.json`) runs every re-run on a fresh simulator brought to the base
   run's count (`base_loads`, `warm_up`) and checks the fixtures again afterwards.
+- **Mac survey, counts 2-51 (2026-11-25; tasks 3, 8, 9 and control task 0, initial states 0 and 30):** in tasks 3,
+  8 and 9 the fixtures land somewhere new at every count, 7-13 mm (median) from their count-2 place and up to
+  18 mm; consecutive counts differ by ~8-12 mm (a fresh draw per load, not a drift). Task 0 never moves. A
+  setup takes 0.26-0.67 s on the Mac. Proposed rule for fresh-start runs (`docs/REPLAN-2026-11-25.md` §5): (A)
+  a fresh simulator per episode, so every fresh-start run is at count 2 and every replay builds a fresh one.
 
 ## Phase 2 training (`vlar_train`, started 2026-11-23)
 

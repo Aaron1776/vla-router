@@ -215,7 +215,7 @@ def test_projections_pool_stratum_rates_across_tasks_and_own_rates_flag_only_fro
     pts = labelled(spec)
     strata = {t: {"phi": 0.2, "points_failed": 500} for t in range(10)}
     strata[1] = {"phi": 0.1, "points_failed": 4}                 # few failed points: capped at 3 x 4 = 12
-    out = pilot.project(pts, strata, {"current": 30}, pools={"current": 3}, n_boot=50)
+    out = pilot.project(pts, strata, {"current": 30}, pools={"current": 3}, n_boot=50, own_basis="all")
     cur = out["current/stratified"]
     assert out["pooled_rates"]["failure"] == {"rate": pytest.approx(0.9), "positives": 54, "n": 60,
                                               "ci95": out["pooled_rates"]["failure"]["ci95"]}
@@ -229,10 +229,49 @@ def test_projections_pool_stratum_rates_across_tasks_and_own_rates_flag_only_fro
     assert lo == hi == 0.0 and out["rates"]["t2/failure"]["rate"] == 1.0
     # at 10 labelled points a task's own rate can flag it, even where the pooled projection passes
     spec[(0, "failure")] += [(f"base/t0/i{5 + i}", False) for i in range(3)]
-    out = pilot.project(labelled(spec), strata, {"big": 90}, pools={"big": 3}, n_boot=20)
+    out = pilot.project(labelled(spec), strata, {"big": 90}, pools={"big": 3}, n_boot=20, own_basis="all")
     big = out["big/stratified"]
     assert out["labelled_per_task"][0] == 10 and out["own_rate_judged_tasks"] == [0]
     assert big["expected"][0] >= 20 and big["flagged_by_own_rate"] == [0] and 0 in big["flagged_tasks"]
+
+
+def test_amendment_63_own_rates_flag_only_from_10_failed_parent_points_and_shrinkage_sits_beside():
+    """Amendment 63 (5): a task's own rates flag it only from 10 labelled failed-parent points (9 failed + 1 successful
+    is not enough); the pooled projection still decides; the shrinkage projection is reported beside it."""
+    spec = {}
+    for t in range(10):
+        spec[(t, "failure")] = [(f"base/t{t}/i{i}", t != 0) for i in range(3) for _ in range(2)]
+        spec[(t, "success")] = [(f"base/t{t}/i{10 + i}", False) for i in range(1)]
+    spec[(0, "failure")] += [(f"base/t0/i{5 + i}", False) for i in range(3)]      # task 0: 9 failed, 1 successful
+    strata = {t: {"phi": 0.2, "points_failed": 500} for t in range(10)}
+    out = pilot.project(labelled(spec), strata, {"big": 90}, pools={"big": 3}, n_boot=20)
+    big = out["big/stratified"]
+    assert out["own_basis"] == "failure" and out["labelled_failed_per_task"][0] == 9
+    assert out["labelled_per_task"][0] == 10 and out["own_rate_judged_tasks"] == []
+    assert big["flagged_by_own_rate"] == [] and big["flagged_tasks"] == [] and big["passes"]
+    spec[(0, "failure")] += [("base/t0/i9", False)]                                # the 10th failed-parent point
+    out = pilot.project(labelled(spec), strata, {"big": 90}, pools={"big": 3}, n_boot=20)
+    assert out["own_rate_judged_tasks"] == [0] and out["big/stratified"]["flagged_by_own_rate"] == [0]
+    assert out["big/stratified"]["flagged_tasks"] == [0] and out["big/stratified"]["passes"]   # 1 flagged <= 3
+    with pytest.raises(pilot.PilotError, match="own_basis"):
+        pilot.project(labelled(spec), strata, {"big": 90}, pools={"big": 3}, n_boot=5, own_basis="points")
+    # the shrinkage projection is reported for every budget and scheme, and does not decide
+    sh = out["big/stratified"]
+    assert set(sh["shrinkage_expected"]) == set(range(10)) and isinstance(sh["shrinkage_passes"], bool)
+    assert sh["shrinkage_expected"][0] < sh["expected"][0]     # task 0's 0/10 pulls its own estimate down
+
+
+def test_shrinkage_is_pooled_without_spread_and_near_own_rates_with_much():
+    same = {(t, "failure"): (2, 10) for t in range(10)}                         # no between-task spread
+    fit = pilot.shrunk_rates(same)
+    assert fit["fit"]["failure"]["kappa_at_grid_top"]
+    assert all(r == pytest.approx(0.2, abs=1e-3) for r in fit["rates"].values())
+    split = {(t, "failure"): ((40, 40) if t < 5 else (0, 40)) for t in range(10)}  # half always, half never
+    fit = pilot.shrunk_rates(split)
+    k = fit["fit"]["failure"]["kappa"]
+    assert k < 1 and fit["rates"][(0, "failure")] > 0.97 and fit["rates"][(9, "failure")] < 0.03
+    mu = fit["fit"]["failure"]["mu"]
+    assert fit["rates"][(0, "failure")] == pytest.approx((40 + mu * k) / (40 + k))   # the posterior mean
 
 
 def test_the_bootstrap_resamples_parent_episodes_not_points():

@@ -214,3 +214,41 @@ def test_supervise_with_a_minimum_limit_starts_only_the_workers_that_fit(tmp_pat
     # 0.95 x 36 - 1.25 x 19 - 4 = 6.45 GiB: one worker of at least 5 GiB
     assert out["sizing"]["workers"] == 1 and units.starts and set(units.starts) == {1}
     assert "--memory=6400m" in (tmp_path / "w.env").read_text()
+
+
+def test_the_ram_rule_runs_7_workers_at_the_pilots_numbers_and_never_plans_past_ram():
+    """SPEC §17 amendment 64 (amendment 62 (4)): N x limit + the servers' peak must fit inside MemTotal; at boot the
+    peak is max(1.25 x the servers now, the last measured peak). The pilot's resumed boot: 7 at 5.5 GiB, not 8."""
+    mem, start, peak = 67_416_563_712, 18_955_838_160, 20_454_781_747
+    s = S.size_workers_ram(mem, start, 8, servers_peak=peak, max_jobs=2)
+    assert (s.workers, s.limit, s.max_jobs, s.rule) == (7, S.DEFAULT_WORKER_LIMIT, 2, "ram")
+    assert s.servers_peak == int(start * 1.25) > peak                       # the boot estimate is the larger
+    assert 7 * s.limit + s.servers_peak <= mem < 8 * s.limit + s.servers_peak
+    assert 7 * s.limit + peak <= mem < 8 * s.limit + peak                   # also at the measured peak: 8 do not fit
+    assert S.size_workers_ram(mem, start, 6, servers_peak=peak).workers == 6      # never more than asked
+    assert S.size_workers_ram(mem, start, 8, servers_peak=30 * 10 ** 9).workers == 6   # a larger measured peak
+    assert S.size_workers_ram(mem, start, 8, limit=5 * GiB).workers == 8
+    with pytest.raises(S.SizingError, match="not one worker"):
+        S.size_workers_ram(mem, start, 8, servers_peak=mem)
+    with pytest.raises(S.SizingError, match="no workers"):
+        S.size_workers_ram(mem, start, 0)
+
+
+def test_supervise_sizes_by_the_ram_rule_unless_told_the_pilots_rule_and_reports_the_measured_peak(tmp_path,
+                                                                                                 monkeypatch):
+    q = make_queue(tmp_path, n=2)
+    units = FakeUnits(q, {1: [("work", 5)], 2: [("work", 5)], 3: [("work", 5)]})
+    units.memory = lambda: {"vlar-xvla": 5 * GiB, "vlar-pi05": 14 * GiB}
+    monkeypatch.setattr("vlar_ops.cli._queue", lambda cfg: q)
+    cfg = {"local_root": str(tmp_path), "storage_url": f"file://{tmp_path / 'bucket'}"}
+    out = S.supervise(cfg, phase="base", workers=3, worker_args="--phase base", worker_env=tmp_path / "w.env",
+                      history=None, step="t", units=units, total=36 * GiB, max_jobs=2, sleep=lambda s: None)
+    # 36 GiB - 1.25 x 19 GiB = 12.25 GiB: two workers at 5.5 GiB
+    assert out["sizing"]["rule"] == "ram" and out["sizing"]["workers"] == 2 and set(units.starts) == {1, 2}
+    assert "--memory=5632m" in (tmp_path / "w.env").read_text()
+    rr = out["ram_rule"]
+    assert rr["workers"] == 2 and rr["servers_peak_planned"] == int(19 * GiB * 1.25)
+    assert rr["fits_at_measured_peak"] == (2 * 5.5 * GiB + rr["servers_peak_measured"] <= 36 * GiB)
+    with pytest.raises(S.SizingError, match="pilot's rule"):
+        S.supervise(cfg, phase="base", workers=3, worker_args="--phase base", worker_env=tmp_path / "w.env",
+                    history=None, step="t", units=units, total=36 * GiB, min_limit=5 * GiB, limit=6 * GiB)

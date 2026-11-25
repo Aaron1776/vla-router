@@ -114,6 +114,9 @@ both servers running or the GPU, so they run on the L4 VM.
 passed; X-VLA base rollouts 398/500 against the reference's 405/500 (paired, exact McNemar p = 0.47); time limits with
 margin 2.0; gripper thresholds from ground truth (shut 3.0 mm; SPEC §17, amendments 50-51); the golden set replays
 bit for bit. Cloud spend so far $7.53. Before Phase 1: the short post-freeze list in HANDOFF.md.
+
+**Phase 1's pilot is done (2026-11-25):** 150 base decision points branched, 109 labelled, ~$2.37 of VM; its stop rule said re-plan. The user's re-plan (SPEC §17 amendments 63-64): `cascader_nospread` is now the headline cascader (`cascader_full`'s probes use up its clock: under its charges alone only 34 of X-VLA's 398 successes fit the time limit), branches 3 and 4 are dropped from collection, 7 workers. Re-applied at the new budgets the rule says keep; the plan (`docs/REPLAN-2026-11-25.md`) waits for the user's approval before the rest of Phase 1. The VM and its disk are deleted until then. Cloud spend $12.50.
+
 Earlier, before Phase 0 ran: DAgger and evaluation jobs
 wait for learned deciders (Phases 2-3).
 

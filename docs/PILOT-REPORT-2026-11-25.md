@@ -6,6 +6,8 @@ both pilot boots (local copies under the git-ignored `outputs/pilot/`; full outp
 as `1fc1857` at 22:47Z; the resumed boot's results were downloaded from 00:37Z).** Everything not stated otherwise
 follows amendments 57, 58, 61 and 62.
 
+**After this report (2026-11-25):** the user's re-plan is SPEC §17 amendment 63 (`cascader_nospread` the headline cascader; positives scored under its profile; b3 and b4 dropped; own-rate flags only from 10 failed-parent points) and 64 (7 workers by the RAM rule). Re-applied at the new budgets the rule says **keep**: `docs/REPLAN-2026-11-25.md`. This report is unchanged; it is reproduced by `pilot report --stop-profile cascader_full --own-basis all` (checked: same projections, flags and decision).
+
 ## Outcome: the amendment 58 rule says **stop** before Phase 1 and re-plan with the user
 
 | | positives / labelled (unscored under `cascader_full`) | pooled rate, 95% CI |
@@ -42,6 +44,7 @@ projection gives
 | `cascader_full` (the rule) | 0/25 scored of 59 | 0.000 | 2.6 / 3.0 / 1.8 / 2.1 | all | no / no / no / no |
 | `router`, `cascader_nospread` | 13/56 | 0.220 (0.132-0.311) | 29.8 / 34.9 / 20.2 / 23.6 | 4, 7, 8 (at 131/154: 0, 1, 4, 5, 7, 8) | yes / yes / no / no |
 | `none` | 14/57 | 0.237 (0.150-0.323) | 31.9 / 37.5 / 21.7 / 25.4 | as `router` | yes / yes / no / no |
+| `cascader_chunkspread` (added 2026-11-25, amendment 63 (3b)) | 13/47 (12 unscored) | 0.220 (0.132-0.311); r_s 0.060 | 32.3 / 37.9 / 21.9 / 25.7 | 4, 7, 8 (at 131/154: 0, 1, 4, 7, 8) | yes / yes / no / no |
 
 Bootstrap pass shares under `router` are low (0.12 / 0.20 / 0.01 / 0.02) because the own-rate flags move with the
 resample. The pilot labelled 10-11 points per task, not the ~7 amendment 62 assumed, so its own-rate test applies to
