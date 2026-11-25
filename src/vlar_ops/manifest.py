@@ -286,7 +286,10 @@ def _tunable_problems(mkey: str, m: dict) -> list[str]:
     if job.get("kind") in BRANCH_ORDER:
         s = spec.get("settings") or {}
         dp = s.get("dp_sampling") or {}
-        if not s.get("seeds") or not s.get("enabled") or dp.get("fraction") is None or dp.get("seed") is None:
+        uniform = dp.get("fraction") is not None
+        stratified = (dp.get("scheme") == "stratified" and dp.get("per_task") is not None      # amendment 57
+                      and dp.get("failed_share") is not None)
+        if not s.get("seeds") or not s.get("enabled") or not (uniform or stratified) or dp.get("seed") is None:
             return [f"{mkey}: branch job without its planner settings (seeds, enabled, dp sampling) in its spec"]
     return []
 

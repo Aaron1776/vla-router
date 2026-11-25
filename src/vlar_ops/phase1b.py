@@ -58,21 +58,49 @@ class TrancheBError(RuntimeError):
 
 # ---------------------------------------------------------------- 1. the screen
 
-def screen_episodes(per_task: int, seed: int, *, tasks: Sequence[int] = tuple(range(10)),
+def screen_episodes(per_task: "int | Mapping[int, int]", seed: int, *, tasks: Sequence[int] = tuple(range(10)),
                     inits: int = INITS) -> list[tuple[int, int, int]]:
-    """(task, init, repeat) for `per_task` screened episodes per task: every initial state `per_task // inits` times,
-    then the remainder drawn without replacement by a hash of (seed, task, init)."""
-    if per_task < inits:
-        raise TrancheBError(f"{per_task} screened episodes per task: every initial state at least once ({inits})")
-    full, rest = divmod(per_task, inits)
-    out = [(t, i, r) for t in tasks for r in range(full) for i in range(inits)]
+    """(task, init, repeat) for `per_task` screened episodes per task (one number, or one per task: amendment 67):
+    every initial state `n // inits` times, then the remainder drawn without replacement by a hash of (seed, task,
+    init). A larger n extends the sequence: the episodes of a smaller n keep their (task, init, repeat)."""
+    size = {t: int(per_task[t] if isinstance(per_task, Mapping) else per_task) for t in tasks}
+    for t, n in size.items():
+        if n < inits:
+            raise TrancheBError(f"task {t}: {n} screened episodes, fewer than one per initial state ({inits})")
+    out = [(t, i, r) for t in tasks for r in range(size[t] // inits) for i in range(inits)]
     for t in tasks:
+        full, rest = divmod(size[t], inits)
         extra = sorted(range(inits), key=lambda i: (unit_uniform("screen-extra", seed, t, i), i))[:rest]
         out += [(t, i, full) for i in sorted(extra)]
     return out
 
 
-def screen_plan(per_task: int, seed: int, *, namespace: int, p_escalate: float, profile: str = "none",
+def front_loaded_sizes(base_failure: Mapping[int, float], *, per_task: int = 115, need: int = 21,
+                       margin: float = 1.1) -> dict[int, int]:
+    """Amendment 67: each task's screen with amendment 66 (4)'s top-up front-loaded at the task's base failure rate
+    p: per_task + ceil(margin x (need - per_task x p) / p) where per_task x p falls short of need, else per_task."""
+    out = {}
+    for t, p in sorted(base_failure.items()):
+        if p <= 0:
+            raise TrancheBError(f"task {t}: base failure rate {p}: no top-up size")
+        short = need - per_task * p
+        out[int(t)] = per_task + (math.ceil(margin * short / p - 1e-9) if short > 0 else 0)
+    return out
+
+
+def base_failure_rates(csv_path) -> dict[int, float]:
+    """Per task, the share of failed base rollouts in a base-runs CSV (task_id, success)."""
+    import csv
+    n: dict[int, list[int]] = {}
+    with open(csv_path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            c = n.setdefault(int(row["task_id"]), [0, 0])
+            c[0] += 1
+            c[1] += row["success"].strip().lower() not in ("true", "1")
+    return {t: f / k for t, (k, f) in sorted(n.items())}
+
+
+def screen_plan(per_task: "int | Mapping[int, int]", seed: int, *, namespace: int, p_escalate: float, profile: str = "none",
                 order_seed: int = ORDER_SEED_B, tasks: Sequence[int] = tuple(range(10))) -> Plan:
     jobs = []
     eps = screen_episodes(per_task, seed, tasks=tasks)
@@ -85,7 +113,8 @@ def screen_plan(per_task: int, seed: int, *, namespace: int, p_escalate: float, 
                 "setup_count": FRESH, "tranche": BRANCH_PHASE}
         jobs.append(Job(job_id(subject, "episode", SCREEN_SEED_INDEX), SCREEN_PHASE, "episode", subject,
                         SCREEN_SEED_INDEX, 0, order, spec))
-    params = {"tranche": BRANCH_PHASE, "per_task": per_task, "seed": seed, "namespace": namespace,
+    sizes = ({str(t): int(per_task[t]) for t in tasks} if isinstance(per_task, Mapping) else per_task)
+    params = {"tranche": BRANCH_PHASE, "per_task": sizes, "seed": seed, "namespace": namespace,
               "repeat_offset": REPEAT_OFFSET, "p_escalate": float(p_escalate), "profile": profile,
               "order_seed": order_seed, "tasks": list(tasks), "setup_count": FRESH}
     return Plan(SCREEN_PHASE, params, jobs)

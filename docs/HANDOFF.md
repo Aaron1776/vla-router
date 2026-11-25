@@ -8,7 +8,33 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## START HERE (2026-11-25, ~09:30Z, scheduled session): Tranche A preempted in setup; Tranche B code built
+## START HERE (2026-11-25, ~16:30Z): Tranche A done; Tranche B screen (730) booting; 740 pre-approved on conditions
+
+**Tranche A finished** 15:57:52Z (every queued step done; phase1a $5.28 of $6.27; VM stopped since). **730** with
+front-loaded sizes (SPEC §17 amendment 67: 1,974 episodes; `phase1b-screen` $3.30 / line $3.56; seed 20261126) is
+being booted in us-central1-a by `outputs/l4-retry/watch_restart.sh` (`PHASE=phase1b-screen`; zone a only, stockout
+retry 10 min x 6 h, at most 3 restarts after a `compute.instances.preempted`, any other stop ends it). **Next:**
+(1) verify Tranche A from the Mac (markers, sync, digests, positives per task under `cascader_nospread` vs 9.9, the
+amendment 58 projection with A's rates); (2) when 730 ends: `phase1 yield-b` result per task; **740 runs without the
+user only if** the screen ended cleanly, every task has >= 21 failed screened episodes and (1) passed (amendment 67
+(4)); else report the top-up proposal and wait. Then `spend phase-close --phase phase1b-screen`, `phase-open --phase
+phase1b --allocation-usd 11.32 --line-usd 11.32`, queue 740 (`ops/gcp/31_phase0_queue.sh`), start the watcher with
+`PHASE=phase1b`. The final tier is ~54 more base points per task (amendment 67 (3)); plan it, boot only on approval.
+**Tranche A verified from the Mac (~17:30Z)** (`outputs/phase1a/`: data/ with MANIFEST.json, reports/,
+`a58-recheck-tranche-a-2026-11-25.json`): 3,200/3,200 plan jobs with markers, none missing, extra or with an error;
+supervisor done 3,200, failed 0, no restarts; 720 exit 0 on one boot; `dataset manifest` with the freeze record and
+ops archives passes (12,800 files hashed; frozen calibration, images and source; golden pass; waiver) after its
+settings check learned the stratified draw (amendment 67 (6)); HEAD's common/base/branch data digests equal A's
+(`4951f7f0`/`5da609ed`/`85b3acc8`). Labels (`cascader_nospread`, 640 points, none unlabelled, 37 not scored under
+that profile): positives per task 16, 15, 16, 17, 4, 13, 12, 5, 15, 25 (138; plan 9.9 each); r_f 131/430 = 0.305,
+r_s 7/210 = 0.033 (pilot 0.220 / 0.020). Amendment 58 at A's rates: b4 at every point 27.3 per task (capped by the
+screen's yield 18.4-27.3), folds 191-219; ~54 more base points 38.9 (30.0-38.9), folds 284-311: **both pass**;
+tasks 4 and 7 flagged by their own rates (4/43 and 5/43 failed-parent positives; own projections 11.3 and 12.9 with
+F), task 9 too under b4 capped (18.4): at most 3, so the rule passes.
+**Runner option for later (the user: not now):** let the runner wait on a wrong-phase spend check (poll ~20 min) so a
+step can follow another in a new phase without the VM stopping (730 behind 720 was refused as built: see below).
+
+## Earlier 2026-11-25 (~09:30Z, scheduled session): Tranche A preempted in setup; Tranche B code built
 
 **Update ~09:40Z (another session, the user's direct approval):** Tranche A restarted 08:24Z in us-central1-a,
 preempted again 09:05:14Z (in 050), restarted 09:17:47Z after one stockout; 720 running since ~09:25Z. Restarts and

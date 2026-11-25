@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# cap-seconds: 21600
+# cap-seconds: 37800
 # spend-phase: phase1b-screen
-# Phase 1, Tranche B, the screen (SPEC §17 amendments 56, 62 (2), 65; vlar_ops/phase1b.py): ~1,150 exploration
-# episodes, record off, profile none, each on a fresh simulator (setup count 2, rule (A); the worker replays the spec's
+# Phase 1, Tranche B, the screen (SPEC §17 amendments 56, 62 (2), 65, 67; vlar_ops/phase1b.py): ~1,974 exploration
+# episodes (115 per task, more where the base failure rate is low: amendment 67; cap scaled from 6 h for 1,150), record off, profile none, each on a fresh simulator (setup count 2, rule (A); the worker replays the spec's
 # setup_count and every marker records the measured one). Boots only with the user's approval; the runner starts it
 # only while the spend phase `phase1b-screen` is open. In order:
 #  1. The screen plan built on the Mac (`vlar-ops phase1 plan-b-screen`), from <storage>/phase1b/screen/, with

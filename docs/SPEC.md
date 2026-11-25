@@ -470,6 +470,29 @@ is recorded per job); (c) episode selection lives in `phase1b.py`, not `branchpl
 to Tranche A's); (d) `datadigest.KINDS["explore"]` also covers `phase1b:screen_plan` and `phase1b:rerun_plan`; (e) a
 screened run and its re-run share a run id under phase `explore`, and consumers take the record-`full` row ((5)).
 
+67. §4, §9, §12 (the user, 2026-11-25, after Tranche A finished: phase1a $5.28 of $6.27). (1) **The screen's top-ups
+are front-loaded.** Each task screens 115 episodes plus amendment 66 (4)'s top-up at its base failure rate p (the 500
+base rollouts, `References/l4-phase0/runs/base-runs.csv`): 115 + ceil(1.1 x (21 - 115 p) / p) where 115 p < 21.
+Tasks 0, 1, 4, 6, 8: 115; task 2: 220, 3: 278, 5: 181, 7: 154, 9: 566; 1,974 episodes (`plan-b-screen
+--front-load-base-runs`). A larger per-task size extends the same sequence (`screen_episodes`), so ids and rollout
+seeds are those a top-up would give; the selection's inclusion probabilities come from the actual pools (per task,
+drawn / stratum size, as `select_reruns` computes them). At the base rates each front-loaded task reaches 21 failed
+episodes with probability ~0.6 (task 8 at 115: 0.86), all ten together ~0.08, so a further top-up proposal before 740
+is likely (90% per task would take 2,267 episodes, $3.78). Seed for the screen's draws and the selection: 20261126.
+(2) **Money and time.** `phase1b-screen`: allocation $1.92 -> $3.30 (1,974/1,150), line $3.56 (+8%), stop point at the
+default margin. The extra $1.38 comes from Tranche A's underspend ($0.40 under its $5.68 allocation) and the reserve
+($0.98: $2.33 -> $1.35). 730's time cap 21,600 -> 37,800 s (scaled the same way). (3) **The final tier is ~54 more
+base points per task** (Oscar confirmed no b4, Slack 2026-11-24 23:55, as the user reports): b1 and b2, 3 seeds each,
+drawn uniformly within the same strata from the points Tranche A did not draw (A and F one stratified draw), which
+amendment 58's rule also requires (amendment 66 (1)). It boots only with the user's approval. (4) **740 is approved
+in advance** only if all three hold: the screen finished cleanly, every task has at least 21 failed screened
+episodes, and Tranche A's checks from the Mac passed (every job done with its marker, results synced and downloaded,
+data digests as expected). Otherwise the top-up proposal or the failed check goes to the user. A re-run mismatch
+stops everything as built (amendment 66 (2)). (5) Tranche B boots in us-central1-a with the same zone retry and
+preemption-only restarts as Tranche A (at most 3, then the user). (6) **The manifest's planner-settings check accepts amendment
+57's stratified draw** (`dp_sampling` with scheme `stratified`, `per_task`, `failed_share` and a seed; the uniform
+`fraction` form as before): it predated the scheme and flagged all 3,200 Tranche A markers, whose specs record it.
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:

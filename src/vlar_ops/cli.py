@@ -418,10 +418,13 @@ def cmd_phase1b(a) -> None:
         if not a.per_task_screen or a.seed is None:
             sys.exit("plan-b-screen: --per-task-screen and --seed are required")
         ns = int(load_collection_config()["rollout_seed_namespaces"]["explore"])
-        plan = B.screen_plan(a.per_task_screen, a.seed, namespace=ns, p_escalate=explore_fields()["p_escalate"])
+        sizes = a.per_task_screen
+        if a.front_load_base_runs:          # amendment 67: each task's top-up front-loaded at its base failure rate
+            sizes = B.front_loaded_sizes(B.base_failure_rates(a.front_load_base_runs), per_task=a.per_task_screen)
+        plan = B.screen_plan(sizes, a.seed, namespace=ns, p_escalate=explore_fields()["p_escalate"])
         out.mkdir(parents=True, exist_ok=True)
         plan.write(out / "plan.json")
-        print(json.dumps({"phase": plan.phase, "plan_id": plan.plan_id, "n_jobs": len(plan.jobs)}))
+        print(json.dumps({"phase": plan.phase, "plan_id": plan.plan_id, "n_jobs": len(plan.jobs), "per_task": sizes}))
         return
     storage = open_storage(_ops_config(a.ops_config)["storage_url"])
 
@@ -676,6 +679,8 @@ def main(argv: list[str] | None = None) -> None:
     p1 = sub.add_parser("phase1", help="Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py)")
     p1.add_argument("cmd", choices=["budget", "analyses", "plan-a", *B_CMDS])
     p1.add_argument("--per-task-screen", type=int, help="plan-b-screen: screened episodes per task (~115)")
+    p1.add_argument("--front-load-base-runs", help="plan-b-screen: a base-runs CSV; each task's screen grows by "
+                    "amendment 66 (4)'s top-up at its base failure rate (amendment 67)")
     p1.add_argument("--k", type=int, default=2, help="select-b, yield-b, plan-b: points per re-run episode")
     p1.add_argument("--compare", help="plan-b: the comparison report (compare-b's --out)")
     p1.add_argument("--stop-flag", help="compare-b: the spend guard's stop flag, written on any difference")

@@ -340,6 +340,15 @@ def test_tunables_must_be_in_the_job_specs(tmp_path):
                 "dp_sampling": {"fraction": 0.2, "seed": 5}}
     assert manifest._tunable_problems("m", {"job": {"kind": "b2_one_call", "phase": "branches",
                                                     "spec": {"settings": settings}}, "meta": {}}) == []
+    # amendment 57's stratified draw (Tranche A's specs) records per_task and failed_share instead of a fraction
+    strat = {**settings, "dp_sampling": {"scheme": "stratified", "per_task": 64, "failed_share": 2 / 3,
+                                         "min_calls": 1, "seed": 20261125}}
+    assert manifest._tunable_problems("m", {"job": {"kind": "b1_continue", "phase": "phase1a",
+                                                    "spec": {"settings": strat}}, "meta": {}}) == []
+    for drop in ("per_task", "failed_share", "seed"):
+        bad = {**strat, "dp_sampling": {k: v for k, v in strat["dp_sampling"].items() if k != drop}}
+        assert manifest._tunable_problems("m", {"job": {"kind": "b1_continue", "phase": "phase1a",
+                                                        "spec": {"settings": bad}}, "meta": {}})
 
 
 # ---------------------------------------------------------------- amendment 54: the frozen images

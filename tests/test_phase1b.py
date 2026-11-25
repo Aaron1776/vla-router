@@ -394,3 +394,26 @@ def test_a_larger_screen_extends_the_same_sequence(more):
     (task, init, repeat), so their ids and seeds."""
     a, b = set(B.screen_episodes(115, seed=7)), set(B.screen_episodes(115 + more, seed=7))
     assert a <= b and len(b - a) == 10 * more
+
+
+# ---------------------------------------------------------------- front-loaded screen sizes (amendment 67)
+
+def test_front_loaded_sizes_from_the_base_runs():
+    from pathlib import Path
+    rates = B.base_failure_rates(Path(__file__).resolve().parents[1] / "References/l4-phase0/runs/base-runs.csv")
+    assert {t: round(p * 50) for t, p in rates.items()} == {0: 20, 1: 16, 2: 5, 3: 4, 4: 15, 5: 6, 6: 16, 7: 7, 8: 11,
+                                                            9: 2}
+    sizes = B.front_loaded_sizes(rates)
+    assert {t: n - 115 for t, n in sizes.items() if n > 115} == {2: 105, 3: 163, 5: 66, 7: 39, 9: 451}
+    assert all(sizes[t] == 115 for t in (0, 1, 4, 6, 8)) and sum(sizes.values()) == 1974
+
+
+def test_per_task_sizes_extend_the_uniform_screen_and_keep_its_ids_and_seeds():
+    sizes = {0: 115, 1: 278, 2: 566}
+    small = B.screen_plan(115, seed=3, namespace=2_000_000, p_escalate=0.1, tasks=(0, 1, 2))
+    big = B.screen_plan(sizes, seed=3, namespace=2_000_000, p_escalate=0.1, tasks=(0, 1, 2))
+    assert B.screen_episodes(115, 3, tasks=(0, 1, 2)) == B.screen_episodes({0: 115, 1: 115, 2: 115}, 3, tasks=(0, 1, 2))
+    a = {j.job_id: j.spec["rollout_seed"] for j in small.jobs}
+    b = {j.job_id: j.spec["rollout_seed"] for j in big.jobs}
+    assert a.items() <= b.items() and len(b) == sum(sizes.values()) and big.params["per_task"] == {"0": 115, "1": 278, "2": 566}
+    assert {t: sum(j.spec["task_id"] == t for j in big.jobs) for t in sizes} == sizes
