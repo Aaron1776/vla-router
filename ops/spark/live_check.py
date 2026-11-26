@@ -158,9 +158,9 @@ def cmd_run(a):
 def offline_rows(points: list[dict], events: list[dict], indices, decider: str, *, limit_s: float, thresholds,
                  charges) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """What training builds for `decider` at the episode's points `indices`: its columns (`data.point_columns`,
-    `data.history_columns`), the remaining time under its profile replayed from the event log (as
-    `vlar_harness.labels`: limit less `clock.replay` of the prefix) and the input rows (`deciders.inputs`)."""
-    from vlar_harness import clock as clk
+    `data.history_columns`), the remaining time under its profile from the event log
+    (`vlar_harness.labels.remaining_time_s` on the prefix) and the input rows (`deciders.inputs`)."""
+    from vlar_harness import labels as L
     from vlar_train import data as DT
     from vlar_train import deciders as D
     from vlar_train import history as H
@@ -174,7 +174,7 @@ def offline_rows(points: list[dict], events: list[dict], indices, decider: str, 
         for c in cols:
             cols[c].append(pc[c])
     profile = D.profile_of(decider)
-    rem = np.array([limit_s - clk.replay(DT.prefix_of(events, int(k)), profile, charges) for k in indices])
+    rem = np.array([L.remaining_time_s(DT.prefix_of(events, int(k)), profile, charges, limit_s) for k in indices])
     arrays = {c: np.stack(v) if v else np.zeros((0, 1)) for c, v in cols.items()}
     return arrays, rem, D.inputs(arrays, rem, decider)
 
