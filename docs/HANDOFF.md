@@ -32,6 +32,11 @@ re-run steps x measured VM-s/step, remaining branch jobs x measured or 7.18 VM-s
 **Step cap 64,800 s per boot:** the high end (~18.2 h) is about that, so one unbroken boot could hit it (runner moves
 740 to failed, VM stops, markers kept): the user decides. A re-run mismatch -> exit 76 -> VM stops -> stop
 everything and report (no debugging).
+**Gate check 11:23Z:** RUNNING, runner on 740; re-run plan `6eb41f137e6a7d44` (320) uploaded 11:01:42Z and identical
+to the Mac's `select_reruns`; re-runs running (gate passed): the first 6 match their screened runs (run_id, success,
+steps; the VM's `compare-b` checks events every 2 min). Projector `outputs/l4-retry/reproject_740.py` (git-ignored;
+this boot's re-run steps/h and branch jobs/h, falling back to amendment 70's paces): $11.686 vs $11.8812, no raise.
+Waiter: early pace read `CHECK_AT` 12:45Z, then the halfway re-projection ~19:25Z.
 
 ## 735 approved (2026-11-26 ~07:40Z, SPEC §17 amendment 72): the full top-up, then 740 under amendment 68
 
