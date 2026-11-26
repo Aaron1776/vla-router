@@ -25,6 +25,16 @@ pass), so queueing moves CURRENT to HEAD. Next: queue 735, watcher `PHASE=phase1
 `ops/gcp/gce_adc.py` (`preempted_since_start`: the newest successful start operation is the reference; test in
 `tests/test_phase0_runner.py`); Mac-side only, CURRENT stays `73208f4`. Relaunched under approval 5 as automatic
 restart 1/8 for 735: watcher `MAX_AUTO=7`.
+**A step is done only by its own records, never the runner's state** (the user, ~08:10Z): at 07:51Z the bucket's
+STATE.json still said 730's "every queued step is done" while 735 was queued. `ops/gcp/step_done.py --plan <plan>
+--step 730 --since <first start>` (735 runs 730's script): every planned job's marker AND exit 0 in step-exits.jsonl
+since the first start. Before treating a "NOT a preemption" stop as the end of 735 (and before 740), run it; the
+waiter runs it on any watcher stop (`STEP_CHECK`) and appends the verdict. Checked: 730 done (1,974/1,974, exit 0);
+735 at 08:00Z not done (1,974/2,838, no exit since 07:38Z). Tests: a self-stop (end of work or guard stop: the
+runner's `shutdown -h`, recorded as `compute.instances.guestTerminate`) stays not-a-preemption with earlier
+preemptions on record, and the watcher never restarts after one. 740 builds its plans on the VM: before using this
+for 740, fetch its re-run and branch plans from the bucket. **735 started 08:05:38Z** (stockout 07:55Z, start on
+the next try); waiter armed (re-projection ~08:31Z, then halfway).
 **Queued 07:37Z** (CURRENT `73208f4`); watcher PID 54529 (`PHASE=phase1b-topup`, MAX_AUTO 8) started 07:38:07Z: zone a
 stocked out at 07:38:16Z, retrying every 10 min for 6 h; waiter armed (T0 07:38Z). Also re-project at 735's halfway
 (~1,406/2,838 markers; amendment 70 (2)).

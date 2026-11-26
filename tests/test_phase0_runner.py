@@ -429,6 +429,7 @@ def test_the_watcher_restarts_only_after_a_preemption(tmp_path):
     env = _watch_env(other, ["RUNNING", "TERMINATED"])
     r = subprocess.run(["bash", str(script)], env={**env, "MAX_POLLS": "3"}, capture_output=True, text=True, timeout=60)
     assert "NOT a preemption" in r.stdout and r.returncode == 0
+    assert not (other / "starts").exists() and "automatic restart 1/" not in r.stdout   # a plain stop is never restarted
 
 
 def test_gce_adc_counts_a_preemption_during_the_start():
@@ -451,3 +452,61 @@ def test_gce_adc_counts_a_preemption_during_the_start():
                                    [{"insertTime": "2026-11-25T20:18:40-08:00"},
                                     {"insertTime": "2026-11-25T23:40:00-08:00", "error": {"errors": []}}],
                                    [{"insertTime": "2026-11-25T23:15:00-08:00"}])
+
+
+def _gce_adc():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gce_adc", REPO / "ops/gcp/gce_adc.py")
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    return g
+
+
+# The VM's real operations, 2026-11-25/26 (PST as the API prints them): preemptions, and the starts around them.
+_PREEMPTED = [{"insertTime": t} for t in ("2026-11-25T11:00:24.381-08:00", "2026-11-25T12:32:53.882-08:00",
+                                          "2026-11-25T14:02:27.311-08:00", "2026-11-25T18:00:29.997-08:00",
+                                          "2026-11-25T19:42:06.903-08:00", "2026-11-25T23:48:34.089-08:00")]
+
+
+def test_gce_adc_reads_an_end_of_work_or_guard_stop_as_not_a_preemption():
+    """The reverse of the 07:48Z case: a stop the VM made itself (the runner's `shutdown -h` at the end of its work or
+    at a guard stop, recorded as compute.instances.guestTerminate, which the check never reads) is not a preemption,
+    whatever preemptions came before the start."""
+    g = _gce_adc()
+    # 730's end: started 20:18:45 PST (lastStartTimestamp 20:18:58.978), preempted last at 19:42:06, stopped itself
+    # (guestTerminate 23:15:12): judged with the preemptions known at 23:16
+    starts = [{"insertTime": "2026-11-25T18:13:04.418-08:00"}, {"insertTime": "2026-11-25T20:18:45.000-08:00"}]
+    assert not g.preempted_since_start("2026-11-25T20:18:58.978-08:00", starts, _PREEMPTED[:5])
+    # a guard stop minutes after a start (spend check fails at boot, the runner shuts down): no preemption since
+    assert not g.preempted_since_start("2026-11-25T20:18:58.978-08:00", starts + [
+        {"insertTime": "2026-11-25T23:38:10.814-08:00", "error": {"errors": [{"code": "ZONE_RESOURCE_POOL_EXHAUSTED"}]}}],
+        _PREEMPTED[:5])
+    # the same with no start operation on record (falls back to lastStartTimestamp)
+    assert not g.preempted_since_start("2026-11-25T20:18:58.978-08:00", [], _PREEMPTED[:5])
+    # and the preemption 16 s into 735's start is one
+    assert g.preempted_since_start("2026-11-25T23:48:34.695-08:00",
+                                   starts + [{"insertTime": "2026-11-25T23:48:18.455-08:00"}], _PREEMPTED)
+
+
+def test_a_step_is_done_only_by_its_own_records_never_the_runner_state():
+    """ops/gcp/step_done.py: 735 queued behind 730, its first boot preempted before the runner read the queue (the
+    runner's state still 730's "every queued step is done"): not done. Done needs every planned job's marker and the
+    step's exit 0 at or after its first start (735 runs 730's script, so its exits say "730")."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("step_done", REPO / "ops/gcp/step_done.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    old, new = [f"o{i}" for i in range(1974)], [f"n{i}" for i in range(864)]
+    exits_730 = [{"step": "730", "step_exit": 143, "at": 1795664487}, {"step": "730", "step_exit": 0, "at": 1795677280}]
+    t735 = 1795678680.0                                                       # 2026-11-26 07:38Z
+    assert m.step_done(old, old, exits_730, step="730", since=1795631280.0)["done"]            # 730 itself
+    r = m.step_done(old + new, old, exits_730, step="730", since=t735)                         # 735 after the 07:48Z boot
+    assert not r["done"] and r["missing"] == 864 and r["exits_since"] == []                   # 730's exit 0 is too old
+    r = m.step_done(old + new, old + new, exits_730 + [{"step": "730", "step_exit": 143, "at": t735 + 9000}],
+                    step="730", since=t735)
+    assert not r["done"] and r["missing"] == 0 and not r["exit_0_since"]                      # all markers, no clean exit
+    r = m.step_done(old + new, old + new[:-1], exits_730 + [{"step": "730", "step_exit": 0, "at": t735 + 9000}],
+                    step="730", since=t735)
+    assert not r["done"] and r["missing"] == 1                                                # a clean exit, one missing
+    assert m.step_done(old + new, old + new, exits_730 + [{"step": "730", "step_exit": 0, "at": t735 + 9000}],
+                       step="730", since=t735)["done"]
