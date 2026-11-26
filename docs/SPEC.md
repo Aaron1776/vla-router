@@ -549,7 +549,9 @@ us-central1-a). (2) **Raises are exactly `phase1b.raise_for(projection, stop)`**
 and 2 h before each sign-in's expiry (16-hour Workspace session), with both expiries recomputed after each renewal.
 (4) **The final-tier costing (amendment 68 (3), approval 6) also shows** each version at the floor (all $2.50 of
 raises and a full $1.00 top-up used), the order it would run in, and for the all-base version whether its new points'
-parents are successful episodes or failed episodes Tranche A already used.
+parents are successful episodes or failed episodes Tranche A already used. (5) **An extra 730 re-projection at
+04:25Z** (the user, ~02:45Z; the 02:38Z projection was $4.633 against the $4.66 stop): if it projects past the stop,
+`spend phase-raise` by `raise_for` (overrun + $0.25), counted toward the $2.50 cap like any other raise.
 
 ## 18. Milestone checkpoint: harness build complete
 

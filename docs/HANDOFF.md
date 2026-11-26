@@ -36,7 +36,8 @@ scheduler's fixed 809 s delay = ~08:14/22:14 MST; `touch outputs/l4-retry/PHASE1
 (5) Watcher relaunch if gone: armed. (6) Zone-move plan: armed (amendment 71 (1)), windows from 02:30Z.
 **730 re-projection, 02:38Z (boot from 02:13:16Z):** past the gate (VM RUNNING, runner on 730, 103 markers this
 boot, 762 of 1,974); pace 341/h (boot) / 339/h (last 15 min); spent $2.12; projected **$4.633 vs stop $4.6612:
-no raise** (`raise_for` 0). Margin $0.03: one extra re-projection armed at 04:25Z (`duty_wait.sh` `CHECK_AT`);
+no raise** (`raise_for` 0). Margin $0.03: one extra re-projection armed at 04:25Z (`duty_wait.sh` `CHECK_AT`;
+approved, amendment 71 (5): past the stop -> raise by `raise_for`, counted toward the $2.50 cap);
 completion ~06:15Z at this pace. Waiter re-armed `FROM=333 T0=2026-11-26T02:30:00Z CHECK_AT=2026-11-26T04:25:00Z`.
 **Overnight risks:** every duty except the watcher and the scheduled reminders lives in the session (stops at a usage
 limit or session end; reminders also need the app open and usage left). The Mac was on battery (96%, ~6 h): there
