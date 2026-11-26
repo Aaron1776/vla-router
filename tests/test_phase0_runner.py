@@ -371,3 +371,61 @@ def test_create_retry_tries_only_the_three_zones_and_queues_held_steps_only_afte
     dr = s[s.index("dry_run() {"):s.index("watch_vm() {")]
     for part in ("SPOT*STOP", "shutdown_command", "guard_sessions_since_create", "spend check --phase \"${PHASE}\""):
         assert part in dr, part
+
+
+# ---------------------------------------------------------------- the Phase 1 restart watcher (ops/gcp/34_restart_watch.sh)
+
+def _watch_env(tmp_path, statuses, *, preempted=False):
+    """Fakes for the watcher: a GCE helper replaying `statuses` (one per status read; '' = unreadable), a vlar-ops
+    whose spend check passes, and an osascript that records its calls."""
+    import os
+    (tmp_path / "env.sh").write_text('export PROJECT_ID=p VM_NAME=v BUCKET=b\n')
+    (tmp_path / "statuses").write_text("\n".join(statuses) + "\n")
+    gce = tmp_path / "gce"
+    gce.write_text(f"""#!/bin/bash
+case "$1" in
+  status) n=$(cat {tmp_path}/n 2>/dev/null || echo 0); echo $((n+1)) > {tmp_path}/n
+          s=$(sed -n "$((n+1))p" {tmp_path}/statuses); [[ -n "$s" ]] && echo "$s" || exit 1 ;;
+  state) echo "running 730-phase1b-screen running" ;;
+  preempted-since-start) exit {0 if preempted else 1} ;;
+  start) echo "start" >> {tmp_path}/starts; echo RUNNING ;;
+esac
+""")
+    vops = tmp_path / "vops"
+    vops.write_text('#!/bin/bash\n[[ "$1 $2" == "spend check" ]] && { echo ok; exit 0; }\necho \'{"total_usd": 1, "phase": {}}\'\n')
+    osa = tmp_path / "osascript"
+    osa.write_text(f'#!/bin/bash\necho "$*" >> {tmp_path}/notified\n')
+    for f in (gce, vops, osa):
+        f.chmod(0o755)
+    return {**os.environ, "ENV_SH": str(tmp_path / "env.sh"), "GCE": str(gce), "VLAR_OPS": str(vops),
+            "NOTIFY": str(osa), "POLL_S": "0", "TRY_S": "0", "RECHECK_S": "0", "NO_START": "1", "PHASE": "phase1b-screen"}
+
+
+def test_the_watcher_never_reads_an_unreadable_status_as_running(tmp_path):
+    script = REPO / "ops" / "gcp" / "34_restart_watch.sh"
+    out = subprocess.run(["bash", "-c", f'LIB_ONLY=1 ENV_SH={tmp_path}/env.sh; echo "export VM_NAME=v" > $ENV_SH; '
+                          f'source {script}; for s in "" "ERROR: (gcloud) Reauthentication failed" running RUNNING '
+                          'STAGING TERMINATED STOPPING; do printf "%s|" "$(classify "$s")"; done'],
+                         capture_output=True, text=True, timeout=30, env={**__import__("os").environ, "LIB_ONLY": "1",
+                                                                         "ENV_SH": str(tmp_path / "env.sh")})
+    assert out.stdout == "unknown|unknown|unknown|running|starting|stopped|stopping|", out.stderr
+    env = _watch_env(tmp_path, ["", "", "", "", "RUNNING", ""], preempted=True)
+    r = subprocess.run(["bash", str(script)], env={**env, "MAX_POLLS": "6"}, capture_output=True, text=True, timeout=60)
+    log = r.stdout
+    assert r.returncode == 0 and "VM RUNNING" in log and log.count("VM UNKNOWN") == 5
+    assert log.count("status NOT readable") == 1 and "status NOT readable 3 polls" in log
+    notes = (tmp_path / "notified").read_text()
+    assert notes.count("display notification") == 1 and 'sound name "Sosumi"' in notes
+    assert not (tmp_path / "starts").exists() and "preempted" not in log       # unreadable is never a stop either
+
+
+def test_the_watcher_restarts_only_after_a_preemption(tmp_path):
+    script = REPO / "ops" / "gcp" / "34_restart_watch.sh"
+    env = _watch_env(tmp_path, ["RUNNING", "TERMINATED", "RUNNING"], preempted=True)
+    r = subprocess.run(["bash", str(script)], env={**env, "MAX_POLLS": "3"}, capture_output=True, text=True, timeout=60)
+    assert "automatic restart 1/8" in r.stdout and (tmp_path / "starts").read_text().count("start") == 1
+    other = tmp_path / "other"
+    other.mkdir()
+    env = _watch_env(other, ["RUNNING", "TERMINATED"])
+    r = subprocess.run(["bash", str(script)], env={**env, "MAX_POLLS": "3"}, capture_output=True, text=True, timeout=60)
+    assert "NOT a preemption" in r.stdout and r.returncode == 0

@@ -51,6 +51,14 @@ watcher's status reads came back empty and it read that as "not stopped". Fixed 
 credentials; the watcher logs "status NOT readable" after 3 empty polls. 659/1,974 screened, $1.76 of the $4.66
 stop; restart 3 of 8 for 730 (5 left) hit a stockout at 01:28Z, retrying. `gcloud auth login` is needed before the
 next queueing (`31_phase0_queue.sh` uses the CLI). At 335/h completion projects ~$4.59: re-project after the restart.
+**Restart watcher, committed (~01:40Z):** `ops/gcp/34_restart_watch.sh` + `ops/gcp/gce_adc.py` (application-default
+credentials; tests in `tests/test_phase0_runner.py`): an unreadable status is UNKNOWN and never counts as running or
+stopped; after 3 unreadable polls in a row a warning and a macOS notification with sound (again every ~1 h). Running
+for 730 since 01:39:18Z, `MAX_AUTO=5` (2 restarts used before it). **Sign-ins expire after 16 h** (Workspace session;
+from gcloud's logs: signed in 2026-11-24 23:01:58 MST, last good call 15:01:35 MST, first failure 15:04:36 MST).
+Renewed 2026-11-25: gcloud CLI 18:32:41 MST, application-default 18:34:54 MST -> expire ~10:32 and ~10:35 MST
+(17:32Z / 17:35Z) on 11-26; reminder scheduled for 08:32 MST (`renew-gcloud-signin`). Application-default
+credentials from 11-23 still worked on 11-26 01:27Z, so they may not follow the 16 h; treat both as 16 h.
 **Amendment 70 (pace checks, shared raise cap $2.50 from the final tier):** 740 projected $11.57-12.44 vs its $11.09 stop
 (`phase1b.project_740`: re-runs at 0.2329 VM-s/step x (7/8 scaling for the high end), branches 7.18 VM-s/job, 0.33 h
 overhead); redo before booting with the screen's final yield and pace, then `spend phase-raise --phase phase1b` by
