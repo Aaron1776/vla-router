@@ -15,6 +15,7 @@ from vlar_train import folds as F  # noqa: E402
 from vlar_train import lam as LAM  # noqa: E402
 from vlar_train.deciders import COLUMNS, DECIDERS, FORBIDDEN_FOR_ROUTER, inputs, width  # noqa: E402
 from vlar_train import run as R  # noqa: E402
+from vlar_train import stats as ST  # noqa: E402
 from vlar_train.run import run_cv  # noqa: E402
 from vlar_train.train import TrainConfig, seed_for, train  # noqa: E402
 
@@ -347,3 +348,66 @@ def test_lambda_fallback_chooses_on_out_of_fold_and_validation_points_together(p
     n_tr, n_va = int((m["train"] & keep).sum()), int((m["val"] & keep).sum())
     assert seen["n"] == n_tr + n_va and r["lambda"]["source"] == "cross_fitted"
     assert seen["w"][:n_tr].mean() == pytest.approx(1.0) and seen["w"][n_tr:].mean() == pytest.approx(1.0)
+
+
+def test_effective_sample_size_and_episode_bootstrap():
+    """Amendment 57 (5)-(6): (Σw)²/Σw², and intervals that resample whole episodes."""
+    assert ST.ess(np.ones(7)) == pytest.approx(7) and ST.ess([]) == 0.0
+    assert ST.ess([1, 1, 1, 9]) == pytest.approx(144 / 84)            # one heavy point: under 2 effective points
+    # 40 points in 4 episodes, the value constant within an episode: only 4 independent values
+    v = np.repeat([0.0, 0.0, 1.0, 1.0], 10)
+    w = np.ones(40)
+    mean = lambda r: ST.weighted_mean(v[r], w[r])                    # noqa: E731
+    by_episode = ST.cluster_bootstrap(mean, np.repeat(["a", "b", "c", "d"], 10), seed=1)
+    by_point = ST.cluster_bootstrap(mean, np.arange(40), seed=1)       # every point its own episode
+    assert by_episode == ST.cluster_bootstrap(mean, np.repeat(["a", "b", "c", "d"], 10), seed=1)     # seeded
+    assert by_episode[0] == 0.0 and by_episode[1] == 1.0               # some resamples draw one kind of episode only
+    assert 0.25 < by_point[0] < by_point[1] < 0.75                     # treating points as independent: far narrower
+    assert ST.cluster_bootstrap(mean, ["a"] * 40, seed=1) is None      # one episode: nothing to resample
+
+
+def test_label_statistics_are_reweighted_and_count_positive_episodes():
+    """Amendments 57 (6) and 68 (3), on numbers worked by hand."""
+    y = np.array([[0.0, 1 / 3], [0.0, 1.0], [1.0, 2 / 3], [1.0, 1.0], [0.0, 1.0]])      # p_2 - p_1: 1/3, 1, -1/3, 0, 1
+    y = np.concatenate([y, np.zeros((5, 2))], axis=1)
+    ym = np.array([[1, 1, 0, 0]] * 4 + [[1, 0, 0, 0]], dtype=np.float32)                # the last row has no b2 label
+    w = np.array([1.0, 1.0, 4.0, 2.0, 50.0])
+    s = ST.label_stats(y, ym, w, ["e1", "e1", "e2", "e3", "e9"], seed=0, resamples=200)
+    assert s["points"] == 4 and s["episodes"] == 3
+    assert s["positives"] == 2 and s["positive_episodes"] == 1          # two positive points, one episode
+    assert s["rescue_rate"] == pytest.approx(2 / 8) and s["harm_rate"] == pytest.approx(4 / 8)
+    assert s["mean_p2_minus_p1"] == pytest.approx((1 / 3 + 1 - 4 / 3) / 8)
+    assert s["ess"] == pytest.approx(64 / 22)
+    lo, hi = s["rescue_rate_ci95"]
+    assert 0.0 <= lo <= s["rescue_rate"] <= hi <= 1.0
+
+
+def test_points_keep_their_parent_episode(ps):
+    """Amendment 68 (3): the episode id stays on every point (from the snapshot id where none is given)."""
+    assert ps.episode.shape == (len(ps),) and 2 <= len(set(ps.episode[ps.task == 3])) <= 12
+    assert set(e.split("/")[1] for e in ps.episode[ps.task == 3]) == {"t3"}       # an episode belongs to one task
+    assert list(ps.subset(np.array([5, 2])).episode) == [ps.episode[5], ps.episode[2]]
+    bare = D.PointSet({}, np.zeros(2, int), ["base/t0/i4/dp07", "base/t0/i4/dp31"], np.ones(2, bool), {}, {}, {})
+    assert list(bare.episode) == ["base/t0/i4", "base/t0/i4"] and list(bare.weight) == [1.0, 1.0]
+    with pytest.raises(D.DataError, match="episode"):
+        D.PointSet({}, np.zeros(2, int), ["a/dp00", "a/dp01"], np.ones(2, bool), {}, {}, {}, None, ["a"])
+
+
+def test_results_report_episodes_effective_sample_size_and_intervals(ps, tmp_path):
+    r = run_cv(ps, folds=[0], deciders=["router"], out=tmp_path, cfg=FAST)["results"][0]
+    m = F.masks(ps.task, 0)
+    keep = ~ps.excluded["router"]
+    for split in ("train", "val"):
+        d = r["data"][split]
+        rows = m[split] & keep
+        assert d["points"] == int(rows.sum()) and d["episodes"] == len(set(ps.episode[rows]))
+        assert d["ess"] == pytest.approx(ST.ess(ps.weight[rows])) and d["ess"] < d["points"]
+        assert d["positive_episodes"] <= d["positives"] and d["positive_episodes"] <= d["episodes"]
+        assert d["rescue_rate_ci95"][0] <= d["rescue_rate"] <= d["rescue_rate_ci95"][1]
+    lam = r["lambda"]
+    assert lam["validation_positive_episodes"] <= lam["validation_positives"]
+    assert lam["selection"]["points"] == r["data"]["val"]["points"]
+    assert lam["gain_ci95"][0] <= lam["gain"] <= lam["gain_ci95"][1]
+    assert lam["rate_ci95"][0] <= lam["rate"] <= lam["rate_ci95"][1]
+    z = np.load(tmp_path / "fold0" / "router" / "test_predictions.npz")
+    assert list(z["episode"]) == list(ps.episode[m["test"] & keep]) and z["weight"].shape == z["episode"].shape

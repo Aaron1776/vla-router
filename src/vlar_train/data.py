@@ -16,7 +16,11 @@ Per point, its sampling weight (amendment 57 (3)): w_i = 1/π_i, π_i the inclus
 the point's label entry (`selection.inclusion_prob`; for re-run parents P(episode) × P(point | episode)). An entry
 planned with the uniform per-point draw has no `selection`; its π_i is the planner's recorded `dp_sampling.fraction`.
 The weights are kept un-normalised here; each fold normalises them to mean 1 within its training rows and within its
-validation rows (`run.normalised`)."""
+validation rows (`train.unit_mean`).
+
+Per point, its parent episode (`PointSet.episode`, the label entry's `point.episode_id`): points from one episode
+share its outcome, so reports count and resample by episode (amendments 57 (5) and 68 (3); `stats`). Folds are by
+whole task (§7), so an episode never straddles a split."""
 
 from __future__ import annotations
 
@@ -45,8 +49,14 @@ class PointSet:
     y: dict[str, np.ndarray]                 # profile -> (n, 4) labels, NaN where a branch was not run
     excluded: dict[str, np.ndarray]          # profile -> (n,)
     weight: Optional[np.ndarray] = None      # (n,) 1/π_i (amendment 57 (3)), un-normalised; all 1 when not given
+    episode: Optional[np.ndarray] = None     # (n,) parent episode id (amendment 68 (3)); from the snapshot id if absent
 
     def __post_init__(self) -> None:
+        if self.episode is None:               # snapshot id = <episode_id>/dpNN (datacard, "Identifiers and seeds")
+            self.episode = [s.rsplit("/", 1)[0] for s in self.snapshot_id]
+        self.episode = np.asarray(self.episode, dtype=str)
+        if self.episode.shape != (len(self.task),):
+            raise DataError("one parent episode id per point (amendment 68 (3))")
         if self.weight is None:
             self.weight = np.ones(len(self.task), dtype=np.float64)
         self.weight = np.asarray(self.weight, dtype=np.float64)
@@ -66,7 +76,7 @@ class PointSet:
         return PointSet({k: v[idx] for k, v in self.cols.items()}, self.task[idx],
                         [self.snapshot_id[i] for i in idx], self.can_escalate[idx],
                         {p: v[idx] for p, v in self.remaining_s.items()}, {p: v[idx] for p, v in self.y.items()},
-                        {p: v[idx] for p, v in self.excluded.items()}, self.weight[idx])
+                        {p: v[idx] for p, v in self.excluded.items()}, self.weight[idx], self.episode[idx])
 
 
 def prefix_of(parent_events: Sequence[Mapping], index: int) -> list[Mapping]:
@@ -148,7 +158,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         raise DataError("no point of the label map is in the points table")
     cols: dict[str, list] = defaultdict(list)
     task, sid, can, rem, ys, exc = [], [], [], defaultdict(list), defaultdict(list), defaultdict(list)
-    weight = []
+    weight, episode = [], []
     for p in rows:
         parent = run[p["run_id"]]
         t = int(parent["task_id"])
@@ -167,6 +177,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         sid.append(p["snapshot_id"])
         can.append(int(p["budget_remaining_steps"]) >= 10)
         weight.append(1.0 / pi)
+        episode.append(str((entry.get("point") or {}).get("episode_id") or parent.get("episode_id") or p["run_id"]))
         for prof in profiles:
             rem[prof].append(pl.remaining_s[prof])
             exc[prof].append(prof in pl.excluded)
@@ -175,7 +186,8 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
     return PointSet({k: np.stack(v) for k, v in cols.items()}, np.array(task), sid, np.array(can),
                     {k: np.array(v, dtype=np.float64) for k, v in rem.items()},
                     {k: np.array(v, dtype=np.float64) for k, v in ys.items()},
-                    {k: np.array(v, dtype=bool) for k, v in exc.items()}, np.array(weight, dtype=np.float64))
+                    {k: np.array(v, dtype=bool) for k, v in exc.items()}, np.array(weight, dtype=np.float64),
+                    np.array(episode, dtype=str))
 
 
 def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> PointSet:
@@ -206,7 +218,8 @@ def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: fl
     """A synthetic point set with the records' shapes, for tests and dry runs: escalation helps (branch 2 beats
     branch 1) exactly where a hidden direction of the features and the spread inputs is high. Sampling weights as
     under amendment 57: two strata per task with inclusion probabilities 0.8 and 0.1 (drawn from a generator of
-    their own, so every other array is what it was before the weights existed)."""
+    their own, so every other array is what it was before the weights existed), and each task's points spread over
+    12 parent episodes (likewise)."""
     rng = np.random.default_rng(seed)
     n = n_per_task * n_tasks
     task = np.repeat(np.arange(n_tasks), n_per_task)
@@ -232,5 +245,6 @@ def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: fl
     excluded = {p: np.zeros(n, dtype=bool) for p in DECIDERS}
     excluded["router"][rng.choice(n, size=n // 50, replace=False)] = True
     pi = np.where(np.random.default_rng([seed, 57]).random(n) < 2 / 3, 0.8, 0.1)
+    episode = [f"synthetic/t{t}/i{k}" for t, k in zip(task, np.random.default_rng([seed, 68]).integers(0, 12, n))]
     return PointSet(cols, task, [f"s{i}" for i in range(n)], cols["budget_frac"][:, 0] >= 0.1, remaining, y, excluded,
-                    1.0 / pi)
+                    1.0 / pi, episode)

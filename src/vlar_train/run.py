@@ -14,7 +14,12 @@ decider's own profile (a positive is p_2 − p_1 ≥ 1/3, amendment 63 (2)), λ 
 predictions instead: two auxiliary deciders, trained as the fold's own decider is but each on one half of the fold's
 8 training tasks (halves drawn with a recorded seed), each predict the other half; λ is chosen on those out-of-fold
 predictions together with the validation task's points and applied to the fold's decider. No test-task label enters.
-Each result records which rule chose its λ, and the summary lists the folds that used the fallback. Everything lands in <out>/fold<i>/<decider>/ (a
+Each result records which rule chose its λ, and the summary lists the folds that used the fallback.
+
+By episode (amendments 57 (5)-(6), 68 (3); `stats`): each result reports, for its training and validation rows, the
+points, distinct episodes and effective sample size (Σw)²/Σw², the re-weighted label statistics, and the positives
+both as points and as distinct episodes; and for the chosen λ, episode-bootstrap intervals of its estimated gain and
+escalation rate on the points it was chosen on (λ held fixed, so the intervals do not cover λ's own selection). Everything lands in <out>/fold<i>/<decider>/ (a
 checkpoint per epoch, best.json, result.json) and <out>/summary.json."""
 
 from __future__ import annotations
@@ -28,12 +33,13 @@ import numpy as np
 
 from . import folds as F
 from . import lam as LAM
+from . import stats as ST
 from .data import PointSet
 from .deciders import BRANCHES, DECIDERS, inputs
 from .train import TrainConfig, seed_for, train, unit_mean
 
 
-POSITIVE = 1 / 3            # a positive labelled point: p_2 − p_1 ≥ 1/3 under the decider's profile (amendment 63 (2))
+POSITIVE = ST.POSITIVE      # a positive labelled point: p_2 − p_1 ≥ 1/3 under the decider's profile (amendment 63 (2))
 MIN_POSITIVES = 10          # fewer on the validation task: λ from cross-fitted predictions (amendment 63 (5))
 HALVES_SEED = 63            # base of the recorded seed that draws each fold's two halves
 
@@ -53,9 +59,9 @@ def halves(i: int, n_tasks: int = F.N_TASKS, base: int = HALVES_SEED) -> dict:
     return {"seed": seed, "a": sorted(order[:cut]), "b": sorted(order[cut:])}
 
 
-def cross_fitted_lambda(ps: PointSet, i: int, decider: str, cfg: TrainConfig, *, x, y, ym, tr, va, w_tr, w_va,
-                        pv) -> dict:
-    """λ by §8's rule on cross-fitted predictions (amendment 63 (5)). Two auxiliary deciders, trained as the fold's
+def cross_fitted_set(ps: PointSet, i: int, decider: str, cfg: TrainConfig, *, x, y, ym, tr, va, w_tr, w_va,
+                     pv) -> tuple[dict, dict]:
+    """The points λ is chosen on under the fallback (amendment 63 (5)), and what to record about them. Two auxiliary deciders, trained as the fold's
     own decider is (from scratch, the same settings, weighted loss, early stopping on the fold's validation task),
     each on one half of the fold's training tasks, each predict the other half. λ is chosen on those out-of-fold
     predictions together with the validation task's points (scored by the fold's own decider, `pv`). Weights: each
@@ -75,10 +81,23 @@ def cross_fitted_lambda(ps: PointSet, i: int, decider: str, cfg: TrainConfig, *,
     yy, mm = np.concatenate([y[tr], y[va]]), np.concatenate([ym[tr], ym[va]])
     w = np.concatenate([w_tr, w_va])
     can = np.concatenate([ps.can_escalate[tr], ps.can_escalate[va]])
+    ep = np.concatenate([ps.episode[tr], ps.episode[va]])
     both = (mm[:, 0] > 0) & (mm[:, 1] > 0)
-    lam = LAM.choose(p[both, 0], p[both, 1], yy[both, 0], yy[both, 1], can[both], weight=w[both])
-    return {**lam, "source": "cross_fitted", "halves": h,
-            "points": {"out_of_fold": int(both[:len(p_tr)].sum()), "validation": int(both[len(p_tr):].sum())}}
+    sel = {"p0": p[both, 0], "p1": p[both, 1], "y0": yy[both, 0], "y1": yy[both, 1], "can": can[both], "w": w[both],
+           "episode": ep[both]}
+    return sel, {"source": "cross_fitted", "halves": h,
+                 "points": {"out_of_fold": int(both[:len(p_tr)].sum()), "validation": int(both[len(p_tr):].sum())}}
+
+
+def choose_lambda(sel: dict, *, seed: int) -> dict:
+    """§8's rule on the selection points, then episode-bootstrap intervals (amendment 57 (5)) of the chosen λ's
+    estimated gain and escalation rate, λ held fixed."""
+    lam = LAM.choose(sel["p0"], sel["p1"], sel["y0"], sel["y1"], sel["can"], weight=sel["w"])
+    stat = ST.decision_stats(sel["p0"], sel["p1"], sel["y0"], sel["y1"], sel["can"], sel["w"], lam["lambda"])
+    lam["gain_ci95"] = ST.cluster_bootstrap(lambda r: stat(r)[0], sel["episode"], seed=seed)
+    lam["rate_ci95"] = ST.cluster_bootstrap(lambda r: stat(r)[1], sel["episode"], seed=seed)
+    lam["selection"] = ST.sample_report(sel["w"], sel["episode"])
+    return lam
 
 
 def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cfg: TrainConfig) -> dict:
@@ -93,23 +112,31 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
                   ckpt_dir=None if d is None else d / "checkpoints", w_tr=w_tr, w_va=w_va)
     pv = model.predict(x[va])
     both = (ym[va][:, 0] > 0) & (ym[va][:, 1] > 0)          # λ needs labels of branches 1 and 2 at the point
-    n_pos = int(positives(y[va], ym[va]).sum())
+    pos_va = positives(y[va], ym[va])
+    n_pos = int(pos_va.sum())
     if n_pos < MIN_POSITIVES:                               # amendment 63 (5)
-        lam = cross_fitted_lambda(ps, i, decider, cfg, x=x, y=y, ym=ym, tr=tr, va=va, w_tr=w_tr, w_va=w_va, pv=pv)
+        sel, how = cross_fitted_set(ps, i, decider, cfg, x=x, y=y, ym=ym, tr=tr, va=va, w_tr=w_tr, w_va=w_va, pv=pv)
     else:
-        lam = {**LAM.choose(pv[both, 0], pv[both, 1], y[va][both, 0], y[va][both, 1], ps.can_escalate[va][both],
-                            weight=w_va[both]), "source": "validation"}
-    lam["validation_positives"] = n_pos
+        how = {"source": "validation"}
+        sel = {"p0": pv[both, 0], "p1": pv[both, 1], "y0": y[va][both, 0], "y1": y[va][both, 1],
+               "can": ps.can_escalate[va][both], "w": w_va[both], "episode": ps.episode[va][both]}
+    lam = {**choose_lambda(sel, seed=seed_for(i, f"{decider}|lambda-bootstrap")), **how,
+           "validation_positives": n_pos,
+           "validation_positive_episodes": int(len(set(ps.episode[va][pos_va].tolist())))}
+    boot = seed_for(i, f"{decider}|label-bootstrap")
+    data = {"train": ST.label_stats(y[tr], ym[tr], w_tr, ps.episode[tr], seed=boot),
+            "val": ST.label_stats(y[va], ym[va], w_va, ps.episode[va], seed=boot)}
     res = {"fold": i, "decider": decider, "width": int(x.shape[1]), "best_epoch": model.best_epoch,
            "val_loss": model.val_loss[model.best_epoch], "epochs_run": len(model.val_loss),
            "points": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum()),
                       "excluded": int((~keep).sum())},
-           "lambda": lam}
+           "data": data, "lambda": lam}
     if d is not None:
         d.mkdir(parents=True, exist_ok=True)
         (d / "result.json").write_text(json.dumps(res, indent=1, default=float))
         if te.any():
             np.savez(d / "test_predictions.npz", p=model.predict(x[te]), y=y[te], mask=ym[te], weight=ps.weight[te],
+                     episode=ps.episode[te],
                      snapshot_id=np.array([s for s, k in zip(ps.snapshot_id, te) if k]))
     return res
 
