@@ -81,5 +81,5 @@ def test_pack_keeps_one_row_per_observed_point():
     assert z["index"].tolist() == [0, 1, 3]
     assert z["router_hist|x"].shape == (3, WIDTH["router_hist"]) and z["router|x"].shape == (3, WIDTH["router"])
     assert z["router_hist|hist_motion"].shape == (3, 10) and z["router|remaining_s"].tolist() == [40.0, 39.0, 37.0]
-    assert LC.pack([]) == {"index": []} or LC.pack([])["index"].size == 0
+    assert list(LC.pack([])) == ["index"] and LC.pack([])["index"].size == 0
     assert LC.max_abs(z["router|x"], z["router|x"]) == 0.0 and LC.max_abs(np.zeros(2), np.zeros(3)) == float("inf")
