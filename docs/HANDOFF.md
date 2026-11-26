@@ -8,7 +8,36 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
-## 740 STOPPED: exit 76 at 11:26Z, a comparison defect, not a parity failure (waiting for the user)
+## 740 resumed 14:27Z after amendment 74 (the user's approval with conditions, ~14:15Z)
+
+**Approved:** fix and resume as proposed, with conditions: (1) explain why the stop came at the "8th" re-run; (2)
+skip only job_id in runs, tests on a real-shaped runs table; (3) 739 re-compares all 8 on the VM, sets the marker
+aside (kept) only if all 8 pass, else 76; (4) log as an amendment with the evidence; (5) explain 7 workers, no
+change. Raises at the next projection under approval 3.
+**Done (`c7ed123`, SPEC §17 amendment 74):** `phase1b.RERUN_RUNS_SKIP = ("record", "job_id")` for the runs table
+only; tests with the real 30-column runs table (job_id differing passes; each of the other 28 columns differing
+fails; the fixture reproduces the VM's exact message under the old rule); the fixed `compare_rerun` passes all 8 real
+re-runs on the Mac. `ops/vm/postfreeze/739-phase1b-recompare.sh` (spend phase phase1b, cap 1800 s): the marker must be
+the diagnosed one, the VM's re-run plan must equal the bucket's, `compare-b` with a fresh `--out`
+(`reports/recompare-739-<boot>.json`, no `--mismatch`/`--stop-flag`) must show exactly 8 compared and passed; then
+MISMATCH.json -> `MISMATCH-set-aside-740-boot1.json` (kept; copied to the bucket's reports); anything else 76.
+Tests: 446 passed (`.venv`), 98 (`.venv-sim`, pyarrow; never under `timeout`: it runs Python as x86_64).
+**(1) The stop's timing:** the first re-run to finish (`t6/i43/r2`, 11:13:30Z) is the one that failed (compare.json:
+1 compared); the stop flag stops claims only, so the 7 running re-runs finished (pending frozen at 312 from
+11:13:35Z) before `run_phase` returned 75 -> 76. **(5) 7 workers:** amendment 64's RAM rule (19.90 GB servers x 1.25
+= 24.87 GB; (67.42 - 24.87) / 5.5 GiB = 7.2), as on every boot since the pilot's resume.
+**Raise before the boot:** at the VM's 7 workers (0.2329 x 8/7 VM-s/step): $0.3632 spent + 134,663 re-run steps +
+3,840 branch jobs + 0.33 h = **$12.683 vs $11.8812 -> +$1.06** (stop $12.9412, line $13.17). **Cap: $0.22 + $0.79 +
+$1.06 = $2.07; $0.43 left.** Queued 739 + 740 at `c7ed123`; watcher PID 28971 (`PHASE=phase1b MAX_AUTO=8
+WATCH_HOURS=48`), **start 14:27:06Z**. Waiter: T0 14:26Z (the deliberate stop 11:28-14:27Z must not read as a
+low-run window); 25-min check (739 exit 0 in step-exits, set-aside marker in reports, 740 past its gate and
+re-running); `CHECK_AT` 16:30Z early pace read (`reproject_740.py`); halfway ~23:25Z (17.95 VM-h). **Sign-ins expire
+~23:16Z**: the user renews at the 21:16Z reminder or the watcher goes blind.
+**Untested path:** the old stop flag is on the VM's disk; the guard clears it at boot (`run_daemon`, state ok), but
+no earlier boot started with it up. If the runner reads it first, it stops with "STOP flag is up; no step started"
+(no work, ~$0.05): report it; another start needs the user.
+
+## 740 STOPPED: exit 76 at 11:26Z, a comparison defect, not a parity failure (resolved: amendment 74)
 
 **What stopped it:** `compare-b` failed re-run `explore/t6/i43/r2` with "runs: column job_id differs first at row 0",
 wrote MISMATCH.json and the stop flag; 740 ended with 76, the VM stopped itself (11:28Z), the watcher ended ("NOT a
