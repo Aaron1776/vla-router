@@ -35,6 +35,9 @@ runner's `shutdown -h`, recorded as `compute.instances.guestTerminate`) stays no
 preemptions on record, and the watcher never restarts after one. 740 builds its plans on the VM: before using this
 for 740, fetch its re-run and branch plans from the bucket. **735 started 08:05:38Z** (stockout 07:55Z, start on
 the next try); waiter armed (re-projection ~08:31Z, then halfway).
+**735 re-projection 08:31Z:** past the gate (RUNNING, runner on 735, 97 markers this boot); 2,071/2,838; 340/h boot,
+335.5/h last 15 min; spent $0.3187 -> **$1.943 vs stop $2.0312: no raise**; completion ~10:50Z. Waiter re-armed
+(`CHECK_AT` 09:32Z for the halfway re-projection, `STEP_CHECK` on any stop). Cap: $0.22 counted, $2.28 left.
 **Queued 07:37Z** (CURRENT `73208f4`); watcher PID 54529 (`PHASE=phase1b-topup`, MAX_AUTO 8) started 07:38:07Z: zone a
 stocked out at 07:38:16Z, retrying every 10 min for 6 h; waiter armed (T0 07:38Z). Also re-project at 735's halfway
 (~1,406/2,838 markers; amendment 70 (2)).
