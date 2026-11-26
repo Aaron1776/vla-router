@@ -525,11 +525,26 @@ def write_long_episode_checks(root: Path, plan_dir: Path, out: Path, *, cfg=None
 
 # ---------------------------------------------------------------- the resume's claim order (the user, 2026-11-24)
 
+def draw_key(entry: Mapping[str, Any]) -> tuple:
+    """A point's place in its stratum's draw order: `stratified_selection`'s seeded hash of (episode, index), then the
+    snapshot id, for a point drawn by point under the stratified scheme; otherwise the snapshot id alone (a label
+    entry without the draw's settings sorts after every drawn point, by id)."""
+    sel, st = entry.get("selection", {}), entry.get("settings", {}).get("dp_sampling", {})
+    p = entry.get("point")
+    if p is not None and sel.get("by") == "point" and st.get("scheme") == STRATIFIED:
+        return (0, unit_uniform("dp-stratified", st["seed"], p["episode_id"], p["index"]), p["snapshot_id"])
+    return (1, 0.0, entry.get("point", {}).get("snapshot_id", ""))
+
+
 def resume_order(jobs: Sequence[tuple[str, str, Job]], labels: Mapping[str, Mapping]) -> tuple[list[str], list[str]]:
     """Point by point, so a stop leaves whole labelled points. Points with a job left are grouped by stratum cell (task,
-    parent outcome) and sorted within each cell by finished jobs (most first); round r takes each cell's r-th point,
-    the round's points again by finished jobs (then task, outcome). Each point's open jobs keep their planned order.
-    `jobs`: (job_id, status, Job) of the phase. Returns (point order, job order)."""
+    parent outcome); within a cell, points already started go first (most finished jobs first), then the rest in the
+    draw's own order (`draw_key`: the stratified draw's seeded hash), so the points a stop leaves finished in a cell are
+    the next ones of the draw and earlier tranches' points plus them are the draw at a smaller count (SPEC §17
+    amendment 76; before it, cells were sorted by snapshot id, i.e. by initial state). Cells interleave in proportion
+    to their size (a cell's i-th of n points at (i + 0.5) / n), so a stop keeps every task and both parent outcomes
+    near the plan's shares; ties by finished jobs, then cell (task, outcome). Each point's open jobs keep their
+    planned order. `jobs`: (job_id, status, Job) of the phase. Returns (point order, job order)."""
     by_point: dict[str, list[tuple[str, Job]]] = defaultdict(list)
     done: dict[str, int] = defaultdict(int)
     for _, status, job in jobs:
@@ -540,15 +555,62 @@ def resume_order(jobs: Sequence[tuple[str, str, Job]], labels: Mapping[str, Mapp
         if any(s != "done" for s, _ in js):
             st = labels[p]["selection"]["stratum"]
             cells[(int(st["task_id"]), st["parent_outcome"])].append(p)
-    for c in cells.values():
-        c.sort(key=lambda p: (-done[p], p))
-    points: list[str] = []
-    for r in range(max((len(c) for c in cells.values()), default=0)):
-        level = sorted(((c[r], key) for key, c in cells.items() if r < len(c)), key=lambda x: (-done[x[0]], x[1]))
-        points += [p for p, _ in level]
+    place: dict[str, tuple] = {}
+    for key, c in cells.items():
+        c.sort(key=lambda p: (-done[p], draw_key({**labels[p], "point": {"snapshot_id": p, **labels[p].get("point", {})}})))
+        for i, p in enumerate(c):
+            place[p] = (-done[p], (i + 0.5) / len(c), key)
+    points = sorted(place, key=lambda p: place[p])
     order = [j.job_id for p in points for _, j in sorted((x for x in by_point[p] if x[0] != "done"),
                                                          key=lambda x: x[1].order)]
     return points, order
+
+
+def finished_inclusion(labels_a: Mapping[str, Mapping], labels_f: Mapping[str, Mapping],
+                       finished) -> dict[str, Any]:
+    """Inclusion probabilities when a later tranche drawn as ONE draw with an earlier one (`exclude_earlier`) stopped
+    before all its points finished (SPEC §17 amendment 76: the final tier has no raises and stops at its stop point).
+    Per stratum (task, parent outcome) of N eligible points, the earlier tranche holds the draw's first k_a points
+    (checked: every one of them precedes every later point in the draw's order, `draw_key`) and the later tranche the
+    next ones. The later tranche's points count as finished in the draw's order up to its first unfinished point
+    (m); finished points past that gap are dropped, so the kept points are exactly the draw at k_a + m, an equal-
+    probability sample of the stratum: π = (k_a + m) / N for every kept point, earlier ones included.
+    `finished`: the later tranche's snapshot ids with every job done. Returns {"points": {sid: π}, "strata": {...},
+    "dropped": [...]}."""
+    finished = set(finished)
+    if not finished <= set(labels_f):
+        raise PilotError(f"{len(finished - set(labels_f))} finished points are not in the later tranche's labels")
+    if set(labels_a) & set(labels_f):
+        raise PilotError("the two tranches share points: not one draw")
+    seeds = {e["settings"]["dp_sampling"]["seed"] for e in (*labels_a.values(), *labels_f.values())}
+    if len(seeds) != 1:
+        raise PilotError(f"the tranches were drawn with seeds {sorted(seeds)}: not one draw")
+    strata: dict[tuple, dict[str, list]] = defaultdict(lambda: {"a": [], "f": []})
+    for part, labels in (("a", labels_a), ("f", labels_f)):
+        for sid, e in labels.items():
+            if e["selection"].get("by") != "point":
+                raise PilotError(f"{sid}: drawn by {e['selection'].get('by')!r}, not by point")
+            st = e["selection"]["stratum"]
+            strata[(int(st["task_id"]), st["parent_outcome"])][part].append(sid)
+    every = {**labels_a, **labels_f}
+    out: dict[str, Any] = {"points": {}, "strata": {}, "dropped": []}
+    for key, g in sorted(strata.items()):
+        sizes = {int(every[s]["selection"]["stratum_size"]) for s in g["a"] + g["f"]}
+        if len(sizes) != 1:
+            raise PilotError(f"stratum {key}: stratum sizes {sorted(sizes)} differ")
+        n = sizes.pop()
+        a = sorted(g["a"], key=lambda s: draw_key(every[s]))
+        f = sorted(g["f"], key=lambda s: draw_key(every[s]))
+        if a and f and draw_key(every[a[-1]]) > draw_key(every[f[0]]):
+            raise PilotError(f"stratum {key}: an earlier point follows a later one in the draw's order: not one draw")
+        m = next((i for i, s in enumerate(f) if s not in finished), len(f))
+        out["dropped"] += [s for s in f[m:] if s in finished]
+        pi = (len(a) + m) / n
+        for s in a + f[:m]:
+            out["points"][s] = pi
+        out["strata"][f"t{key[0]}/{key[1]}"] = {"stratum_size": n, "earlier": len(a), "later_planned": len(f),
+                                                "later_finished": m, "inclusion_prob": pi}
+    return out
 
 
 def reorder_queue(q, plan_dir: Path) -> dict[str, Any]:

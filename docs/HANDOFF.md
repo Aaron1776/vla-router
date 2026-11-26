@@ -8,6 +8,29 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Amendment 76 (the user, ~21:40Z): no 750 raises, guard $44.75 for 750, a cut-short final tier stays one draw
+
+**Decisions:** (1) no raises for 750: past its stop it runs to its stop and ends with fewer points; (2) the guard's
+hard limit $44.75 for 750 only, 740 keeps $45; (3) re-cost; (4) delete the VM and its disk as soon as the end
+download is verified Friday morning (the user approves then); the bucket stays a few days as a backup copy.
+**Draw check (the user asked first): as built it was NOT a valid draw when cut.** `pilot.resume_order` (run by the
+750 step's `vlar-ops pilot reorder`) ordered each stratum cell by snapshot id (`base/t<task>/i<init>/dp<idx>`: by
+initial state), so a stop would have kept low-numbered initial states. **Fixed on `harness-v1` (750 loads HEAD when
+queued; 740 runs `c7ed123`, untouched):** each cell in the draw's own order (`pilot.draw_key`, the seeded hash of
+`stratified_selection`), started points first, cells interleaved in proportion to their size. A stop then leaves
+the draw at a smaller count; `pilot.finished_inclusion` gives π = (k_a + m) / N per stratum (A's points included;
+finished points past a gap dropped). Tests (`tests/test_pilot.py`): a cut after every one of 135 jobs leaves exactly
+the draw; real labels (dry-run plan-f at 15/task, 750 jobs): every 7th cut exact, no drops, cell progress within 0.2,
+full run π = the plan's. Outcomes touch the cut only via job durations (a boundary effect of the in-flight points).
+**Guard:** `ops/ops.example.yaml` hard 44.75 (committed now; CURRENT stays `c7ed123` until 750 is queued); the Mac's
+`ops/ops.yaml` is set at the hand-over (runbook step 2b; `size_750.py` refuses otherwise). `reproject_750.py` now
+reports only (`over_stop_usd`, `jobs_short_est`).
+**Re-cost (at ~21:12Z, 740 projected $12.773):** worst = expected (750 never passes its line; a 740 raise shrinks the
+final tier): **~$0.68 left** with the bucket kept 3 days after Friday (~$0.59 at 7 days); each day the disk outlives
+Friday ~16:00Z costs $0.33, each bucket day $0.023. Under the $0.75 floor by ~$0.07 at 3 days: $44.68 would give $0.75
+(14/task) - the user's call. Final tier at $44.75: **15 points/task** (150 points, ~$1.25, ~1.8 h) at 740's
+projection; 13 if 740 ends at its stop; none if 740 uses all $0.93 of raises.
+
 ## Money check against the credit itself (2026-11-26 ~21:15Z; read-only; the guard decision is the user's)
 
 **The user (~21:10Z):** the console's Savings list shows no Free tier: plan as if the 100 GB download allowance does not
@@ -84,7 +107,10 @@ The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-mont
 1. `step_check_740.sh` must say done (every re-run and branch marker, exit 0 since 10:57Z); anything else: report,
    stop (exit 76: no debugging).
 2. `.venv-ops/bin/vlar-ops spend phase-close --phase phase1b --ops-config ops/ops.yaml`.
-3. `.venv-ops/bin/python outputs/l4-retry/size_750.py`: the numbers and the commands; per_task < 1: ask the user.
+2b. (amendment 76) Set the Mac's `ops/ops.yaml` `hard_limit_usd` to 44.75 (git-ignored; `ops.example.yaml` already
+   says 44.75 at HEAD, which 750's VM loads).
+3. `.venv-ops/bin/python outputs/l4-retry/size_750.py`: the numbers and the commands (it refuses unless both say
+   44.75); per_task < 1: ask the user.
 4. Its commands in order: `plan-f` -> `outputs/phase1b/750/plan` (check 10 x n points, no overlap with A,
    `combined_with` phase1a), upload to `phase1f/plan/` (ADC), `phase-open phase1f` (allocation = planned, line =
    money), `31_phase0_queue.sh ops/vm/postfreeze/750-phase1f.sh` (CLI; moves CURRENT to HEAD), the watcher
@@ -93,10 +119,14 @@ The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-mont
    outputs/phase1b/750/plan/plan.json --phase phase1f --step 750 --since <start> --exits
    vla-router/phase1f/reports/step-exits.jsonl'`; `STALL_CHECK='.venv-ops/bin/python ops/gcp/stall_check.py --stage
    branches:phase1f:vla-router/phase1f/plan/plan.json:5'`.
-6. 25 min after each start: `reproject_750.py`; past the stop: `phase-raise` by `raise_for` within the $3.00 cap
-   (left: $0.93 less any further 740 raise); past the cap: stop and ask.
-7. 750's end: the step check, report. Then the end-of-Phase-1 download (the rest: ~13 GB) and its verification;
-   disk deletion and soft delete only on the user's OK.
+6. 25 min after each start: `reproject_750.py`, report only: **no raises for 750** (amendment 76); past its stop it
+   runs to its stop (it prints `over_stop_usd` and `jobs_short_est`).
+7. 750's end: the step check. Done (exit 0), or **exit 75 at the phase stop = ended with fewer points** (not a
+   failure); exit 76 or anything else: report, stop. Report the finished points per task and their π
+   (`pilot.finished_inclusion(A labels, 750 labels, points with all 5 markers)`). Then the end-of-Phase-1 download
+   (the rest: ~13 GB) and its verification (re-check the three early prefixes too). Then ask the user to approve
+   deleting the VM and its boot disk (Friday morning); the bucket stays a few days as a backup; soft delete off just
+   before the bucket is deleted, on the user's OK.
 
 ## Amendment 75, stall alarm, download check, final tier v2 (2026-11-26 ~19:00-19:30Z; 740 still running)
 

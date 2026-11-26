@@ -404,6 +404,104 @@ def _labels_dir(tmp_path, labels):
     return d
 
 
+# ---------------------------------------------------------------- a final tier cut short (amendment 76)
+
+def _two_tranche_draw(per_a=3, per_total=12, seed=7):
+    """Tranche A and a later tranche as ONE stratified draw (A's 3 points per task, then 9 more), labels as
+    `make_plan` writes them, 5 jobs per later point in the plan's tier order."""
+    from dataclasses import asdict
+    from vlar_ops.plan import Job
+    pts, success = [], {}
+    for t in range(3):
+        for i in range(8):
+            ep = f"base/t{t}/i{i}"
+            success[ep] = i % 3 == 0
+            pts += [DecisionPointRef(f"{ep}/dp{d:02d}", ep, "base", t, i, d, 300) for d in range(5)]
+    dp = {"scheme": "stratified", "seed": seed, "failed_share": 2 / 3, "min_calls": 1}
+    sel = lambda k: stratified_selection(pts, success, step_limit=520, interval=10,   # noqa: E731
+                                         dp_sampling={**dp, "per_task": k})
+    a, total = sel(per_a), sel(per_total)
+    f = pilot.exclude_earlier(total, a, set(a), earlier={"phase": "phase1a", "plan_id": "pa", "per_task": per_a})
+    point = {p.snapshot_id: asdict(p) for p in pts}
+    lab = lambda s, rec, k: {"point": point[s], "selection": rec,                     # noqa: E731
+                             "settings": {"dp_sampling": {**dp, "per_task": k}}}
+    labels_a = {s: lab(s, r, per_a) for s, r in a.items()}
+    labels_f = {s: lab(s, r, per_total) for s, r in f.items()}
+    jobs = [(f"{s}#{j}", "pending", Job(f"{s}#{j}", "phase1f", "b1_continue", s, 1, 1 + (j >= 3), 5 * k + j, {}))
+            for k, s in enumerate(sorted(labels_f)) for j in range(5)]
+    return pts, success, labels_a, labels_f, jobs
+
+
+def _stratum_of(e):
+    st = e["selection"]["stratum"]
+    return int(st["task_id"]), st["parent_outcome"]
+
+
+def test_a_final_tier_stopped_after_any_job_leaves_exactly_the_draw_at_a_smaller_count():
+    from vlar_ops.plan import unit_uniform
+    pts, success, labels_a, labels_f, jobs = _two_tranche_draw()
+    assert len(labels_a) == 9 and len(labels_f) == 27 and len(jobs) == 135
+    _, order = pilot.resume_order(jobs, labels_f)
+    stratum = {}
+    for p in pts:
+        stratum.setdefault((p.task_id, "success" if success[p.episode_id] else "failure"), []).append(p)
+    draw = {k: [q.snapshot_id for q in sorted(v, key=lambda q: (unit_uniform("dp-stratified", 7, q.episode_id,
+                                                                             q.index), q.snapshot_id))]
+            for k, v in stratum.items()}
+    planned = {k: sum(1 for e in labels_f.values() if _stratum_of(e) == k) for k in draw}
+    for cut in range(len(order) + 1):
+        claimed = set(order[:cut])
+        finished = {s for s in labels_f if all(f"{s}#{j}" in claimed for j in range(5))}
+        r = pilot.finished_inclusion(labels_a, labels_f, finished)
+        assert r["dropped"] == [] and set(r["points"]) == set(labels_a) | finished
+        progress = {}
+        for k, ids in draw.items():
+            kept = [s for s in ids if s in r["points"]]
+            assert kept == ids[:len(kept)]                                  # the draw's first k: one draw, smaller k
+            assert all(r["points"][s] == pytest.approx(len(kept) / len(ids)) for s in kept)
+            progress[k] = sum(1 for s in kept if s in labels_f) / planned[k]
+        assert max(progress.values()) - min(progress.values()) <= 1 / 3 + 1e-9   # every cell near its share
+    full = pilot.finished_inclusion(labels_a, labels_f, set(labels_f))
+    assert all(full["points"][s] == pytest.approx(labels_f[s]["selection"]["inclusion_prob"]) for s in labels_f)
+    combined = {_stratum_of(e): e["selection"]["inclusion_prob"] for e in labels_f.values()}
+    assert all(full["points"][s] == pytest.approx(combined[_stratum_of(e)]) for s, e in labels_a.items())
+
+
+def test_finished_inclusion_drops_points_past_a_gap_and_refuses_two_draws():
+    from vlar_ops.plan import unit_uniform
+    _, _, labels_a, labels_f, _ = _two_tranche_draw()
+    cell = sorted((s for s, e in labels_f.items() if _stratum_of(e) == (0, "failure")),
+                  key=lambda s: pilot.draw_key(labels_f[s]))
+    k_a = sum(1 for e in labels_a.values() if _stratum_of(e) == (0, "failure"))
+    r = pilot.finished_inclusion(labels_a, labels_f, {cell[0], cell[2], cell[3]})
+    assert r["dropped"] == [cell[2], cell[3]] and r["strata"]["t0/failure"]["later_finished"] == 1
+    assert r["points"][cell[0]] == pytest.approx((k_a + 1) / labels_f[cell[0]]["selection"]["stratum_size"])
+    first_a = min((s for s, e in labels_a.items() if _stratum_of(e) == (0, "failure")),
+                  key=lambda s: pilot.draw_key(labels_a[s]))
+    swapped_a = {**{s: e for s, e in labels_a.items() if s != first_a}, cell[-1]: labels_f[cell[-1]]}
+    swapped_f = {**{s: e for s, e in labels_f.items() if s != cell[-1]}, first_a: labels_a[first_a]}
+    with pytest.raises(pilot.PilotError, match="not one draw"):
+        pilot.finished_inclusion(swapped_a, swapped_f, set())
+    other = {s: {**e, "settings": {"dp_sampling": {**e["settings"]["dp_sampling"], "seed": 8}}}
+             for s, e in labels_f.items()}
+    with pytest.raises(pilot.PilotError, match="seeds"):
+        pilot.finished_inclusion(labels_a, other, set())
+    assert unit_uniform("dp-stratified", 7, "base/t0/i1", 2) == pilot.draw_key(
+        {"point": {"episode_id": "base/t0/i1", "index": 2, "snapshot_id": "x"}, "selection": {"by": "point"},
+         "settings": {"dp_sampling": {"scheme": "stratified", "seed": 7}}})[1]
+
+
+def test_the_old_snapshot_id_order_would_not_leave_a_draw():
+    """Before amendment 76 a cell ran by snapshot id (initial state first): a stop would keep the low-numbered
+    initial states, not the draw's next points. The new order differs from it in some cell."""
+    _, _, _, labels_f, jobs = _two_tranche_draw()
+    points, _ = pilot.resume_order(jobs, labels_f)
+    by_cell = {}
+    for p in points:
+        by_cell.setdefault(_stratum_of(labels_f[p]), []).append(p)
+    assert any(c != sorted(c) for c in by_cell.values())
+
+
 def test_costs_of_a_stopped_step_come_from_the_jobs_claim_and_finish_times():
     """No phase_ended (the step stopped inside run_phase): the window ends at that boot's last finish."""
     def m(kind, claimed, finished, boot):

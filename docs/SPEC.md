@@ -613,6 +613,33 @@ between stages the finished stage's gap; finishing 10 min (tails <= 3.9 min). It
 boot (the in-flight re-runs kept landing until the VM stopped itself, which the watcher reads); it catches a RUNNING
 VM that stops landing results. (4) **No bucket publisher** of the VM's internal state for the final tier either; a
 future phase may add one, written in and tested before it boots (HANDOFF).
+76. §12, §13, §17 approvals 3-4, amendments 67 (3), 75 (the user, 2026-11-26 ~21:40Z, after the money check against
+the credit: the console shows no Free tier, so the 100 GB download allowance is taken not to apply; Credits page
+$18.79, about $6.75 behind the spend at ~21:12Z). (1) **No raises for the final tier (750).** If it projects past its
+stop it runs to its stop and ends with fewer points; its 25-minute re-projection only reports. Amendment 75's $3.00 cap
+($0.93 left) now serves 740 alone, and a 740 raise is paid by a smaller final tier (it is sized from the ledger at
+740's end). A 750 that stops at its stop exits 75 ("needs input", the phase stop) and counts as ended, not failed;
+exit 76 still stops everything. (2) **A final tier cut short stays one draw with Tranche A.** Found on checking: the
+claim order (`pilot.resume_order`, run by the step's `vlar-ops pilot reorder`) sorted each stratum cell by snapshot
+id, i.e. by initial state, so a stop would have kept low-numbered initial states, not a draw. Changed before 750 is
+queued (740 runs from `c7ed123` and is untouched): within each cell (task, parent outcome) points run in the draw's
+own order (`pilot.draw_key`: `stratified_selection`'s seeded hash), points already started first; cells interleave
+in proportion to their size, so a stop keeps every task and both parent outcomes near their shares. Claims follow
+this order and a stop lets in-flight jobs finish, so the finished points of a cell are the draw's next points: with
+Tranche A's k_a points (the draw's first) they are exactly the stratified draw at k_a + m, and `pilot.
+finished_inclusion` gives π = (k_a + m) / N to every kept point, A's included (finished points past an unfinished
+one in a cell, possible only if the phase's line releases in-flight jobs, are dropped). Tests: a cut after every job
+leaves exactly that draw; on the real labels (a dry-run plan at 15 points/task) every 7th cut too, and a full run
+gives the plan's π. The one way outcomes touch the cut is through job durations (a branch that succeeds ends sooner),
+a boundary effect of about the in-flight points out of the ~100-150. (3) **The guard's hard limit is $44.75 for 750
+only:** `ops/ops.example.yaml` (what 750's VM loads when queueing moves CURRENT to HEAD) and, at the hand-over, the
+Mac's `ops/ops.yaml` (`size_750.py` refuses otherwise); 740 and any restart of it keep $45.00 from `c7ed123`. Soft
+limit unchanged ($42.67; it fires once at 750's boot). (4) **Deletion:** the VM and its boot disk are deleted as soon
+as the end download is verified (Friday 2026-11-27 morning), on the user's approval then; the bucket stays a few days
+as a backup copy; soft delete is turned off before the bucket is deleted. (5) **Money (at ~21:12Z, 740 projected at
+$12.773):** with no 750 raises the worst case equals the expected one: ~$0.68 of credit left with the bucket kept 3
+days after Friday (~$0.59 at 7 days; $0.33 more for each day the disk outlives Friday ~16:00Z, $0.023 per bucket
+day). Final tier: 15 points/task at 740's projection, 13 if 740 ends at its stop, none if 740 uses all $0.93 of raises.
 
 ## 18. Milestone checkpoint: harness build complete
 
