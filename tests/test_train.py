@@ -513,7 +513,8 @@ def test_build_computes_labels_weights_and_episodes_from_records():
     assert ps.snapshot_id == ["ep/dp02", "ep2/dp02"] and list(ps.episode) == ["ep", "ep2"]
     assert list(ps.weight) == [4.0, 4.0] and ps.can_escalate.all()                 # 1/π, amendment 57 (3)
     assert ps.y["router"][0] == pytest.approx([2 / 3, 2 / 3, 1 / 3, 1 / 3])        # as the label tests work out
-    assert ps.report == {"label_entries": 2, "points": 2, "incomplete": [], "no_points_row": []}
+    assert ps.report == {"label_entries": 2, "points": 2, "incomplete": [], "shared_run_ids": 0,
+                         "no_points_row": []}
 
 
 def test_an_incomplete_point_is_left_out_and_reported_not_fatal():
@@ -541,3 +542,59 @@ def test_an_incomplete_point_is_left_out_and_reported_not_fatal():
         D.build(runs, bad, points, label_map, **kw)
     with pytest.raises(D.DataError, match="none of the 2 labelled points is complete"):
         D.build(runs, [e for e in events if "/b2_one_call/" not in e["run_id"]], points, label_map, **kw)
+
+
+def _screened(runs, events, episode="ep2"):
+    """`episode` as an exploration episode that was screened (record off) and re-run (record full): two run rows
+    and two event logs under one run id, from two jobs (amendment 66 (5))."""
+    runs = [dict(r, phase="explore") if r["run_id"] == episode else r for r in runs]
+    screen = next(dict(r, record="off", job_id="job-screen") for r in runs if r["run_id"] == episode)
+    events = [dict(e, job_id=f"job-{e['run_id']}") for e in events]
+    return [screen] + runs, events + [dict(e, job_id="job-screen") for e in events if e["run_id"] == episode]
+
+
+def test_a_screened_run_and_its_rerun_share_a_run_id_and_the_record_full_one_is_used():
+    """Amendment 66 (5): consumers take the record-full row; the check is no run id twice, every kept row full."""
+    runs, events, points, label_map, kw = _records()
+    plain = D.build(runs, events, points, label_map, **kw)
+    runs2, events2 = _screened(runs, events)
+    kept, shared = D.record_full_runs(runs2)
+    assert len(kept) == len(runs) and shared == {"ep2": "job-ep2"}
+    assert [r["record"] for r in kept if r["run_id"] == "ep2"] == ["full"]
+    ps = D.build(runs2[::-1], events2[::-1], points, label_map, **kw)             # in any row order
+    assert ps.report["shared_run_ids"] == 1 and ps.snapshot_id == plain.snapshot_id
+    for prof in plain.y:
+        assert np.array_equal(ps.y[prof], plain.y[prof]) and np.array_equal(ps.remaining_s[prof], plain.remaining_s[prof])
+    # without the parts' job ids the two logs cannot be told apart: refused, not guessed
+    with pytest.raises(D.DataError, match="read_events"):
+        D.build(runs2, [{k: v for k, v in e.items() if k != "job_id"} for e in events2], points, label_map, **kw)
+    # anything else that repeats a run id is an error
+    screen = runs2[0]
+    for bad in ([dict(screen, record="full")] + runs2[1:],                         # two record-full rows
+                [dict(screen, phase="base")] + runs2[1:],                          # not an exploration run
+                [screen, dict(screen, job_id="job-screen-2")] + runs2[1:],         # three rows
+                [dict(screen, job_id="job-ep2")] + runs2[1:]):                     # the same job twice
+        with pytest.raises(D.DataError, match="run id ep2"):
+            D.record_full_runs(bad)
+    # a labelled point whose parent's only row is the screen's
+    with pytest.raises(D.DataError, match="not full"):
+        D.build([dict(r, record="off") if r["run_id"] == "ep2" else r for r in runs], events, points, label_map, **kw)
+
+
+def test_read_events_adds_each_parts_job_id(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pq
+    schema = pa.schema([("run_id", pa.string()), ("seq", pa.int32()), ("t", pa.string()), ("step", pa.int32()),
+                        ("event", pa.string())])
+    for phase, job, rid in (("explore", "aaa", "explore/t0/i0/r0"), ("explore", "bbb", "explore/t0/i0/r0"),
+                            ("branches", "ccc", "explore/t0/i0/r0/dp02/b1_continue/s1")):
+        d = tmp_path / "records" / "events" / phase
+        d.mkdir(parents=True, exist_ok=True)
+        rows = [{"run_id": rid, "seq": k, "t": "x", "step": k, "event": json.dumps({"t": "x", "k": k})} for k in range(3)]
+        pq.write_table(pa.Table.from_pylist(rows, schema=schema), d / f"{job}.parquet")
+    ev = D.read_events(tmp_path)
+    assert len(ev) == 9 and {e["job_id"] for e in ev} == {"aaa", "bbb", "ccc"}
+    assert set(ev[0]) == {"run_id", "seq", "event", "job_id"}
+    with pytest.raises(D.DataError, match="incomplete"):                           # both logs under one run id
+        D.group_events(ev)
+    assert D.group_events([e for e in ev if e["job_id"] != "aaa"])["explore/t0/i0/r0"][2] == {"t": "x", "k": 2}

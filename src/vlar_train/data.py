@@ -18,6 +18,12 @@ planned with the uniform per-point draw has no `selection`; its π_i is the plan
 The weights are kept un-normalised here; each fold normalises them to mean 1 within its training rows and within its
 validation rows (`train.unit_mean`).
 
+Shared run ids (amendment 66 (5)): a screened exploration run (record `off`) and its re-run (record `full`) share a
+run id under phase `explore`, and consumers take the record-`full` row. `record_full_runs` keeps that row, with the
+amendment's check (no run id twice afterwards, every kept row of a shared id record `full`), and the run's event log
+is the kept row's job's part of the events table: `read_events` reads the table part by part and adds each part's
+job id (`records/events/<phase>/<job_id>.parquet`), since an events row itself does not say which job wrote it.
+
 Complete points only (§12, as `vlar_ops.plan.complete_points`: training uses only complete points): a labelled point
 one of whose branch seeds has no finished run in the records (no log, or a log without its `end` event) is left out
 and listed in `PointSet.report`, with the label entries that have no row in the points table; the build goes on with
@@ -125,6 +131,43 @@ def inclusion_prob(snapshot_id: str, entry: Mapping[str, Any]) -> float:
     return float(pi)
 
 
+def record_full_runs(runs: Sequence[Mapping]) -> tuple[list[Mapping], dict[str, str]]:
+    """One row per run id (amendment 66 (5)). A run id may appear twice only as a screened exploration run and its
+    re-run: both rows of phase `explore`, one record `off` and one record `full`; the record-`full` row is kept.
+    Anything else that repeats a run id is an error. Returns the kept rows and, for each shared run id, the kept
+    row's job id (its events are that job's)."""
+    by: dict[str, list] = defaultdict(list)
+    for r in runs:
+        by[r["run_id"]].append(r)
+    kept, shared = [], {}
+    for rid, rs in by.items():
+        if len(rs) > 1:
+            full = [r for r in rs if r.get("record") == "full"]
+            off = [r for r in rs if r.get("record") == "off"]
+            if len(rs) != 2 or len(full) != 1 or len(off) != 1 or any(r.get("phase") != "explore" for r in rs):
+                raise DataError(f"run id {rid} has {len(rs)} rows (phase, record: "
+                                f"{[(r.get('phase'), r.get('record')) for r in rs]}): only a screened exploration "
+                                "run and its record-full re-run may share one (amendment 66 (5))")
+            if not full[0].get("job_id") or full[0].get("job_id") == off[0].get("job_id"):
+                raise DataError(f"run id {rid}: the screen's and the re-run's rows need different job ids")
+            rs, shared[rid] = full, str(full[0]["job_id"])
+        kept.append(rs[0])
+    return kept, shared
+
+
+def read_events(root: Path | str) -> list[dict]:
+    """The events table of a local copy of the records, part by part, each row with the job id of its part
+    (`records/events/<phase>/<job_id>.parquet`, `vlar_harness.dataset.record_key`), which tells a screened run's
+    events from its re-run's (amendment 66 (5))."""
+    import pyarrow.parquet as pq
+    out: list[dict] = []
+    for part in sorted((Path(root) / "records" / "events").rglob("*.parquet")):
+        for row in pq.read_table(part, columns=["run_id", "seq", "event"]).to_pylist():
+            row["job_id"] = part.stem
+            out.append(row)
+    return out
+
+
 def missing_seeds(entry: Mapping[str, Any], own: Mapping[tuple[str, int], Sequence[Mapping]], seeds: int) -> list[str]:
     """The branch seeds of a label entry with no finished run in the records: no log at all, or a log that does not
     end with its `end` event. Seeds the parent rollout provides are not branch runs (§7). A point with any such
@@ -171,6 +214,12 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
           label_map: Mapping[str, Mapping], *, limits_s: Mapping[int, float], thresholds: tuple[float, float],
           charges, profiles: Sequence[str] = DECIDERS) -> PointSet:
     from vlar_harness import labels as L
+    runs, shared = record_full_runs(runs)                       # amendment 66 (5): the record-full row of a shared id
+    if shared:
+        if any(e.get("job_id") is None for e in events if e["run_id"] in shared):
+            raise DataError("a screened run and its re-run share a run id: their events can only be told apart by "
+                            "job id; read the events table with `read_events` (amendment 66 (5))")
+        events = [e for e in events if e["run_id"] not in shared or str(e["job_id"]) == shared[e["run_id"]]]
     run = {r["run_id"]: r for r in runs}
     logs = group_events(events)
     own: dict[str, dict[tuple[str, int], list]] = defaultdict(dict)
@@ -180,13 +229,15 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
     rows = [p for p in points if p.get("snapshot_id") in label_map]
     if not rows:
         raise DataError("no point of the label map is in the points table")
-    report = {"label_entries": len(label_map), "points": 0, "incomplete": [],
+    report = {"label_entries": len(label_map), "points": 0, "incomplete": [], "shared_run_ids": len(shared),
               "no_points_row": sorted(set(label_map) - {p["snapshot_id"] for p in rows})}
     cols: dict[str, list] = defaultdict(list)
     task, sid, can, rem, ys, exc = [], [], [], defaultdict(list), defaultdict(list), defaultdict(list)
     weight, episode = [], []
     for p in rows:
         parent = run[p["run_id"]]
+        if parent.get("record") not in (None, "full"):            # points are measured only in record-full runs
+            raise DataError(f"point {p['snapshot_id']}: its parent's run row is record {parent['record']!r}, not full")
         t = int(parent["task_id"])
         entry = label_map[p["snapshot_id"]]
         if not (entry.get("settings") or {}).get("seeds"):
@@ -240,7 +291,7 @@ def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> P
     if tl.get("status") != "calibrated" or g.get("status") != "calibrated":
         raise DataError("the calibration file must hold calibrated time limits and gripper thresholds (Phase 0)")
     label_map = json.loads(Path(label_map_path).read_text())
-    return build(read_table(root, "runs").to_pylist(), read_table(root, "events").to_pylist(),
+    return build(read_table(root, "runs").to_pylist(), read_events(root),
                  read_table(root, "points").to_pylist(), label_map,
                  limits_s={int(k): float(v) for k, v in tl["per_task_s"].items()},
                  thresholds=(float(g["shut_width_m"]), float(g["open_width_m"])),
