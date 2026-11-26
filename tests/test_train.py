@@ -411,3 +411,68 @@ def test_results_report_episodes_effective_sample_size_and_intervals(ps, tmp_pat
     assert lam["rate_ci95"][0] <= lam["rate"] <= lam["rate_ci95"][1]
     z = np.load(tmp_path / "fold0" / "router" / "test_predictions.npz")
     assert list(z["episode"]) == list(ps.episode[m["test"] & keep]) and z["weight"].shape == z["episode"].shape
+
+
+def test_lambda_never_chooses_always_escalate_within_the_budget():
+    """§8: "subject to the escalation rate staying within budget". One point where escalating helps, at the lowest
+    score: the bare rule escalates everywhere to reach it; within the budget's rate (§4: 260 of 520 steps) it
+    cannot, and with nothing else to gain it never escalates."""
+    p0, p1 = np.zeros(4), np.array([0.1, 0.2, 0.3, 0.4])
+    y0, y1 = np.zeros(4), np.array([1 / 3, 0.0, 0.0, 0.0])
+    ok = np.ones(4, bool)
+    bare = LAM.choose(p0, p1, y0, y1, ok)
+    assert bare["lambda"] == -math.inf and bare["rate"] == 1.0
+    capped = LAM.choose(p0, p1, y0, y1, ok, max_rate=LAM.MAX_RATE)
+    assert LAM.MAX_RATE == 0.5 and capped["lambda"] == math.inf and capped["rate"] == 0.0
+    # where the gain is reachable within the budget, the cap changes nothing
+    y1b = np.array([0.0, 0.0, 1.0, 1.0])
+    assert LAM.choose(p0, p1, y0, y1b, ok, max_rate=LAM.MAX_RATE) == LAM.choose(p0, p1, y0, y1b, ok)
+
+
+def test_lambda_needs_support_from_more_than_one_episode():
+    """Points of one episode share its outcome (amendment 68 (3)): a gain that rests on a single episode chooses
+    nothing; `min_episodes=1` is §8's rule exactly."""
+    p0, p1 = np.zeros(6), np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    y0 = np.zeros(6)
+    ok = np.ones(6, bool)
+    one = np.array([0.0, 0.0, 0.0, 0.0, 1.0, 1.0])                   # both gains in episode "e3"
+    ep = np.array(["e1", "e1", "e2", "e2", "e3", "e3"])
+    c = LAM.curve(p0, p1, y0, one, ok, [0.45], episode=ep)[0]
+    assert c["support"] == 1 and c["gain"] == pytest.approx(2 / 6)
+    bare = LAM.choose(p0, p1, y0, one, ok, episode=ep)
+    assert bare["lambda"] == pytest.approx(0.4) and bare == LAM.choose(p0, p1, y0, one, ok, episode=ep, min_episodes=1)
+    guarded = LAM.choose(p0, p1, y0, one, ok, episode=ep, min_episodes=2)
+    assert guarded["lambda"] == math.inf and guarded["rate"] == 0.0 and "supported" in guarded["reason"]
+    two = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 1.0])                   # gains in episodes "e2" and "e3"
+    g2 = LAM.choose(p0, p1, y0, two, ok, episode=ep, min_episodes=2)
+    assert g2["lambda"] == pytest.approx(0.3) and g2["support"] == 2
+    # the single top point alone is one episode: the guard reaches down to the λ that two episodes support
+    assert LAM.choose(p0, p1, y0, two, ok, episode=ep, min_episodes=2, share=0.5)["lambda"] == pytest.approx(0.3)
+    assert LAM.choose(p0, p1, y0, two, ok, episode=ep, min_episodes=1, share=0.5)["lambda"] == pytest.approx(0.5)
+    with pytest.raises(ValueError, match="episode"):
+        LAM.curve(p0, p1, y0, one, ok, [0.0], episode=ep[:3])
+
+
+def test_the_median_lambda_is_never_nan():
+    """§9 uses the folds' median λ; NumPy's median of -inf and +inf is NaN."""
+    inf = math.inf
+    assert LAM.median([-inf, -inf, inf, inf]) == inf
+    assert LAM.median([0.1, 0.3, 0.2]) == pytest.approx(0.2) and LAM.median([0.1, 0.2, 0.3, 0.4]) == pytest.approx(0.25)
+    assert LAM.median([0.1, 0.2, inf, inf]) == inf and LAM.median([0.1, 0.2, 0.3, inf]) == pytest.approx(0.25)
+    assert LAM.median([-inf, 0.1, 0.2, 0.3]) == pytest.approx(0.15) and LAM.median([-inf, -inf, 0.2, 0.3]) == 0.2
+    assert LAM.median([inf]) == inf
+    for bad in ([], [0.1, float("nan")]):
+        with pytest.raises(ValueError):
+            LAM.median(bad)
+
+
+def test_cross_validation_applies_the_rate_cap_and_the_support_guard(ps):
+    s = run_cv(ps, folds=[0, 1], deciders=["router", "cascader_full"], cfg=FAST)
+    assert s["lambda_rule"] == {"share": 0.95, "max_rate": 0.5, "min_episodes": 2, "min_positives": 10}
+    for r in s["results"]:
+        assert r["lambda"]["rate"] <= 0.5 + 1e-9 and r["lambda"]["lambda"] != -math.inf
+        assert r["lambda"]["lambda"] == math.inf or r["lambda"]["support"] >= 2
+    for d in ("router", "cascader_full"):
+        assert not math.isnan(s[d]["median_lambda"]) and "lambda_never_folds" in s[d]
+    loose = run_cv(ps, folds=[0], deciders=["router"], cfg=FAST, max_rate=1.0, min_episodes=1)["results"][0]
+    assert loose["lambda"]["rate"] >= s["results"][0]["lambda"]["rate"]

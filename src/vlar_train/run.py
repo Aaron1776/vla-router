@@ -89,10 +89,13 @@ def cross_fitted_set(ps: PointSet, i: int, decider: str, cfg: TrainConfig, *, x,
                  "points": {"out_of_fold": int(both[:len(p_tr)].sum()), "validation": int(both[len(p_tr):].sum())}}
 
 
-def choose_lambda(sel: dict, *, seed: int) -> dict:
-    """§8's rule on the selection points, then episode-bootstrap intervals (amendment 57 (5)) of the chosen λ's
-    estimated gain and escalation rate, λ held fixed."""
-    lam = LAM.choose(sel["p0"], sel["p1"], sel["y0"], sel["y1"], sel["can"], weight=sel["w"])
+def choose_lambda(sel: dict, *, seed: int, max_rate: float = LAM.MAX_RATE,
+                  min_episodes: int = LAM.MIN_EPISODES) -> dict:
+    """§8's rule on the selection points, within the budget's escalation rate and supported by `min_episodes`
+    episodes (`lam`), then episode-bootstrap intervals (amendment 57 (5)) of the chosen λ's estimated gain and
+    escalation rate, λ held fixed."""
+    lam = LAM.choose(sel["p0"], sel["p1"], sel["y0"], sel["y1"], sel["can"], weight=sel["w"], max_rate=max_rate,
+                     episode=sel["episode"], min_episodes=min_episodes)
     stat = ST.decision_stats(sel["p0"], sel["p1"], sel["y0"], sel["y1"], sel["can"], sel["w"], lam["lambda"])
     lam["gain_ci95"] = ST.cluster_bootstrap(lambda r: stat(r)[0], sel["episode"], seed=seed)
     lam["rate_ci95"] = ST.cluster_bootstrap(lambda r: stat(r)[1], sel["episode"], seed=seed)
@@ -100,7 +103,8 @@ def choose_lambda(sel: dict, *, seed: int) -> dict:
     return lam
 
 
-def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cfg: TrainConfig) -> dict:
+def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cfg: TrainConfig, *,
+                     max_rate: float = LAM.MAX_RATE, min_episodes: int = LAM.MIN_EPISODES) -> dict:
     keep = ~ps.excluded[decider]
     m = F.masks(ps.task, i)
     x = inputs(ps.cols, ps.remaining_s[decider], decider)
@@ -120,7 +124,8 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
         how = {"source": "validation"}
         sel = {"p0": pv[both, 0], "p1": pv[both, 1], "y0": y[va][both, 0], "y1": y[va][both, 1],
                "can": ps.can_escalate[va][both], "w": w_va[both], "episode": ps.episode[va][both]}
-    lam = {**choose_lambda(sel, seed=seed_for(i, f"{decider}|lambda-bootstrap")), **how,
+    lam = {**choose_lambda(sel, seed=seed_for(i, f"{decider}|lambda-bootstrap"), max_rate=max_rate,
+                           min_episodes=min_episodes), **how,
            "validation_positives": n_pos,
            "validation_positive_episodes": int(len(set(ps.episode[va][pos_va].tolist())))}
     boot = seed_for(i, f"{decider}|label-bootstrap")
@@ -142,13 +147,18 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
 
 
 def run_cv(ps: PointSet, *, folds: Sequence[int] = range(F.N_TASKS), deciders: Sequence[str] = DECIDERS,
-           out: Optional[Path] = None, cfg: TrainConfig = TrainConfig()) -> dict:
-    results = [run_fold_decider(ps, i, dname, out, cfg) for i in folds for dname in deciders]
-    summary = {"results": results, "branches": list(BRANCHES), "config": cfg.__dict__}
+           out: Optional[Path] = None, cfg: TrainConfig = TrainConfig(), max_rate: float = LAM.MAX_RATE,
+           min_episodes: int = LAM.MIN_EPISODES) -> dict:
+    results = [run_fold_decider(ps, i, dname, out, cfg, max_rate=max_rate, min_episodes=min_episodes)
+               for i in folds for dname in deciders]
+    summary = {"results": results, "branches": list(BRANCHES), "config": cfg.__dict__,
+               "lambda_rule": {"share": LAM.SHARE, "max_rate": max_rate, "min_episodes": min_episodes,
+                               "min_positives": MIN_POSITIVES}}
     for dname in deciders:
         rs = [r for r in results if r["decider"] == dname]
         summary[dname] = {"median_best_epoch": float(np.median([r["best_epoch"] for r in rs])),
-                          "median_lambda": float(np.median([r["lambda"]["lambda"] for r in rs])),
+                          "median_lambda": LAM.median([r["lambda"]["lambda"] for r in rs]),
+                          "lambda_never_folds": [r["fold"] for r in rs if r["lambda"]["lambda"] == float("inf")],
                           "lambda_fallback_folds": [r["fold"] for r in rs if r["lambda"]["source"] == "cross_fitted"]}
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
@@ -173,6 +183,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--folds", default="0-9")
     ap.add_argument("--deciders", default=",".join(DECIDERS))
     ap.add_argument("--epochs", type=int, default=TrainConfig.epochs)
+    ap.add_argument("--max-rate", type=float, default=LAM.MAX_RATE,
+                    help="λ: highest escalation rate a candidate may have (§8; default the π0.5 budget's share, §4)")
+    ap.add_argument("--min-episodes", type=int, default=LAM.MIN_EPISODES,
+                    help="λ: distinct episodes that must support a chosen λ (1: §8's rule exactly)")
     a = ap.parse_args(argv)
     if a.synthetic:
         from .data import synthetic
@@ -183,7 +197,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         from .data import from_records
         ps = from_records(a.records, a.label_map)   # seeds from each label entry (amendment 49)
     s = run_cv(ps, folds=_range(a.folds), deciders=a.deciders.split(","), out=Path(a.out),
-               cfg=TrainConfig(epochs=a.epochs))
+               cfg=TrainConfig(epochs=a.epochs), max_rate=a.max_rate, min_episodes=a.min_episodes)
     for d in a.deciders.split(","):
         print(d, s[d])
 
