@@ -19,12 +19,27 @@ $4.66 stop: expect a raise of ~$0.32-0.40 at the next 25-min re-projection (appr
 from four sign-ins in gcloud's logs (last API success 15 h 27 min-15 h 59 min after sign-in, first failure 16 h 02 min-
 16 h 45 min); current ones expire 17:32:41Z (CLI) / 17:34:54Z (ADC). The `renew-gcloud-signin` task was NOT
 registered with the scheduler (folder only): re-created as `renew-gcloud-signin-2` (fires 08:32 MST = 15:32Z).
-**Duty helpers now kept in `outputs/l4-retry/` (git-ignored):** `duty_wait.sh` (read-only; exits with one `EVENT`
-line: watcher gone, any watcher stop/failure/unreadable line, `reproject` 25 min after a "start issued" that was not
-preempted, `stockout-2h` (zone-move plan due), optional `REMIND_AT`); arm it with run_in_background:
-`FROM=$(wc -l < outputs/l4-retry/retry.log) [STREAK0=<first stockout ISO>] bash outputs/l4-retry/duty_wait.sh`, and
-re-arm after handling each event. `reproject.py` (read-only): this boot's marker pace (whole boot and last 15 min),
-`project_remaining` at the slower one, `raise_for` (run after `source ops/gcp/env.sh && export PROJECT_ID BUCKET`).
+**Duty helpers kept in `outputs/l4-retry/` (git-ignored; all read-only):** `duty_wait.sh` exits with one `EVENT`
+line: `watcher-gone`; `watcher` (any stop/failure/unreadable line); `reproject` 25 min after a "start issued" not
+preempted (gate check + projection); `lowrun` (amendment 71 (1): < 30 min run in a 2-h window -> zone-move plan);
+`signin-renewed` (recompute expiries, move `renew-gcloud-signin-2`'s fireAt to expiry - 2 h). Arm with
+run_in_background, re-arm after each event: `FROM=<retry.log lines, at or before the last unhandled start> T0=<ISO>
+SIGNIN0="$(python3 outputs/l4-retry/signin_expiry.py --key)" bash outputs/l4-retry/duty_wait.sh`.
+`reproject.py`: this boot's marker pace (whole boot, last 15 min), `project_remaining` at the slower, `raise_for`
+(after `source ops/gcp/env.sh && export PROJECT_ID BUCKET`). `signin_expiry.py`: both sign-ins' completion + 16 h.
+`runtime_window.py`: the 30-min-in-2-h check from `retry.log` (~3 min resolution).
+**Duty states at ~02:35Z:** (1) 25-min re-projection: armed, first due 02:38Z for the 02:13:16Z start; raise exactly
+`raise_for` (amendment 71 (2)). (2) Gate check: folded into the same wake. (3) 730-end chain (yield -> top-up
+decision -> 735 -> 740, its pre-boot and halfway projections): armed as a trigger ("NOT a preemption"); done by the
+session. (4) Sign-ins: `renew-gcloud-signin-2` (08:32 MST 11-26) and `gcloud-signin-daily` (cron 08:01/22:01 + the
+scheduler's fixed 809 s delay = ~08:14/22:14 MST; `touch outputs/l4-retry/PHASE1_DONE` silences it, then delete it).
+(5) Watcher relaunch if gone: armed. (6) Zone-move plan: armed (amendment 71 (1)), windows from 02:30Z.
+**Overnight risks:** every duty except the watcher and the scheduled reminders lives in the session (stops at a usage
+limit or session end; reminders also need the app open and usage left). The Mac was on battery (96%, ~6 h): there
+`caffeinate -s` does not prevent system sleep, and a closed lid sleeps it anyway; it needs AC power and the lid open.
+If 730 reaches its stop with nobody to raise it: the guard raises its stop flag, workers finish in-flight jobs and
+claim nothing more, `run_phase` exits 75 (needs the user; 730 stays queued), the runner syncs and shuts the VM down,
+and the watcher logs "NOT a preemption" and ends. Nothing is lost; resuming = the raise, a start, a new watcher.
 
 **730 (Tranche B screen) state.** VM STOPPED (preempted 2026-11-25 22:02:27Z; not restarted for 3.4 h because the
 gcloud CLI sign-in expired). 659 of 1,974 screened episodes have markers (`results/explore/`). Spend phase
