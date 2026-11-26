@@ -8,6 +8,29 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 740 STOPPED: exit 76 at 11:26Z, a comparison defect, not a parity failure (waiting for the user)
+
+**What stopped it:** `compare-b` failed re-run `explore/t6/i43/r2` with "runs: column job_id differs first at row 0",
+wrote MISMATCH.json and the stop flag; 740 ended with 76, the VM stopped itself (11:28Z), the watcher ended ("NOT a
+preemption"). No restart. Phase `phase1b` spent $0.363 (stop $11.8812). 8 re-runs finished (markers kept), 312
+pending, no leases held.
+**Diagnosis (Mac, from the bucket's records; `outputs/phase1b/740/records/`, `.venv-sim` for pyarrow):** all 8
+finished re-runs (6 failed at 520 steps, 2 successful) against their screened runs: `runs` (30 columns) differs only
+in `job_id` (the re-run's own job id, new by design: `rerun_plan` uses seed index 2) and `record` (off vs full,
+skipped); `steps` (7 columns, 207-520 rows) identical bit for bit; `events` identical once the record field is
+dropped (as `compare_rerun` does). `run_id`, `success`, `steps`, `calibration_hash` identical. **Cause:**
+`phase1b.RECORD_SKIP = ("record",)` does not skip `job_id`; the tests' stand-in runs table
+(`tests/test_phase1b.py::bucket_for`) has no `job_id` column, so they never saw it; the pilot's re-run checks reuse
+the original job id, so this is the first comparison across job ids.
+**Proposed (the user decides):** (1) `compare_rerun` also skips `job_id` in `runs` (every other column still bit
+for bit), with a test on a real-shaped runs table (job_id differing passes; run_id differing fails). (2) The VM's
+`/var/lib/vlar/phase1b/rerun/MISMATCH.json` persists on the boot disk and 740's `mismatch_stop` would gate-fail at
+once: a one-shot step queued before 740 re-runs `compare-b` with the fix over the finished re-runs and moves the
+marker aside (kept) only if all pass, else exit 76. The stop flag clears itself at boot (`run_daemon`: `stop.clear()`
+when the guard starts in ok). (3) Re-queue 740: it keeps its selection (re-run plan in the bucket) and the 8 re-runs.
+**Pace note:** the VM sized **7 workers** (RAM rule), so 740's high-end projection ($12.50, the 8/7 case) is the
+likelier one; one more boot's gate ~$0.10; expect a raise of ~$0.8-1.0 at the next projection (cap: $1.49 left).
+
 ## 740 running (2026-11-26 10:57Z; approval 3, SPEC §17 amendments 68, 70, 71 (2), 72 (3), 73)
 
 **735 done** (10:47:56Z exit 0, VM self-stop, watcher "NOT a preemption"): `step_done` 2,838/2,838 with markers,
