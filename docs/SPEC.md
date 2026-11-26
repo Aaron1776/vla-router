@@ -562,6 +562,10 @@ start; past the stop, `phase-raise` by `raise_for`), counted toward amendment 70
 boots under amendment 68 as written (stop and ask if any task has < 15 failed; any re-run mismatch stops everything).
 (4) The final-tier costing also shows amendment 58's projected result (flagged tasks, minimum fold) with this top-up,
 and as if only the top-up to 15 failed per task had run (+285, +79, 0, +18; $0.97), to show what the extra ~$1.06 bought.
+73. §12 (the user, 2026-11-26 ~08:00Z). **How raises count toward amendment 70's $2.50 cap:** a raise counts in full
+while its phase is open; once the phase closes, it counts only what the phase spent above its stop point before the
+raise. 730 (`phase1b-screen`, closed at $4.8827; stop before its +$0.47 raise $4.6612) counts **$0.22**; the cap has
+**$2.28** left. 735 and 740 count their raises in full while open.
 
 ## 18. Milestone checkpoint: harness build complete
 

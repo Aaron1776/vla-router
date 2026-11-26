@@ -42,6 +42,23 @@ of final-tier money (+$0.18 of 740 re-runs), so with version (a) at 740's low en
 points within them), tasks 0, 1, 6 up to 2, 3, 1 new failed episodes; 1/3 from successful parents, mostly new
 episodes. Run order (each version one step after 740): gate -> (b, c) exploration units from the screen's spare
 failed episodes -> record-full re-runs with the mismatch check -> branches interleaved by task. The user decides.
+**Corrections (~08:00Z, the user's questions; amendment 73: the cap counts 730 at $0.22, $2.28 left).** The figures
+above used 735 at $2.03 (amendment 68's cost; the projection is $2.01), 730's spend past the money set aside for it
+($3.30 + the reserve's $1.33 = $4.63: $0.25), 740's spend past its $11.32 allocation (not its $11.09 stop), and
+started from $4.18, leaving out `phase1f`'s $0.18 boot (allocation $4.36) while the costing deducts the step overhead
+itself. **Corrected final-tier money: $1.83 (740 at $11.60) / $0.96 ($12.48); floor $0.07** (the cap binds before the
+money: 740's counted raises at $2.28 = $2.05 past its allocation); with only the top-up to 15: $3.07 / $2.22 / $1.12.
+Versions at $1.83 -> $0.96: (a) 23 -> 10 points/task, +48.4 -> +22.3, A+B+F 321.3 -> 295.2, min fold 256.9 -> 236.1;
+(b) +30.6 -> +11.2, min fold 239.2 -> 224.9; (c) +23.5 -> +6.7, min fold 232.1 -> 220.5. Full vs to-15, (a) at 740's
+low end: 321.3 vs 351.1, min fold 256.9 vs 279.1. **The $45 guard reconciles exactly:** $45 - ledger $27.81 = $17.19
+= 740's allocation $11.32 + `phase1f` $4.11 ($4.36 less 730's $0.25) + reserve $0.02 + the plan's disk/storage/IP line
+$1.74 ($2.10 for ~5 days of Phase 1 from 11-25 06:28Z, less $0.36 in the ledger). That last line is what the plan
+holds back beyond 735, 740 and the final tier: at ~$0.35/day (+ external IP $0.0025/VM-h, not in the ledger) Phase 1
+to ~11-28 uses ~$0.9 of it; the rest (~$0.85) returns only if released before the final tier runs: the user decides.
+The ~$5 for storage after Phase 1 and the download is outside the $45 (hard limit = $50 - $5). **Flags 4 and 7:**
+amendment 63 (5)'s own-rate flag (>= 10 labelled failed-parent points): own failed-parent rates 4/43 and 5/43, 0/21
+successful; own A+B 7.9 and 9.8 (pooled 27.2-27.3). The empirical-Bayes shrinkage (beta-binomial per stratum) flags
+the same two (11.1, 12.8; every other task >= 24): the decision does not change.
 
 ## 730 done (2026-11-26 07:15Z): the top-up is over $1.00 -> the user decides; nothing is running
 
