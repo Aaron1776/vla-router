@@ -639,7 +639,8 @@ as the end download is verified (Friday 2026-11-27 morning), on the user's appro
 as a backup copy; soft delete is turned off before the bucket is deleted. (5) **Money (at ~21:12Z, 740 projected at
 $12.773):** with no 750 raises the worst case equals the expected one: ~$0.68 of credit left with the bucket kept 3
 days after Friday (~$0.59 at 7 days; $0.33 more for each day the disk outlives Friday ~16:00Z, $0.023 per bucket
-day). Final tier: 15 points/task at 740's projection, 13 if 740 ends at its stop, none if 740 uses all $0.93 of raises.
+day). Final tier: 15 points/task at 740's projection, 13 if 740 ends at its stop, none if 740 uses all $0.93 of raises. (6) The
+user kept the guard at $44.75 (~23:20Z), accepting ~$0.68 left, below the earlier $0.75 floor; $44.68 was declined.
 
 ## 18. Milestone checkpoint: harness build complete
 

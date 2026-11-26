@@ -28,7 +28,7 @@ reports only (`over_stop_usd`, `jobs_short_est`).
 **Re-cost (at ~21:12Z, 740 projected $12.773):** worst = expected (750 never passes its line; a 740 raise shrinks the
 final tier): **~$0.68 left** with the bucket kept 3 days after Friday (~$0.59 at 7 days); each day the disk outlives
 Friday ~16:00Z costs $0.33, each bucket day $0.023. Under the $0.75 floor by ~$0.07 at 3 days: $44.68 would give $0.75
-(14/task) - the user's call. Final tier at $44.75: **15 points/task** (150 points, ~$1.25, ~1.8 h) at 740's
+(14/task) - **the user kept $44.75 (~23:20Z)**. Final tier at $44.75: **15 points/task** (150 points, ~$1.25, ~1.8 h) at 740's
 projection; 13 if 740 ends at its stop; none if 740 uses all $0.93 of raises.
 
 ## Money check against the credit itself (2026-11-26 ~21:15Z; read-only; the guard decision is the user's)
