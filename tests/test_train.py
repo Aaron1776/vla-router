@@ -14,6 +14,7 @@ from vlar_train import data as D  # noqa: E402
 from vlar_train import folds as F  # noqa: E402
 from vlar_train import lam as LAM  # noqa: E402
 from vlar_train.deciders import COLUMNS, DECIDERS, FORBIDDEN_FOR_ROUTER, inputs, width  # noqa: E402
+from vlar_train import run as R  # noqa: E402
 from vlar_train.run import run_cv  # noqa: E402
 from vlar_train.train import TrainConfig, seed_for, train  # noqa: E402
 
@@ -101,7 +102,7 @@ def test_cross_validation_drops_excluded_points_and_records_everything(ps, tmp_p
     assert full["points"]["excluded"] == 0
     assert (tmp_path / "fold3" / "cascader_full" / "result.json").exists()
     assert (tmp_path / "fold3" / "cascader_full" / "test_predictions.npz").exists()
-    assert set(s["router"]) == {"median_best_epoch", "median_lambda"}
+    assert {"median_best_epoch", "median_lambda"} <= set(s["router"])
 
 
 def test_records_plumbing():
@@ -276,3 +277,73 @@ def test_inclusion_probabilities_come_from_the_label_entries():
     with pytest.raises(D.DataError, match="weights"):
         D.PointSet(ps2.cols, ps2.task, ps2.snapshot_id, ps2.can_escalate, ps2.remaining_s, ps2.y, ps2.excluded,
                    np.zeros(len(ps2)))
+
+
+def _few_positives(ps, task, keep=3):
+    """`ps` with all but `keep` of one task's positive points (p_2 - p_1 >= 1/3) made non-positive, every profile."""
+    y = {}
+    for prof, v in ps.y.items():
+        v = v.copy()
+        rows = np.flatnonzero((ps.task == task) & (v[:, 1] - v[:, 0] >= 1 / 3 - 1e-9))
+        v[rows[keep:], 1] = v[rows[keep:], 0]
+        y[prof] = v
+    return D.PointSet(ps.cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s, y, ps.excluded, ps.weight)
+
+
+def test_lambda_fallback_halves_are_recorded_and_split_the_training_tasks():
+    """Amendment 63 (5): the fold's 8 training tasks in two halves, drawn with a recorded seed."""
+    for i in range(10):
+        h = R.halves(i)
+        assert len(h["a"]) == len(h["b"]) == 4 and sorted(h["a"] + h["b"]) == F.fold(i)["train"]
+        assert h == R.halves(i) and isinstance(h["seed"], int)
+    assert len({tuple(R.halves(i)["a"]) for i in range(10)}) > 1
+
+
+def test_lambda_fallback_when_the_validation_task_has_under_ten_positives(ps, tmp_path):
+    """Amendment 63 (5): fewer than 10 positive labelled points (p_2 - p_1 >= 1/3, own profile) on the validation
+    task -> λ from cross-fitted predictions and the validation points; the results list the folds that used it; the
+    fold's decider itself is the one trained on the 8 training tasks, unchanged; no test-task label enters."""
+    y, ym = ps.targets("router")
+    assert R.positives(y[ps.task == 1], ym[ps.task == 1]).sum() >= R.MIN_POSITIVES         # the synthetic set as is
+    few = _few_positives(ps, task=1)                           # task 1 validates fold 0
+    assert R.positives(*[a[few.task == 1] for a in few.targets("router")]).sum() == 3
+    s = run_cv(few, folds=[0, 1], deciders=["router"], out=tmp_path, cfg=FAST)
+    r0, r1 = s["results"]
+    assert r0["lambda"]["source"] == "cross_fitted" and r0["lambda"]["validation_positives"] == 3
+    assert r0["lambda"]["halves"] == R.halves(0)
+    m = F.masks(few.task, 0)
+    keep = ~few.excluded["router"]
+    assert r0["lambda"]["points"] == {"out_of_fold": int((m["train"] & keep).sum()),
+                                      "validation": int((m["val"] & keep).sum())}
+    assert r1["lambda"]["source"] == "validation" and "halves" not in r1["lambda"]
+    assert s["router"]["lambda_fallback_folds"] == [0]
+    assert json.loads((tmp_path / "fold0" / "router" / "result.json").read_text())["lambda"]["source"] == "cross_fitted"
+    # a fold whose validation task has enough positives is as before (task 1 is fold 1's test task, so its
+    # changed labels do not reach that fold at all)
+    plain = run_cv(ps, folds=[1], deciders=["router"], cfg=FAST)["results"][0]
+    assert (r1["best_epoch"], r1["val_loss"], r1["lambda"]["lambda"]) == (
+        plain["best_epoch"], plain["val_loss"], plain["lambda"]["lambda"])
+    # no test-task label enters: other labels on the test task (task 0) change nothing
+    yt = {prof: np.where((few.task == 0)[:, None], 1.0 - v, v) for prof, v in few.y.items()}
+    other = D.PointSet(few.cols, few.task, few.snapshot_id, few.can_escalate, few.remaining_s, yt, few.excluded,
+                       few.weight)
+    again = run_cv(other, folds=[0], deciders=["router"], cfg=FAST)["results"][0]
+    assert again["lambda"] == r0["lambda"] and again["val_loss"] == r0["val_loss"]
+
+
+def test_lambda_fallback_chooses_on_out_of_fold_and_validation_points_together(ps, monkeypatch):
+    """The fallback's λ is §8's rule on the pooled points: recomputed here from the same pieces."""
+    few = _few_positives(ps, task=1)
+    seen = {}
+    real = LAM.choose
+
+    def spy(*a, **k):
+        seen["n"], seen["w"] = len(a[0]), k["weight"]
+        return real(*a, **k)
+    monkeypatch.setattr(R.LAM, "choose", spy)
+    r = R.run_fold_decider(few, 0, "router", None, FAST)
+    m = F.masks(few.task, 0)
+    keep = ~few.excluded["router"]
+    n_tr, n_va = int((m["train"] & keep).sum()), int((m["val"] & keep).sum())
+    assert seen["n"] == n_tr + n_va and r["lambda"]["source"] == "cross_fitted"
+    assert seen["w"][:n_tr].mean() == pytest.approx(1.0) and seen["w"][n_tr:].mean() == pytest.approx(1.0)
