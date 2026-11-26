@@ -51,6 +51,25 @@ class Trained:
             return torch.sigmoid(self.model(z)).numpy().astype(np.float64)
 
 
+def weighted_bce(p: np.ndarray, y: np.ndarray, m: np.ndarray, w: Optional[np.ndarray] = None) -> float:
+    """The training loss of given probabilities, in NumPy: Σ BCE × mask × w_i / Σ mask × w_i (amendment 57 (4)),
+    w_i normalised to mean 1 over the rows given."""
+    mw = np.asarray(m, dtype=np.float64) * unit_mean(w, len(y))[:, None]
+    p = np.clip(np.broadcast_to(np.asarray(p, dtype=np.float64), y.shape), 1e-7, 1 - 1e-7)
+    total = float(mw.sum())
+    return float((-(y * np.log(p) + (1 - y) * np.log(1 - p)) * mw).sum() / total) if total > 0 else 0.0
+
+
+def constant_predictor(y_tr: np.ndarray, m_tr: np.ndarray, w_tr: Optional[np.ndarray] = None) -> np.ndarray:
+    """The baseline that uses no input: per head, the weighted mean of the training rows' labels,
+    Σ w_i × mask × label / Σ w_i × mask (0.5 for a head with no label, which the mask keeps out of every loss).
+    It is the constant that minimises the weighted training loss, so a decider whose validation loss is not below
+    this predictor's has learned nothing that transfers to the validation task."""
+    mw = np.asarray(m_tr, dtype=np.float64) * unit_mean(w_tr, len(y_tr))[:, None]
+    den = mw.sum(axis=0)
+    return np.where(den > 0, (mw * y_tr).sum(axis=0) / np.where(den > 0, den, 1.0), 0.5)
+
+
 def seed_for(fold: int, decider: str, base: int = 0) -> int:
     return int.from_bytes(hashlib.sha256(f"{base}|{fold}|{decider}".encode()).digest()[:4], "little")
 

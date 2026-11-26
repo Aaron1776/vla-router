@@ -17,7 +17,7 @@ from vlar_train.deciders import COLUMNS, DECIDERS, FORBIDDEN_FOR_ROUTER, inputs,
 from vlar_train import run as R  # noqa: E402
 from vlar_train import stats as ST  # noqa: E402
 from vlar_train.run import run_cv  # noqa: E402
-from vlar_train.train import TrainConfig, seed_for, train  # noqa: E402
+from vlar_train.train import TrainConfig, constant_predictor, seed_for, train, weighted_bce  # noqa: E402
 
 FAST = TrainConfig(epochs=12, patience=4, batch=64, hidden=(64, 32))
 
@@ -598,3 +598,41 @@ def test_read_events_adds_each_parts_job_id(tmp_path):
     with pytest.raises(D.DataError, match="incomplete"):                           # both logs under one run id
         D.group_events(ev)
     assert D.group_events([e for e in ev if e["job_id"] != "aaa"])["explore/t0/i0/r0"][2] == {"t": "x", "k": 2}
+
+
+def test_constant_predictor_baseline_by_hand():
+    """Per head the weighted mean training label; its loss by the training loss's formula (amendment 57 (4))."""
+    y = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1 / 3, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+    m = np.array([[1, 1, 0, 0], [1, 1, 0, 0], [1, 0, 0, 0]], dtype=np.float32)
+    w = np.array([2.0, 1.0, 1.0])
+    c = constant_predictor(y, m, w)
+    assert c == pytest.approx([2 / 4, (1 / 3) / 3, 0.5, 0.5])            # unlabelled heads: 0.5, never scored
+    assert constant_predictor(y, m) == pytest.approx([1 / 3, 1 / 6, 0.5, 0.5])
+    h = lambda p, t: -(t * math.log(p) + (1 - t) * math.log(1 - p))    # noqa: E731
+    want = (2 * h(0.5, 1) + 2 * h(1 / 9, 0) + h(0.5, 0) + h(1 / 9, 1 / 3) + h(0.5, 0)) / (2 + 2 + 1 + 1 + 1)
+    assert weighted_bce(c, y, m, w) == pytest.approx(want)
+    # the weighted mean is the best constant: any other constant has a higher weighted training loss
+    for other in ([0.4, 1 / 9, 0.5, 0.5], [0.5, 0.2, 0.5, 0.5]):
+        assert weighted_bce(np.array(other), y, m, w) > weighted_bce(c, y, m, w)
+    assert weighted_bce(c, y, np.zeros_like(m), w) == 0.0
+
+
+def test_results_carry_the_constant_predictor_baseline(ps, tmp_path):
+    s = run_cv(ps, folds=[0], deciders=["router"], out=tmp_path, cfg=FAST)
+    r = s["results"][0]
+    m = F.masks(ps.task, 0)
+    keep = ~ps.excluded["router"]
+    tr, va = m["train"] & keep, m["val"] & keep
+    y, ym = ps.targets("router")
+    c = constant_predictor(y[tr], ym[tr], ps.weight[tr])
+    b = r["baseline"]
+    assert b["p"] == pytest.approx(list(c)) and b["val_loss"] == pytest.approx(weighted_bce(c, y[va], ym[va], ps.weight[va]))
+    assert b["val_loss_minus_baseline"] == pytest.approx(r["val_loss"] - b["val_loss"])
+    assert s["router"]["folds_beating_constant_on_validation"] == ([0] if b["val_loss_minus_baseline"] < 0 else [])
+    z = np.load(tmp_path / "fold0" / "router" / "test_predictions.npz")
+    assert z["p_constant"] == pytest.approx(c)
+    # the model's own validation loss is the same formula on its predictions
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    again = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(0, "router"), cfg=FAST,
+                  w_tr=ps.weight[tr], w_va=ps.weight[va])
+    assert weighted_bce(again.predict(x[va]), y[va], ym[va], ps.weight[va]) == pytest.approx(r["val_loss"], rel=1e-4)

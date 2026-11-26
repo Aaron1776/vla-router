@@ -19,7 +19,12 @@ Each result records which rule chose its λ, and the summary lists the folds tha
 By episode (amendments 57 (5)-(6), 68 (3); `stats`): each result reports, for its training and validation rows, the
 points, distinct episodes and effective sample size (Σw)²/Σw², the re-weighted label statistics, and the positives
 both as points and as distinct episodes; and for the chosen λ, episode-bootstrap intervals of its estimated gain and
-escalation rate on the points it was chosen on (λ held fixed, so the intervals do not cover λ's own selection). Everything lands in <out>/fold<i>/<decider>/ (a
+escalation rate on the points it was chosen on (λ held fixed, so the intervals do not cover λ's own selection).
+
+Baseline: each result gives, next to the decider's validation loss, the same weighted loss of the constant predictor
+(per head, the weighted mean label of the fold's training rows; `train.constant_predictor`). A decider that does not
+beat it on the validation task has learned nothing that transfers. The constant is stored with the test predictions
+so that the test task can be compared the same way in Phase 4; no test loss is computed here. Everything lands in <out>/fold<i>/<decider>/ (a
 checkpoint per epoch, best.json, result.json) and <out>/summary.json."""
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from . import lam as LAM
 from . import stats as ST
 from .data import PointSet
 from .deciders import BRANCHES, DECIDERS, inputs
-from .train import TrainConfig, seed_for, train, unit_mean
+from .train import TrainConfig, constant_predictor, seed_for, train, unit_mean, weighted_bce
 
 
 POSITIVE = ST.POSITIVE      # a positive labelled point: p_2 − p_1 ≥ 1/3 under the decider's profile (amendment 63 (2))
@@ -131,8 +136,12 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
     boot = seed_for(i, f"{decider}|label-bootstrap")
     data = {"train": ST.label_stats(y[tr], ym[tr], w_tr, ps.episode[tr], seed=boot),
             "val": ST.label_stats(y[va], ym[va], w_va, ps.episode[va], seed=boot)}
+    const = constant_predictor(y[tr], ym[tr], w_tr)
+    base_val = weighted_bce(const, y[va], ym[va], w_va)
+    baseline = {"p": [float(v) for v in const], "train_loss": weighted_bce(const, y[tr], ym[tr], w_tr),
+                "val_loss": base_val, "val_loss_minus_baseline": model.val_loss[model.best_epoch] - base_val}
     res = {"fold": i, "decider": decider, "width": int(x.shape[1]), "best_epoch": model.best_epoch,
-           "val_loss": model.val_loss[model.best_epoch], "epochs_run": len(model.val_loss),
+           "val_loss": model.val_loss[model.best_epoch], "epochs_run": len(model.val_loss), "baseline": baseline,
            "points": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum()),
                       "excluded": int((~keep).sum())},
            "data": data, "lambda": lam}
@@ -141,7 +150,7 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
         (d / "result.json").write_text(json.dumps(res, indent=1, default=float))
         if te.any():
             np.savez(d / "test_predictions.npz", p=model.predict(x[te]), y=y[te], mask=ym[te], weight=ps.weight[te],
-                     episode=ps.episode[te],
+                     episode=ps.episode[te], p_constant=const,
                      snapshot_id=np.array([s for s, k in zip(ps.snapshot_id, te) if k]))
     return res
 
@@ -159,6 +168,8 @@ def run_cv(ps: PointSet, *, folds: Sequence[int] = range(F.N_TASKS), deciders: S
         rs = [r for r in results if r["decider"] == dname]
         summary[dname] = {"median_best_epoch": float(np.median([r["best_epoch"] for r in rs])),
                           "median_lambda": LAM.median([r["lambda"]["lambda"] for r in rs]),
+                          "folds_beating_constant_on_validation": [r["fold"] for r in rs
+                                                                   if r["baseline"]["val_loss_minus_baseline"] < 0],
                           "lambda_never_folds": [r["fold"] for r in rs if r["lambda"]["lambda"] == float("inf")],
                           "lambda_fallback_folds": [r["fold"] for r in rs if r["lambda"]["source"] == "cross_fitted"]}
     if out is not None:
