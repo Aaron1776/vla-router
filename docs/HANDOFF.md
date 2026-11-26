@@ -34,6 +34,10 @@ decision -> 735 -> 740, its pre-boot and halfway projections): armed as a trigge
 session. (4) Sign-ins: `renew-gcloud-signin-2` (08:32 MST 11-26) and `gcloud-signin-daily` (cron 08:01/22:01 + the
 scheduler's fixed 809 s delay = ~08:14/22:14 MST; `touch outputs/l4-retry/PHASE1_DONE` silences it, then delete it).
 (5) Watcher relaunch if gone: armed. (6) Zone-move plan: armed (amendment 71 (1)), windows from 02:30Z.
+**730 re-projection, 02:38Z (boot from 02:13:16Z):** past the gate (VM RUNNING, runner on 730, 103 markers this
+boot, 762 of 1,974); pace 341/h (boot) / 339/h (last 15 min); spent $2.12; projected **$4.633 vs stop $4.6612:
+no raise** (`raise_for` 0). Margin $0.03: one extra re-projection armed at 04:25Z (`duty_wait.sh` `CHECK_AT`);
+completion ~06:15Z at this pace. Waiter re-armed `FROM=333 T0=2026-11-26T02:30:00Z CHECK_AT=2026-11-26T04:25:00Z`.
 **Overnight risks:** every duty except the watcher and the scheduled reminders lives in the session (stops at a usage
 limit or session end; reminders also need the app open and usage left). The Mac was on battery (96%, ~6 h): there
 `caffeinate -s` does not prevent system sleep, and a closed lid sleeps it anyway; it needs AC power and the lid open.
