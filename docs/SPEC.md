@@ -552,6 +552,16 @@ raises and a full $1.00 top-up used), the order it would run in, and for the all
 parents are successful episodes or failed episodes Tranche A already used. (5) **An extra 730 re-projection at
 04:25Z** (the user, ~02:45Z; the 02:38Z projection was $4.633 against the $4.66 stop): if it projects past the stop,
 `spend phase-raise` by `raise_for` (overrun + $0.25), counted toward the $2.50 cap like any other raise.
+72. §11, §12 (the user, 2026-11-26 ~07:40Z, after 730's yield: failed per task 26, 21, 23, 9, 37, 12, 23, 16, 14,
+28). (1) **735 runs as the full top-up sized by amendment 68's rule** (`phase1b.top_up_90`, 90% to 21 failed at the
+observed rate): +510, +194, +75, +85 screened episodes for tasks 3, 5, 7, 8 (864; sizes 788, 375, 229, 200), about
+$2.03 with the boot ($0.002204/episode measured on 730, one boot's overhead $0.126). **This replaces amendment 68's
+$1.00 cap for this top-up only.** Spend phase `phase1b-topup`: allocation $2.03, line $2.26 (stop $2.0312, the
+default margin, as 730's). (2) Projections and raises as for 730 under amendment 69 (re-project ~25 min after each
+start; past the stop, `phase-raise` by `raise_for`), counted toward amendment 70's $2.50 cap. (3) When 735 ends, 740
+boots under amendment 68 as written (stop and ask if any task has < 15 failed; any re-run mismatch stops everything).
+(4) The final-tier costing also shows amendment 58's projected result (flagged tasks, minimum fold) with this top-up,
+and as if only the top-up to 15 failed per task had run (+285, +79, 0, +18; $0.97), to show what the extra ~$1.06 bought.
 
 ## 18. Milestone checkpoint: harness build complete
 

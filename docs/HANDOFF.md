@@ -8,6 +8,19 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 735 approved (2026-11-26 ~07:40Z, SPEC §17 amendment 72): the full top-up, then 740 under amendment 68
+
+**The user approved 735 as the full 90%-to-21 top-up** (+510, +194, +75, +85 for tasks 3, 5, 7, 8; ~$2.03; replaces
+the $1.00 cap for this top-up only; projections/raises as for 730, counted toward the $2.50 cap; then 740 as written).
+Done: sizes `outputs/phase1b/topup-sizes.json`; plan `b80770fcd3707bbb` (2,838 episodes; superset of 730's
+`af7218b9c0700f43`: same ids, specs, seeds, subjects, tiers; only `order` reshuffled, which `queue add`'s INSERT OR
+IGNORE leaves alone) uploaded to `phase1b/screen/plan.json` (730's kept at `phase1b/screen-730/plan.json` and
+locally `outputs/phase1b/screen/plan-730.json`); `phase1b-screen` closed at $4.8827; `phase1b-topup` open:
+allocation $2.03, line $2.26, stop $2.0312. Pre-boot projection: 864 at 314/h + boot/gate 0.12 h + tail 0.06 h =
+**$2.01 vs $2.0312: no raise**. Source since 730's `41f7026`: additive only (amendments 68-70 Mac-side code; tests
+pass), so queueing moves CURRENT to HEAD. Next: queue 735, watcher `PHASE=phase1b-topup` (MAX_AUTO 8), duty waiter
+(T0 = 735's first start), 25-min re-projection after each start (`reproject.py --total 2838`).
+
 ## 730 done (2026-11-26 07:15Z): the top-up is over $1.00 -> the user decides; nothing is running
 
 **730 ended clean** (step exit 0; VM stopped itself 07:15:33Z; the watcher logged "NOT a preemption" and ended; no
