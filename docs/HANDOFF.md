@@ -47,6 +47,9 @@ boot's gate), 882 left at 321.6/h -> **$4.878 vs $4.6612 -> `phase-raise` +$0.47
 $5.1312, line $5.36. **Tranche B raises against the $2.50 cap: $0.47 used, $2.03 left.** Completion ~07:10Z.
 `reproject.py`'s "last 15 min" is now the boot's last 15 min (works for a stopped boot). Waiter re-armed `FROM=333
 T0=2026-11-26T02:30:00Z` (next: the 25-min re-projection for the 04:19:01Z start, ~04:44Z).
+**04:44Z re-projection (boot from 04:19:01Z):** past the gate (RUNNING, runner on 730, 100 markers, 1,192/1,974);
+318.5/h boot, 312.5/h last 15 min; spent $3.158 -> **$4.931 vs stop $5.1312: no raise**; completion ~07:15Z. Mac on
+AC since ~04:40Z. Waiter re-armed from the then line count (no start pending; T0 02:30Z).
 **Overnight risks:** every duty except the watcher and the scheduled reminders lives in the session (stops at a usage
 limit or session end; reminders also need the app open and usage left). The Mac was on battery (96%, ~6 h): there
 `caffeinate -s` does not prevent system sleep, and a closed lid sleeps it anyway; it needs AC power and the lid open.
