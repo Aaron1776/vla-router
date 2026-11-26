@@ -50,6 +50,8 @@ ORDER_SEED_B = 65_002
 FAILED_SHARE = 2 / 3
 RECORD_SKIP = ("record",)    # the record mode only: the screen and its re-run both run under the frozen calibration,
                              # so calibration_hash must match (unlike pilot.EPISODE_SKIP["record_off"])
+RERUN_RUNS_SKIP = RECORD_SKIP + ("job_id",)   # SPEC §17 amendment 74: the runs table also names the job, and a
+                             # re-run is its own job (`rerun_plan`: seed index 2); every other runs column bit for bit
 
 
 class TrancheBError(RuntimeError):
@@ -283,8 +285,9 @@ def _events(data: bytes) -> list[tuple]:
 
 def compare_rerun(read: Callable[[str], Optional[bytes]], rerun: Job,
                   marker: Callable[[str], Optional[Mapping]]) -> dict[str, Any]:
-    """A finished re-run against its screened run: runs, steps and events bit for bit (record-mode fields aside) and
-    the markers' outcome. `passed` None while the re-run has no marker yet."""
+    """A finished re-run against its screened run: runs, steps and events bit for bit (record-mode fields aside, and
+    the runs table's job_id: the re-run's own job id, amendment 74) and the markers' outcome. `passed` None while the
+    re-run has no marker yet."""
     from .smoke import table_difference
     screen_id = rerun.spec["screen_job_id"]
     mr, ms = marker(rerun.job_id), marker(screen_id)
@@ -312,7 +315,7 @@ def compare_rerun(read: Callable[[str], Optional[bytes]], rerun: Job,
             d = None if ea == eb else next((f"event {i} differs" for i, (p, q) in enumerate(zip(ea, eb)) if p != q),
                                            f"{len(ea)} vs {len(eb)} events")
         else:
-            d = table_difference(x, y, skip=RECORD_SKIP)
+            d = table_difference(x, y, skip=RERUN_RUNS_SKIP if table == "runs" else RECORD_SKIP)
         if d:
             problems.append(f"{table}: {d}")
     return {"subject": rerun.subject, "passed": not problems, "problems": problems}

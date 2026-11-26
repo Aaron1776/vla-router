@@ -200,25 +200,67 @@ def test_reruns_repeat_the_screened_spec_with_record_full_and_a_new_job_id():
 
 # ---------------------------------------------------------------- comparison
 
-def parquet(rows):
+def parquet(rows, schema=None):
     pytest.importorskip("pyarrow")
     import pyarrow as pa
     import pyarrow.parquet as pq
     buf = io.BytesIO()
-    pq.write_table(pa.Table.from_pylist(rows), buf)
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema() if schema else None), buf)
     return buf.getvalue()
 
 
-def bucket_for(screen, rerun, *, steps_b=None, events_b=None, success_b=True, count_b=2, calib_b="c" * 64):
-    run = lambda rec, cal: [{"run_id": screen.subject, "success": True, "record": rec, "steps": 40,  # noqa: E731
-                             "calibration_hash": cal}]
+# The runs table as the harness writes it (dataset.py; read from a screened run's runs file, 2026-11-26): 30 columns.
+RUNS_COLUMNS = (("run_id", "string"), ("run_kind", "string"), ("phase", "string"), ("job_id", "string"),
+                ("episode_id", "string"), ("snapshot_id", "string"), ("branch", "string"), ("seed_index", "int32"),
+                ("pi05_calls", "int32"), ("task_id", "int32"), ("init_idx", "int32"), ("scene_seed", "int64"),
+                ("rollout_seed", "int64"), ("parent_rollout_seed", "int64"), ("mode", "string"),
+                ("profile", "string"), ("record", "string"), ("time_limit", "bool"), ("time_limit_s", "float64"),
+                ("success", "bool"), ("end_reason", "string"), ("steps", "int32"), ("success_step", "int32"),
+                ("pi05_steps", "int32"), ("pi05_requests", "int32"), ("pi05_failed_requests", "int32"),
+                ("config_hash", "string"), ("calibration_hash", "string"), ("harness_version", "string"),
+                ("schema_version", "int32"))
+
+
+def runs_schema():
+    import pyarrow as pa
+    return pa.schema([(n, {"bool": pa.bool_}.get(t, getattr(pa, t, None))()) for n, t in RUNS_COLUMNS])
+
+
+def runs_row(subject, jid, rec, cal):
+    """A screened explore episode's runs row (synthetic values, the real columns and types)."""
+    return {"run_id": subject, "run_kind": "episode", "phase": "explore", "job_id": jid, "episode_id": subject,
+            "snapshot_id": None, "branch": None, "seed_index": None, "pi05_calls": None, "task_id": 0,
+            "init_idx": 3, "scene_seed": 185, "rollout_seed": 2_000_123, "parent_rollout_seed": None,
+            "mode": "routed", "profile": "none", "record": rec, "time_limit": False, "time_limit_s": None,
+            "success": True, "end_reason": "success", "steps": 40, "success_step": 40, "pi05_steps": 10,
+            "pi05_requests": 1, "pi05_failed_requests": 0, "config_hash": "a" * 64, "calibration_hash": cal,
+            "harness_version": "1.0.0", "schema_version": 1}
+
+
+def changed(value, typ):
+    """Another value of the same column type."""
+    if typ == "bool":
+        return not value if value is not None else True
+    if typ == "string":
+        return (value or "") + "x"
+    if typ == "float64":
+        return (value or 0.0) + 1.0
+    return (value or 0) + 1
+
+
+def bucket_for(screen, rerun, *, steps_b=None, events_b=None, success_b=True, count_b=2, calib_b="c" * 64,
+               runs_b=None):
+    run = lambda jid, rec, cal: [runs_row(screen.subject, jid, rec, cal)]  # noqa: E731
     steps = [{"run_id": screen.subject, "step": i, "a": float(i)} for i in range(3)]
     ev = lambda rec: [{"run_id": screen.subject, "seq": 0, "t": "start", "step": 0,  # noqa: E731
                        "event": json.dumps({"record": rec, "x": 1})}]
     files = {}
     for jid, rec, cal, st, evs in ((screen.job_id, "off", "c" * 64, steps, ev("off")),
                                    (rerun.job_id, "full", calib_b, steps_b or steps, events_b or ev("full"))):
-        files[f"records/runs/explore/{jid}.parquet"] = parquet(run(rec, cal))
+        rows = run(jid, rec, cal)
+        if jid == rerun.job_id and runs_b:
+            rows = [{**rows[0], **runs_b}]
+        files[f"records/runs/explore/{jid}.parquet"] = parquet(rows, runs_schema)
         files[f"records/steps/explore/{jid}.parquet"] = parquet(st)
         files[f"records/events/explore/{jid}.parquet"] = parquet(evs)
     markers = {screen.job_id: {"meta": {"setup_count": 2},
@@ -236,10 +278,27 @@ def a_pair():
     return next(j for j in plan.jobs if j.job_id == rerun.spec["screen_job_id"]), rerun, rp
 
 
-def test_an_identical_rerun_passes_with_only_the_record_mode_different():
+def test_an_identical_rerun_passes_with_only_the_record_mode_and_its_own_job_id_different():
+    """Amendment 74: the runs table names the job, and a re-run is its own job (seed index 2), so job_id differs on
+    every re-run (740's first boot, 2026-11-26: "runs: column job_id differs first at row 0" on all 8 re-runs)."""
     screen, rerun, _ = a_pair()
+    assert screen.job_id != rerun.job_id
     read, marker = bucket_for(screen, rerun)
     assert B.compare_rerun(read, rerun, marker) == {"subject": rerun.subject, "passed": True, "problems": []}
+    assert B.RERUN_RUNS_SKIP == ("record", "job_id")
+
+
+@pytest.mark.parametrize("column", [n for n, _ in RUNS_COLUMNS if n not in ("record", "job_id")])
+def test_every_other_runs_column_stays_bit_for_bit(column):
+    """run_id, success, steps, calibration_hash and every other runs column: a difference fails the comparison even
+    when the markers agree (the runs table itself is checked)."""
+    screen, rerun, rp = a_pair()
+    typ = dict(RUNS_COLUMNS)[column]
+    base = runs_row(screen.subject, rerun.job_id, "full", "c" * 64)
+    read, marker = bucket_for(screen, rerun, runs_b={column: changed(base[column], typ)})
+    r = B.compare_rerun(read, rerun, marker)
+    assert r["passed"] is False and r["problems"] == [f"runs: column {column} differs first at row 0"]
+    assert B.compare_all(rp, read, marker)["passed"] is False
 
 
 @pytest.mark.parametrize("change", ["steps", "events", "outcome", "setup", "calibration"])
@@ -369,6 +428,73 @@ def test_740_keeps_a_budget_stop_during_the_reruns_a_budget_stop(tmp_path):
 def test_740_refuses_to_rerun_after_a_difference_on_an_earlier_boot(tmp_path):
     rc, why, log = run_740(tmp_path, earlier=True)
     assert rc == 76 and "differs" in why and "queue add" not in log and "run_phase" not in log
+
+
+# ---------------------------------------------------------------- 739: the re-compare before 740 resumes (amendment 74)
+
+DIAGNOSED = {"failed": [{"problems": ["runs: column job_id differs first at row 0"], "subject": "explore/t6/i43/r2"}],
+             "n_failed": 1}
+
+
+def run_739(tmp_path, *, marker=DIAGNOSED, compared=8, fails=False, bucket_plan="PLAN"):
+    import os
+    import subprocess
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    fake, bin_ = tmp_path / "fake", tmp_path / "bin"
+    fake.mkdir(); bin_.mkdir()
+    rows = {f"j{i}": {"subject": f"explore/t{i}/i0/r0", "passed": (False if fails and i == 0 else True) if i < compared
+                      else None, "problems": ["steps: column a differs first at row 2"] if fails and i == 0 else []}
+            for i in range(320)}
+    rep = {"compared": compared, "pending": 320 - compared, "passed": not fails, "all_done": False, "rows": rows}
+    (fake / "compare.json").write_text(json.dumps(rep))
+    (fake / "bucket-plan.json").write_text(bucket_plan)
+    docker = ('echo "docker $*" >> "$FAKE/log"; out=""; prev=""; for a in "$@"; do [[ "$prev" == --out ]] && out="$a"; '
+              'prev="$a"; done; cp "$FAKE/compare.json" "$out"; exit ' + ("76" if fails else "0"))
+    gcloud = ('echo "gcloud $*" >> "$FAKE/log"; [[ "$2" == cp ]] && { for a in "$@"; do d="$a"; done; '
+              'cp "$FAKE/bucket-plan.json" "$d"; }; exit 0')
+    for name, body in {"gcloud": gcloud, "docker": docker}.items():
+        (bin_ / name).write_text("#!/bin/bash\n" + body + "\n"); (bin_ / name).chmod(0o755)
+    (fake / "lib.sh").write_text(FAKE_LIB)
+    rd, rep_dir = tmp_path / "work" / "phase1b" / "rerun", tmp_path / "work" / "phase1b" / "reports"
+    rd.mkdir(parents=True)
+    (rd / "plan.json").write_text("PLAN")
+    if marker is not None:
+        (rd / "MISMATCH.json").write_text(json.dumps(marker, sort_keys=True))
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "FAKE": str(fake), "VLAR_LIB": str(fake / "lib.sh"),
+           "VLAR_WORK_ROOT": str(tmp_path / "work"), "VLAR_STORAGE_URL": "gs://b/v",
+           "VLAR_REASON_FILE": str(tmp_path / "reason")}
+    out = subprocess.run(["bash", str(repo / "ops" / "vm" / "postfreeze" / "739-phase1b-recompare.sh")], env=env,
+                         capture_output=True, text=True, timeout=60)
+    log = (fake / "log").read_text() if (fake / "log").exists() else ""
+    why = (tmp_path / "reason").read_text() if (tmp_path / "reason").exists() else ""
+    exits = [json.loads(x) for x in (rep_dir / "step-exits.jsonl").read_text().splitlines()]
+    return out.returncode, why, log, rd, rep_dir, exits
+
+
+def test_739_sets_the_diagnosed_marker_aside_only_when_all_8_finished_reruns_pass(tmp_path):
+    rc, why, log, rd, rep, exits = run_739(tmp_path)
+    assert rc == 0 and "all 8 finished re-runs pass" in why
+    assert not (rd / "MISMATCH.json").exists()
+    kept = rd / "MISMATCH-set-aside-740-boot1.json"
+    assert json.loads(kept.read_text()) == DIAGNOSED and json.loads((rep / kept.name).read_text()) == DIAGNOSED
+    assert "phase1 compare-b --plan-dir" in log and "--stop-flag" not in log and "--mismatch" not in log
+    assert exits == [{"boot_id": exits[0]["boot_id"], "step": "739", "step_exit": 0, "at": exits[0]["at"]}]
+
+
+@pytest.mark.parametrize("case", ["a_rerun_still_differs", "seven_compared", "nine_compared", "another_marker",
+                                  "no_marker", "the_plan_differs"])
+def test_739_otherwise_exits_76_and_keeps_the_marker(tmp_path, case):
+    kw = {"a_rerun_still_differs": {"fails": True}, "seven_compared": {"compared": 7}, "nine_compared": {"compared": 9},
+          "another_marker": {"marker": {"failed": [{"problems": ["steps: column a differs first at row 2"],
+                                                    "subject": "explore/t6/i43/r2"}], "n_failed": 1}},
+          "no_marker": {"marker": None}, "the_plan_differs": {"bucket_plan": "OTHER"}}[case]
+    rc, why, log, rd, rep, exits = run_739(tmp_path, **kw)
+    assert rc == 76 and why.startswith("739: ") and exits[-1]["step_exit"] == 76
+    assert not list(rd.glob("MISMATCH-set-aside*"))
+    assert (rd / "MISMATCH.json").exists() == (case != "no_marker")
+    if case in ("another_marker", "no_marker", "the_plan_differs"):
+        assert "compare-b" not in log
 
 
 # ---------------------------------------------------------------- the screen's yield (amendment 66 (4))

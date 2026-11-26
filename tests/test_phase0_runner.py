@@ -315,7 +315,10 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
     import re
     steps = sorted((REPO / "ops" / "vm" / "postfreeze").glob("*.sh"))
     assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh", "720-phase1a.sh", "730-phase1b-screen.sh",
-                                       "735-phase1b-topup.sh", "740-phase1b.sh"]
+                                       "735-phase1b-topup.sh", "739-phase1b-recompare.sh", "740-phase1b.sh"]
+    recompare = (REPO / "ops" / "vm" / "postfreeze" / "739-phase1b-recompare.sh").read_text()   # amendment 74
+    assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", recompare, re.M) == ["phase1b"]
+    assert "--stop-flag" not in recompare and "--mismatch" not in recompare and "rm -f \"${MISMATCH}\"" not in recompare
     topup = (REPO / "ops" / "vm" / "postfreeze" / "735-phase1b-topup.sh").read_text()     # amendment 68
     assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", topup, re.M) == ["phase1b-topup"]
     assert "exec bash /opt/vla-router/ops/vm/postfreeze/730-phase1b-screen.sh" in topup

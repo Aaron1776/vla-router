@@ -567,6 +567,32 @@ while its phase is open; once the phase closes, it counts only what the phase sp
 raise. 730 (`phase1b-screen`, closed at $4.8827; stop before its +$0.47 raise $4.6612) counts **$0.22**; the cap has
 **$2.28** left. 735 and 740 count their raises in full while open.
 
+74. §12, amendment 56 (the user, 2026-11-26 ~12:00Z, after 740's first boot stopped with exit 76). **Tranche B's
+re-run comparison skips the runs table's `job_id`.** Evidence: 740's first boot (started 10:57:48Z) ended with 76 at
+11:26Z: `compare-b` failed `explore/t6/i43/r2` with "runs: column job_id differs first at row 0". All 8 re-runs that
+boot finished (6 failed at the 520-step cap, 2 successful) were compared on the Mac against their screened runs from
+the bucket's records: the runs table (30 columns) differs only in `job_id` (the re-run's own job id: `rerun_plan`
+runs it at seed index 2) and `record` (off vs full, already skipped); the steps table (7 columns, 207-520 rows) is
+identical bit for bit; the events are identical once the record field is dropped (as the comparison does); `run_id`,
+`success`, `steps` and `calibration_hash` are identical; the fixed `compare_rerun` passes all 8. The tests' stand-in
+runs table had no `job_id` column, and the pilot's re-run checks reuse the original job id, so no earlier check
+compared across job ids. (1) `phase1b.compare_rerun` skips `job_id` in the runs table only (`RERUN_RUNS_SKIP`);
+every other runs column, the steps and the events stay bit for bit. Tests use a runs table with the real 30 columns
+and types: a different `job_id` passes; a difference in any of the other 28 columns (`run_id`, `success`, `steps`,
+`calibration_hash` among them) fails. (2) `ops/vm/postfreeze/739-phase1b-recompare.sh`, queued before 740:
+re-compares on the VM with the fix and sets the first boot's mismatch marker aside (renamed, kept on the VM and
+copied to the bucket's reports) only if it is the marker diagnosed here and exactly the 8 finished re-runs were
+compared and all passed; otherwise it exits 76 and the VM stops. (3) 740 then resumes with its selection and the 8
+re-runs; raises as under amendment 70 at the next projection. (4) **Why the stop came at 11:26Z, not at the first
+re-run:** it did fail the first re-run to finish (`explore/t6/i43/r2`, marker 11:13:30Z; the report shows 1
+compared, 319 pending). The stop flag only stops new claims (`worker.run_worker` checks it before each claim), so
+the 7 re-runs already running finished (the queue's pending count stayed at 312 from 11:13:35Z on; leased 7 -> 0 by
+~11:26Z); `run_phase` then saw the flag with work left (75) and `mismatch_stop` made it 76. (5) **7 workers, not
+8:** amendment 64's RAM rule (servers 19.90 GB at start x 1.25 = 24.87 GB, above the 20.45 GB measured peak;
+(67.42 - 24.87) GB / 5.5 GiB = 7.2, so 7), as on every boot since the pilot's resume (730 and 735 ran 7); the
+calibrated 8 do not fit. Amendment 70's re-run pace (0.2329 VM-s/step) was measured on Phase 0's base rollouts at 8
+workers, hence its 7-worker high end. The worker count stays as it is for this resume (the user).
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
