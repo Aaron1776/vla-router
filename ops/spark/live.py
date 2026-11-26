@@ -52,6 +52,30 @@ def point_columns_live(obs) -> dict[str, np.ndarray]:
     return {k: np.nan_to_num(v.astype(np.float64), nan=0.0) for k, v in cols.items()}
 
 
+def ensure_decider(decider: str) -> None:
+    """Make `decider` known to `vlar_train.deciders`. The four deciders of §8 always are; the 2 x 2's history
+    variants (`router_hist`, `cascader_hist`) and their history features exist only after
+    `vlar_train.variants.install()`, which the trainer calls for `--variants 2x2`."""
+    from vlar_train import deciders as D
+    if decider not in D.COLUMNS:
+        try:
+            from vlar_train import variants as V
+        except ImportError as e:
+            raise KeyError(f"decider {decider!r} is not one of {sorted(D.COLUMNS)} and this vlar_train has no "
+                           "variants module") from e
+        V.install()
+    if decider not in D.COLUMNS:
+        raise KeyError(f"decider {decider!r} is not known to vlar_train (known: {sorted(D.COLUMNS)})")
+
+
+def column_width(column: str) -> int:
+    """Width of one input column: the measured columns' fixed sizes, a history column's registered width."""
+    from vlar_train import history as H
+    if column.startswith(H.PREFIX):
+        return int(H.FEATURES[column[len(H.PREFIX):]].width)
+    return {"features_main": 1024, "features_wrist": 1024, "robot_state": 11, "proposal": 70}.get(column, 1)
+
+
 class _Decider:
     name: str
     profile: str
@@ -60,6 +84,7 @@ class _Decider:
 
     def __init__(self, model, mean, std, decider: str, lam: float, meta: dict):
         from vlar_train import deciders as D
+        ensure_decider(decider)
         self.model, self.mean, self.std, self.name, self.lam = model, mean, std, decider, float(lam)
         self.profile = D.profile_of(decider)
         self.columns = D.COLUMNS[decider]
@@ -67,19 +92,27 @@ class _Decider:
         self.meta = {**meta, "decider": decider, "profile": self.profile, "lambda": self.lam,
                      "history": self.history_names}
         self.hist = None
+        self.last_inputs = None                 # (columns, x, remaining time) of the latest `build`
 
     def new_episode(self) -> None:
         from vlar_train.history import EpisodeHistory
         self.hist = EpisodeHistory(self.history_names) if self.history_names else None
 
-    def decide(self, obs) -> tuple[str, dict[str, Any]]:
-        import torch
+    def build(self, obs) -> np.ndarray:
+        """The decider's input row at this point, (1, width). Call once per decision point, in order: it adds the
+        point to the episode's history. Keeps what it built in `last_inputs`."""
         from vlar_train import deciders as D
         cols = point_columns_live(obs)
         if self.hist is not None:
             from vlar_train.history import live_view
             cols.update(self.hist.push(live_view(obs)))
         x = D.inputs({k: v.reshape(1, -1) for k, v in cols.items()}, np.array([obs.common.time_remaining_s]), self.name)
+        self.last_inputs = ({c: cols[c] for c in self.columns}, x, float(obs.common.time_remaining_s))
+        return x
+
+    def decide(self, obs) -> tuple[str, dict[str, Any]]:
+        import torch
+        x = self.build(obs)
         with torch.no_grad():
             z = torch.from_numpy(((x - self.mean) / self.std).astype(np.float32))
             p = torch.sigmoid(self.model(z)).numpy().astype(np.float64)[0]
@@ -96,6 +129,10 @@ class TrainedDecider(_Decider):
         res = json.loads((d / "result.json").read_text())
         ck = torch.load(d / "checkpoints" / f"epoch{int(res['best_epoch']):03d}.pt", map_location="cpu",
                         weights_only=False)                        # a local file this project wrote
+        ensure_decider(res["decider"])
+        want = sum(column_width(c) for c in D.COLUMNS[res["decider"]]) + 1
+        if int(ck["n_in"]) != want:
+            raise ValueError(f"{d}: the checkpoint takes {ck['n_in']} inputs, {res['decider']}'s columns give {want}")
         model = D.make_model(int(ck["n_in"]), tuple(ck["hidden"]))
         model.load_state_dict(ck["state"]); model.eval()
         lam = res["lambda"]["lambda"]
@@ -108,9 +145,9 @@ class RandomDecider(_Decider):
     def __init__(self, decider: str, seed: int = 0, n_in: Optional[int] = None):
         import torch
         from vlar_train import deciders as D
+        ensure_decider(decider)
         torch.manual_seed(seed)
-        width = n_in or sum({"features_main": 1024, "features_wrist": 1024, "robot_state": 11, "proposal": 70}.get(c, 1)
-                            for c in D.COLUMNS[decider]) + 1
+        width = n_in or sum(column_width(c) for c in D.COLUMNS[decider]) + 1
         model = D.make_model(width); model.eval()
         super().__init__(model, np.zeros(width), np.ones(width), decider, 0.0,
                          {"source": f"dummy random weights, seed {seed}"})
