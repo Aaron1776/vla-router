@@ -39,6 +39,14 @@ boot, 762 of 1,974); pace 341/h (boot) / 339/h (last 15 min); spent $2.12; proje
 no raise** (`raise_for` 0). Margin $0.03: one extra re-projection armed at 04:25Z (`duty_wait.sh` `CHECK_AT`;
 approved, amendment 71 (5): past the stop -> raise by `raise_for`, counted toward the $2.50 cap);
 completion ~06:15Z at this pace. Waiter re-armed `FROM=333 T0=2026-11-26T02:30:00Z CHECK_AT=2026-11-26T04:25:00Z`.
+**Mac slept 02:42-04:11Z** (pmset: "Clamshell Sleep", lid closed on battery): watcher and waiter paused. The VM was
+**preempted 03:42:06Z** (boot 02:13-03:42: 433 episodes, 321.6/h whole boot, 314-329/h late) and sat stopped 37 min;
+on wake the watcher read UNKNOWN once (04:15:37Z, network), then restarted it: **automatic restart 2/5 at 04:19:01Z**
+(730 restarts used 5 of 8; 3 left). **04:25Z check (amendment 71 (5)):** 1,092/1,974, spent $2.9399 (incl. the new
+boot's gate), 882 left at 321.6/h -> **$4.878 vs $4.6612 -> `phase-raise` +$0.47** (exactly `raise_for`): stop
+$5.1312, line $5.36. **Tranche B raises against the $2.50 cap: $0.47 used, $2.03 left.** Completion ~07:10Z.
+`reproject.py`'s "last 15 min" is now the boot's last 15 min (works for a stopped boot). Waiter re-armed `FROM=333
+T0=2026-11-26T02:30:00Z` (next: the 25-min re-projection for the 04:19:01Z start, ~04:44Z).
 **Overnight risks:** every duty except the watcher and the scheduled reminders lives in the session (stops at a usage
 limit or session end; reminders also need the app open and usage left). The Mac was on battery (96%, ~6 h): there
 `caffeinate -s` does not prevent system sleep, and a closed lid sleeps it anyway; it needs AC power and the lid open.
