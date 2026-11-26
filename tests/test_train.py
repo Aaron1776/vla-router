@@ -788,3 +788,211 @@ def test_a_decider_variant_with_history_trains_under_its_profile(ps, toy_history
     for bad in (dict(name="router", profile="router", columns=()), dict(name="v", profile="none", columns=())):
         with pytest.raises(ValueError):
             DC.add_variant(bad["name"], profile=bad["profile"], columns=bad["columns"])
+
+
+# ---------------------------------------------------------------- the 2 x 2: memory by X-VLA information (`variants`)
+
+from vlar_train import variants as V  # noqa: E402
+
+
+@pytest.fixture
+def two_by_two():
+    before = (dict(H.FEATURES), dict(COLUMNS), dict(DC.PROFILE_OF))
+    V.install()
+    yield
+    for now, was in zip((H.FEATURES, COLUMNS, DC.PROFILE_OF), before):
+        now.clear()
+        now.update(was)
+
+
+def _line_row(k, *, actual=0.01, cmd=0.02, close_from=None, run_id="ep", **over):
+    """Point k of an episode whose arm moves `actual` metres along x per segment while each proposal asks for
+    `cmd` metres in ten equal steps: identity rotation, fingers 4 cm apart, gripper commanded open, or closed from
+    step `close_from` of the proposal on."""
+    pos = np.array([actual * k, 0.0, 0.1])
+    prop = np.zeros((10, 7), dtype=np.float32)
+    prop[:, :3] = pos + np.outer(np.arange(1, 11) / 10.0, [cmd, 0.0, 0.0])
+    prop[:, 6] = -1.0
+    if close_from is not None:
+        prop[close_from:, 6] = 1.0
+    row = {"run_id": run_id, "index": k, "step": 10 * k, "snapshot_id": f"{run_id}/dp{k:02d}",
+           "budget_remaining_steps": 260, "robot_state": list(pos) + [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.02, -0.02],
+           "proposal": [float(x) for x in prop.ravel()], "chunk_pos": 10 * (k % 3), "prev_segment_pi05": False,
+           "track_pos_err": 0.004, "track_rot_err": 0.02, "tracking_valid": k > 0,
+           "prev_actions": [0, 0, 0, 0, 0, 0, -1.0] * 2, "prev_gripper_qpos": [0.02, -0.02, 0.02, -0.02],
+           "features_main": [0.0] * 1024, "features_wrist": [0.0] * 1024}
+    return {**row, **over}
+
+
+def _walk(rows, names=None, th=(0.003, 0.07)):
+    h, out = H.EpisodeHistory(V.HISTORY if names is None else names), {}
+    for row, view in H.episode_views(rows, thresholds=th):
+        out[row["index"]] = h.push(view)
+    return out
+
+
+def test_the_two_by_two_registers_two_variants_and_changes_no_decider(two_by_two):
+    spec = {d: COLUMNS[d] for d in DECIDERS}
+    V.install()                                                            # twice: nothing more happens
+    assert {d: COLUMNS[d] for d in DECIDERS} == spec and {d: DC.PROFILE_OF[d] for d in DECIDERS} == {d: d for d in DECIDERS}
+    assert set(COLUMNS) == set(DECIDERS) | {"router_hist", "cascader_hist"}
+    assert DC.profile_of("router_hist") == "router" and DC.profile_of("cascader_hist") == "cascader_nospread"
+    assert COLUMNS["router_hist"] == COLUMNS["router"] + ("hist_motion", "hist_fingers")
+    assert COLUMNS["cascader_hist"][:len(COLUMNS["cascader_nospread"])] == COLUMNS["cascader_nospread"]
+    # memory is the same on both sides; everything else on the cascader side reads one of X-VLA's commands
+    assert all(H.router_safe(n) for n in V.MEMORY) and not any(H.router_safe(n) for n in V.INTENT + V.PLAN)
+    assert set(V.MEMORY) <= set(V.CASCADER_HIST) and set(V.ROUTER_HIST) == set(V.MEMORY)
+    assert all("proposal" in H.FEATURES[n].uses for n in V.INTENT + V.PLAN)
+    assert {n: H.FEATURES[n].width for n in V.HISTORY} == {n: V.WIDTHS[n] for n in V.HISTORY}
+    cols = V.with_synthetic_history(D.synthetic(n_per_task=2)).cols
+    assert [width(cols, d) for d in V.TWO_BY_TWO] == [2062, 2075, 2139, 2179]
+
+
+def test_the_history_features_by_hand(two_by_two):
+    """An arm that moves 1 cm per segment while X-VLA asks for 2 cm, in a straight line."""
+    rows = [_line_row(k) for k in range(8)]
+    c = _walk(rows)[7]
+    assert c["hist_motion"] == pytest.approx([0.03, 0.03, 0.03 / 0.0301, 0.0, 0.0, 0.06, 0.06, 0.06 / 0.0601, 0.0, 0.0],
+                                             abs=1e-9)
+    assert c["hist_fingers"] == pytest.approx([0.04, 0.04, 0.04])
+    assert c["hist_track_norm"] == pytest.approx([2.0, 20.0, 0.002, 0.0], rel=1e-5, abs=1e-8)   # 4 mm error on 2 mm steps
+    assert c["hist_progress"] == pytest.approx([0.01 / 0.021, 0.03 / 0.061, 0.06 / 0.121, 1.0], abs=1e-6)
+    assert c["hist_stall"] == pytest.approx([0.06, 0.12, 0.03, 0.06], abs=1e-7)
+    assert c["hist_vertical"] == pytest.approx([0.0, 0.0], abs=1e-7)
+    assert c["hist_plan_phase"] == pytest.approx([0.0, 1.0, 0.0, 0.0, 0.002, 0.0], abs=1e-7)
+    # the first point has no past: neutral values
+    c0 = _walk(rows)[0]
+    assert list(c0["hist_vertical"]) == [0.0, 0.0] and list(c0["hist_progress"]) == [1.0, 1.0, 1.0, 1.0]
+    assert list(c0["hist_stall"]) == [0.0] * 4 and list(c0["hist_fingers"]) == pytest.approx([0.04] * 3)
+    assert list(c0["hist_motion"]) == [0.0] * 10 and list(c0["hist_track_norm"]) == [0.0] * 4
+    # a blocked arm (asked for 2 cm, moves nothing) against a hesitating one (asked for nothing)
+    blocked = _walk([_line_row(k, actual=0.0) for k in range(8)])[7]
+    waiting = _walk([_line_row(k, actual=0.0, cmd=0.0) for k in range(8)])[7]
+    assert list(blocked["hist_motion"]) == list(waiting["hist_motion"])               # memory cannot tell them apart
+    assert blocked["hist_stall"] == pytest.approx([0.06, 0.12, 0.06, 0.12], abs=1e-7)
+    assert waiting["hist_stall"] == pytest.approx([0.0, 0.0, 0.0, 0.0], abs=1e-7)
+    assert blocked["hist_progress"][0] == pytest.approx(0.0)
+    # an arm sent 3 cm lower than it gets, each segment; fingers that shut for one segment, 40 steps ago
+    low = [_line_row(k) for k in range(8)]
+    for r in low:
+        prop = np.array(r["proposal"]).reshape(10, 7)
+        prop[:, 2] -= 0.03 * np.arange(1, 11) / 10.0
+        r["proposal"] = [float(x) for x in prop.ravel()]
+    low[3]["robot_state"][9:] = [0.001, -0.001]
+    c = _walk(low)[7]
+    assert c["hist_vertical"] == pytest.approx([-0.03, -0.03], abs=1e-6)
+    assert c["hist_fingers"] == pytest.approx([0.04, 0.04, 0.002]) and c["hist_motion"][9] == pytest.approx(0.0)
+    # a proposal that closes the gripper from its fifth step on, 12 cm lower
+    rows = [_line_row(k) for k in range(3)] + [_line_row(3, close_from=4)]
+    prop = np.array(rows[3]["proposal"]).reshape(10, 7)
+    prop[:, 2] -= 0.12 * np.arange(1, 11) / 10.0
+    rows[3]["proposal"] = [float(x) for x in prop.ravel()]
+    c = _walk(rows)[3]
+    step = float(np.hypot(0.002, 0.012))
+    assert c["hist_plan_phase"] == pytest.approx([1.0, 0.4, 0.6, 0.6 * 0.04, step, -0.12], abs=1e-6)
+
+
+def test_the_gripper_command_history_by_hand(two_by_two):
+    """Segments 1 to 6 after point 0: open; a close that shuts on nothing (failed); open; a close that holds;
+    still closed, holding; still closed, then the fingers shut (a drop). Free signals at point k describe the
+    segment proposed at point k - 1."""
+    closes = {1: 0, 3: 0, 4: 0, 5: 0}                       # proposals commanded closed from their first step
+    shut = {2: 1.0, 6: 0.4}
+    part = {4: 1.0, 5: 1.0, 6: 0.6}
+    rows = [_line_row(k, close_from=closes.get(k)) for k in range(7)]
+    seen = {}
+    h = H.EpisodeHistory(["grip_events"])
+    for row, view in H.episode_views(rows, thresholds=(0.003, 0.07)):
+        view = {**view, "grip_shut_frac": shut.get(row["index"], 0.0), "grip_partial_frac": part.get(row["index"], 0.0)}
+        seen[row["index"]] = list(h.push(view)["hist_grip_events"])
+    #                 closes opens failed drops regrasps ever_held steps_since_held
+    assert seen[0] == [0, 0, 0, 0, 0, 0, 0] and seen[1] == [0, 0, 0, 0, 0, 0, 10]
+    assert seen[2] == [1, 0, 1, 0, 0, 0, 20]                # closed on nothing
+    assert seen[3] == [1, 1, 1, 0, 0, 0, 30]                # opened again
+    assert seen[4] == [2, 1, 1, 0, 1, 1, 0]                 # a second close, after a failed one, holds
+    assert seen[5] == [2, 1, 1, 0, 1, 1, 0]
+    assert seen[6] == [2, 1, 2, 1, 1, 1, 0]                 # held, then shut: a drop, which also counts as a close
+    #                                                         during which the fingers shut; held for half the segment
+    # after a π0.5 segment the commands of that segment are unknown: it adds nothing
+    rows[3] = _line_row(3, close_from=0, tracking_valid=False, prev_segment_pi05=True)
+    h = H.EpisodeHistory(["grip_events"])
+    for row, view in H.episode_views(rows[:4], thresholds=(0.003, 0.07)):
+        out = list(h.push({**view, "grip_shut_frac": 1.0 if row["index"] == 3 else 0.0})["hist_grip_events"])
+    assert out == [1, 0, 0, 0, 0, 0, 30]                    # the close of segment 2 only; segment 3's shut fingers
+    #                                                         are not held against a command X-VLA did not execute
+
+
+def test_a_segment_x_vla_did_not_drive_as_proposed_counts_for_nothing(two_by_two):
+    """After a π0.5 segment (tracking invalid) the intent features of that segment are neutral; memory still counts
+    the motion. A point where the budget is spent leaves a gap, across which no segment is formed."""
+    rows = [_line_row(k) for k in range(6)]
+    rows[4] = _line_row(4, tracking_valid=False, prev_segment_pi05=True, track_pos_err=0.0, track_rot_err=0.0)
+    c = _walk(rows)
+    assert c[4]["hist_vertical"][0] == 0.0 and list(c[4]["hist_track_norm"]) == [0.0] * 4
+    assert c[4]["hist_progress"][0] == 1.0 and c[4]["hist_progress"][3] == 1.0
+    assert c[4]["hist_stall"][0] == pytest.approx(0.04) and c[5]["hist_stall"][0] == pytest.approx(0.04)   # two of three
+    assert c[4]["hist_motion"][0] == pytest.approx(0.03)
+    assert c[5]["hist_progress"][0] == pytest.approx(0.01 / 0.021, abs=1e-6)
+    gap = [_line_row(0), _line_row(1), _line_row(2, budget_remaining_steps=0), _line_row(3)]
+    c = _walk(gap)
+    assert sorted(c) == [0, 1, 3] and c[3]["hist_progress"][0] == 1.0 and list(c[3]["hist_track_norm"]) == [0.0] * 4
+    assert c[3]["hist_motion"][0] == pytest.approx(0.03) and c[3]["hist_stall"][0] == pytest.approx(0.02)
+
+
+def test_the_two_by_two_history_is_the_same_offline_and_live(two_by_two):
+    th = (0.003, 0.07)
+    rng = np.random.default_rng(5)
+    rows = []
+    for k in range(9):
+        r = _line_row(k, actual=float(rng.uniform(0, 0.02)), cmd=float(rng.uniform(0, 0.03)),
+                      close_from=int(rng.integers(0, 10)) if k % 2 else None)
+        if k == 5:
+            r.update(tracking_valid=False, prev_segment_pi05=True, track_pos_err=0.0, track_rot_err=0.0)
+        rows.append(r)
+    off, live, router = H.EpisodeHistory(V.CASCADER_HIST), H.EpisodeHistory(V.CASCADER_HIST), H.EpisodeHistory(V.ROUTER_HIST)
+    for row, view in H.episode_views(rows, thresholds=th):
+        a, b = off.push(view), live.push(H.live_view(_observed(row, view)))
+        assert set(a) == {H.column(n) for n in V.CASCADER_HIST}
+        for k in a:
+            assert np.array_equal(a[k], b[k]), k
+        # the router's live view (common inputs only) gives the same memory columns, and nothing else is offered
+        r = router.push(H.live_view(_observed(row, view, profile="router")))
+        assert set(r) == {"hist_motion", "hist_fingers"}
+        assert all(np.array_equal(r[k], a[k]) for k in r)
+    with pytest.raises(ValueError, match="does not observe"):
+        H.EpisodeHistory(["progress"]).push(H.live_view(_observed(rows[0], H.offline_view(rows[0], thresholds=th),
+                                                                  profile="router")))
+
+
+def test_build_adds_the_two_by_two_history_from_the_parents_points(two_by_two):
+    runs, events, points, label_map, kw = _records()
+    labelled = {p["run_id"]: p for p in points}
+    pts = []
+    for ep in ("ep", "ep2"):
+        for k in range(3):
+            row = _line_row(k, run_id=ep, budget_remaining_steps=20 if k == 2 else 260)
+            pts.append({**labelled[ep], **row} if k == 2 else row)
+    ps = D.build(runs, events, pts, label_map, history=V.HISTORY, **kw)
+    assert len(ps) == 2 and all(ps.cols[H.column(n)].shape == (2, V.WIDTHS[n]) for n in V.HISTORY)
+    want = _walk([p for p in pts if p["run_id"] == "ep"], th=kw["thresholds"])[2]
+    for k, v in want.items():
+        assert np.array_equal(ps.cols[k][0], v)
+    assert inputs(ps.cols, ps.remaining_s["cascader_nospread"], "cascader_hist").shape == (2, 2179)
+
+
+def test_the_two_by_two_trains_on_the_same_rows_and_differs_only_in_inputs(ps, two_by_two, tmp_path):
+    ps2 = V.with_synthetic_history(ps)
+    for k in ps.cols:
+        assert np.array_equal(ps2.cols[k], ps.cols[k])
+    s = run_cv(ps2, folds=[0], deciders=list(V.TWO_BY_TWO), cfg=FAST)
+    r = {x["decider"]: x for x in s["results"]}
+    assert [r[d]["profile"] for d in V.TWO_BY_TWO] == ["router", "router", "cascader_nospread", "cascader_nospread"]
+    for plain, hist in (("router", "router_hist"), ("cascader_nospread", "cascader_hist")):
+        assert r[hist]["points"] == r[plain]["points"] and r[hist]["baseline"]["p"] == r[plain]["baseline"]["p"]
+        point = lambda d: {s: {k: v for k, v in d[s].items() if not k.endswith("ci95")} for s in d}   # intervals are
+        assert point(r[hist]["data"]) == point(r[plain]["data"])                   # bootstrapped with a seed per decider
+        assert r[hist]["width"] > r[plain]["width"]
+    # the entry point: a synthetic dry run of the four variants; without --variants nothing is registered
+    R.main(["--synthetic", "--variants", "2x2", "--folds", "0", "--epochs", "2", "--out", str(tmp_path / "v")])
+    done = json.loads((tmp_path / "v" / "summary.json").read_text())
+    assert [x["decider"] for x in done["results"]] == list(V.TWO_BY_TWO)

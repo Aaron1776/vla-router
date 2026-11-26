@@ -194,21 +194,33 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--synthetic", action="store_true", help="dry run on synthetic points")
     ap.add_argument("--out", required=True)
     ap.add_argument("--folds", default="0-9")
-    ap.add_argument("--deciders", default=",".join(DECIDERS))
+    ap.add_argument("--deciders", default=None,
+                    help="default: the four deciders of §8, or with --variants 2x2 that analysis's four")
+    ap.add_argument("--variants", choices=["2x2"], default=None,
+                    help="2x2: also register the planned memory by X-VLA-information analysis (`variants`): "
+                         "router_hist and cascader_hist, with their history inputs; the §8 deciders are unchanged")
     ap.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     ap.add_argument("--max-rate", type=float, default=LAM.MAX_RATE,
                     help="λ: highest escalation rate a candidate may have (§8; default the π0.5 budget's share, §4)")
     ap.add_argument("--min-episodes", type=int, default=LAM.MIN_EPISODES,
                     help="λ: distinct episodes that must support a chosen λ (1: §8's rule exactly)")
     a = ap.parse_args(argv)
+    history: tuple = ()
+    if a.variants == "2x2":
+        from . import variants as V
+        V.install()
+        history = V.HISTORY
+    deciders = a.deciders.split(",") if a.deciders else list(V.TWO_BY_TWO if a.variants == "2x2" else DECIDERS)
     if a.synthetic:
         from .data import synthetic
         ps = synthetic()
+        if history:
+            ps = V.with_synthetic_history(ps)      # shapes only: synthetic points have no episode to walk
     else:
         if not (a.records and a.label_map):
             ap.error("give --records and --label-map (or --synthetic)")
         from .data import from_records
-        ps = from_records(a.records, a.label_map)   # seeds from each label entry (amendment 49)
+        ps = from_records(a.records, a.label_map, history=history)   # seeds from each label entry (amendment 49)
         rep = ps.report
         print(f"points: {rep['points']} of {rep['label_entries']} label entries; left out: {len(rep['incomplete'])} "
               f"incomplete (a branch seed without a finished run), {len(rep['no_points_row'])} without a points row")
@@ -216,9 +228,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print("  incomplete:", row["snapshot_id"], "missing", ", ".join(row["missing"]))
         if rep["incomplete"]:
             print("  the remaining points' inclusion probabilities are no longer exact (amendment 65 (6))")
-    s = run_cv(ps, folds=_range(a.folds), deciders=a.deciders.split(","), out=Path(a.out),
+    s = run_cv(ps, folds=_range(a.folds), deciders=deciders, out=Path(a.out),
                cfg=TrainConfig(epochs=a.epochs), max_rate=a.max_rate, min_episodes=a.min_episodes)
-    for d in a.deciders.split(","):
+    for d in deciders:
         print(d, s[d])
 
 
