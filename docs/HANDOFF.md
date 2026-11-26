@@ -8,6 +8,33 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Money check against the credit itself (2026-11-26 ~21:15Z; read-only; the guard decision is the user's)
+
+**The user (~21:10Z):** the console's Savings list shows no Free tier: plan as if the 100 GB download allowance does not
+apply; Credits page **$18.79** left; soft delete is turned off before the bucket is deleted (after the end download is
+verified); if the worst case leaves < $0.75 of credit, propose how far to lower the guard.
+**The page lags:** it counts $31.21 used ($50 - $18.79); spent by my count at ~21:12Z **$37.96** = ledger $34.90 (VM,
+disk, tracked storage, and the 11-24/11-25 charges for builds, price, IP, ops) + what it misses since the 11-25 charge:
+today's download $2.68 (24.01 GB = 22.36 GiB x $0.12) + small reads $0.04, IP $0.06 (24.35 VM-h), operations ~$0.25
+(34,756 objects written since, + ticks, scans, lists, reads), storage outside its scan ~$0.03. So ~$6.75 is not on the
+page yet (the download, ~5-6 h of VM): **credit really left ~$12.04.** The page shows less used than this count, so no
+sign of charges not counted (e.g. the course project), but it cannot confirm until it catches up.
+**Still to spend, expected:** rest of 740 $7.77 (projection $12.773, 212/320 re-runs, 11.3 h left), the final tier to
+its line $1.79 (at $45: ledger at 740's end ~$42.84, hold $0.38 -> 19 pts/task, 190 points), disk to deletion ~11-27
+16:00Z $0.26, storage $0.02, IP $0.04, operations ~$0.19, end download $1.46 (13.07 GB = 8.89 GB in the bucket not yet
+downloaded + 108 re-runs x 36.8 MB + branches 0.15 + final tier 0.06), soft delete $0 = **$11.52 -> $0.52 left.**
+**Worst case (all $0.93 of raises):** a raise in 740 comes out of the final tier (sized from the ledger at 740's end):
+the total does not move. A raise in 750 can spend only to the $45 hard stop: its line leaves the ledger at $45 less the
+hold's last day ($0.35), + the drain (~$0.02, branch jobs <= 1.7 min) = **+$0.37 -> $0.15 left.** Each day the disk and
+bucket outlive 11-27 16:00Z costs ~$0.35 more (worst + one day: -$0.20).
+**Proposal: lower the guard's hard limit $0.60, to $44.40** (from the final tier): worst $0.75 left, expected $1.12.
+Final tier 19 -> 10 pts/task (100 points, ~$0.91, ~1.3 h; roughly +41 -> +22 expected positives). Covering a one-day
+deletion delay too would need $44.05 (5 pts/task). How, if approved: `hard_limit_usd` in `ops/ops.example.yaml` and the
+Mac's `ops/ops.yaml`, committed before 750 is queued: `31_phase0_queue.sh` moves CURRENT to HEAD, so 750's boot loads
+it; 740 and any restart of it keep $45 from `c7ed123` (its ledger ends <= ~$43.93 even with all raises). `size_750.py`
+reads the hard limit from `spend status`, so it sizes to the new limit by itself. Script:
+`<scratchpad>/credit_check.py` (not kept). **The user decides.**
+
 ## The user's decisions (~19:25Z) and the 740 -> 750 hand-over runbook (740 still running)
 
 **Decisions:** (1) sign-ins renewed (CLI 19:21:50Z, ADC 19:22:20Z). (2) **Guard: no change.** The user checks the
