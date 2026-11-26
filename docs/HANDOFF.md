@@ -10,6 +10,22 @@ re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline
 
 ## Takeover (2026-11-26 ~02:00Z): read this first
 
+**Taken over 2026-11-26 ~02:10Z (verified, VM untouched).** Previous session ended clean (tree clean, pushed, only
+the watcher running, its file = `76427a6`). Both sign-ins work (CLI and ADC). 730 restart 3 (the watcher's start)
+came up 01:59:48Z and was **preempted 02:00:29Z (41 s)**; the watcher took automatic restart 1/5 (4th for 730; 4 left
+after it); stockout since 02:03:02Z, retry until ~08:03Z. Ledger: total $24.65, `phase1b-screen` $1.80 / stop $4.66;
+659 markers. **Pace correction:** the 20:54Z boot screened 308-314/h (not 335), so 730 projects **$4.73-4.78** vs the
+$4.66 stop: expect a raise of ~$0.32-0.40 at the next 25-min re-projection (approval 1). **Sign-in session = 16 h**
+from four sign-ins in gcloud's logs (last API success 15 h 27 min-15 h 59 min after sign-in, first failure 16 h 02 min-
+16 h 45 min); current ones expire 17:32:41Z (CLI) / 17:34:54Z (ADC). The `renew-gcloud-signin` task was NOT
+registered with the scheduler (folder only): re-created as `renew-gcloud-signin-2` (fires 08:32 MST = 15:32Z).
+**Duty helpers now kept in `outputs/l4-retry/` (git-ignored):** `duty_wait.sh` (read-only; exits with one `EVENT`
+line: watcher gone, any watcher stop/failure/unreadable line, `reproject` 25 min after a "start issued" that was not
+preempted, `stockout-2h` (zone-move plan due), optional `REMIND_AT`); arm it with run_in_background:
+`FROM=$(wc -l < outputs/l4-retry/retry.log) [STREAK0=<first stockout ISO>] bash outputs/l4-retry/duty_wait.sh`, and
+re-arm after handling each event. `reproject.py` (read-only): this boot's marker pace (whole boot and last 15 min),
+`project_remaining` at the slower one, `raise_for` (run after `source ops/gcp/env.sh && export PROJECT_ID BUCKET`).
+
 **730 (Tranche B screen) state.** VM STOPPED (preempted 2026-11-25 22:02:27Z; not restarted for 3.4 h because the
 gcloud CLI sign-in expired). 659 of 1,974 screened episodes have markers (`results/explore/`). Spend phase
 `phase1b-screen` open: $1.76 of VM, stop $4.66, line $4.89, allocation $3.30 (amendment 69 raised it by $1.33 from the
