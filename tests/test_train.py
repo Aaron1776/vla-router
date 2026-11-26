@@ -996,3 +996,184 @@ def test_the_two_by_two_trains_on_the_same_rows_and_differs_only_in_inputs(ps, t
     R.main(["--synthetic", "--variants", "2x2", "--folds", "0", "--epochs", "2", "--out", str(tmp_path / "v")])
     done = json.loads((tmp_path / "v" / "summary.json").read_text())
     assert [x["decider"] for x in done["results"]] == list(V.TWO_BY_TWO)
+
+
+# ---------------------------------------------------------------- the planned benefit analysis (`benefit`)
+
+from vlar_train import benefit as B  # noqa: E402
+
+
+def _write_task(out, task, *, p, y, lam, weight=None, episode=None, mask=None, can=None, variants=B.VARIANTS, steps=None):
+    """A fold's saved test predictions and λ, as `run_fold_decider` writes them. `p` and `lam`: per variant, or one
+    for all."""
+    n = len(y)
+    sid = np.array([f"e{task}/x/dp{(k if steps is None else steps[k]):02d}" for k in range(n)])
+    for v in variants:
+        d = out / f"fold{task}" / v
+        d.mkdir(parents=True, exist_ok=True)
+        extra = {} if can is None else {"can_escalate": np.asarray(can, bool)}
+        np.savez(d / "test_predictions.npz", p=np.asarray(p[v] if isinstance(p, dict) else p, float),
+                 y=np.asarray(y, float), mask=np.ones((n, 4)) if mask is None else np.asarray(mask, float),
+                 weight=np.ones(n) if weight is None else np.asarray(weight, float),
+                 episode=np.array([f"ep{k}" for k in range(n)] if episode is None else episode), snapshot_id=sid, **extra)
+        (d / "result.json").write_text(json.dumps({"lambda": {"lambda": lam[v] if isinstance(lam, dict) else lam}}))
+
+
+def _pred(scores, p0=0.5):
+    """Four-head predictions whose score (p_one - p_continue) is `scores`."""
+    s = np.asarray(scores, float)
+    return np.stack([np.full(len(s), p0), p0 + s, np.zeros(len(s)), np.zeros(len(s))], axis=1)
+
+
+def _labels(b1, b2):
+    return np.stack([np.asarray(b1, float), np.asarray(b2, float), np.zeros(len(b1)), np.zeros(len(b1))], axis=1)
+
+
+def test_gain_at_a_fixed_rate_interpolates_across_tied_scores():
+    score, w = np.array([0.4, 0.0, 0.0, -0.4]), np.ones(4)
+    d = np.array([1.0, 1.0, 0.0, 0.0])
+    gain = lambda r: float((B.escalation_at_rate(score, w, r) * d).sum() / 4)
+    assert list(B.escalation_at_rate(score, w, 0.0)) == [0, 0, 0, 0] and gain(0.0) == 0.0
+    assert list(B.escalation_at_rate(score, w, 0.25)) == [1, 0, 0, 0] and gain(0.25) == 0.25
+    assert list(B.escalation_at_rate(score, w, 0.5)) == [1, 0.5, 0.5, 0]      # half of the two tied points
+    assert gain(0.5) == pytest.approx(0.375)                                  # between 0.25 (rate 0.25) and 0.5 (0.75)
+    assert list(B.escalation_at_rate(score, w, 1.0)) == [1, 1, 1, 1]
+    # the same as linear interpolation of `lam.curve`, with weights, at every rate
+    rng = np.random.default_rng(1)
+    s = np.round(rng.normal(size=60), 1) / 10                                 # many ties
+    y = _labels(rng.integers(0, 4, 60) / 3, rng.integers(0, 4, 60) / 3)
+    w = rng.uniform(0.5, 8, 60)
+    t = {"n": 60, "p": {"v": _pred(s)}, "y0": y[:, 0], "y1": y[:, 1], "w": w, "episode": np.arange(60)}
+    rate, g = B.curve_points(t, "v")
+    assert rate[0] == 0.0 and g[0] == 0.0 and rate[-1] == pytest.approx(1.0) and (np.diff(rate) > 0).all()
+    for r in (0.0, 0.03, 0.1, 0.2, 0.37, 0.5, 0.99):
+        e = B.escalation_at_rate(s, w, r)
+        assert float((w * e).sum() / w.sum()) == pytest.approx(r)
+        assert float((w * e * (y[:, 1] - y[:, 0])).sum() / w.sum()) == pytest.approx(float(np.interp(r, rate, g)))
+
+
+def test_the_benefit_analysis_by_hand(tmp_path):
+    """Two tasks of ten points, each its own episode. Task 0: the cascader variants rank the two rescues first, the
+    router variants rank them last. Task 1 has no positive point (one harm). Task 2 wrote nothing."""
+    b1 = [0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+    b2 = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    good, bad = np.linspace(0.9, 0.0, 10), np.linspace(0.0, 0.9, 10)
+    p = {"router": _pred(bad), "router_hist": _pred(bad), "cascader_nospread": _pred(good), "cascader_hist": _pred(good)}
+    lam = {"router": float("inf"), "router_hist": 0.85, "cascader_nospread": 0.75, "cascader_hist": -1.0}
+    _write_task(tmp_path, 0, p=p, y=_labels(b1, b2), lam=lam, can=np.ones(10, bool), steps=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
+    _write_task(tmp_path, 1, p=p, y=_labels([1] * 10, [0] + [1] * 9), lam=lam)
+    res = B.analyse(tmp_path, tasks=[0, 1, 2], resamples=200)
+    assert res["tasks_used"] == [0, 1] and res["tasks_left_out"] == [2]
+    t0, t1 = res["per_task"]
+    assert (t0["points"], t0["positives"], t0["positive_episodes"], t0["can_escalate_saved"]) == (10, 2, 2, True)
+    assert (t1["positives"], t1["can_escalate_saved"]) == (0, False) and t1["mean_b2_minus_b1"] == pytest.approx(-0.1)
+    v = t0["values"]
+    # 10%: one point. The cascaders escalate a rescue (gain 1/10); the routers a point that needed none
+    assert v["cascader_hist"]["gain_at_10"] == pytest.approx(0.1) and v["router"]["gain_at_10"] == pytest.approx(0.0)
+    assert v["cascader_hist"]["gain_at_20"] == pytest.approx(0.2) and v["router_hist"]["gain_at_20"] == pytest.approx(0.0)
+    # random at 10%: 0.1 x mean(b2 - b1) = 0.1 x 0.2
+    assert t0["random_at_10"] == pytest.approx(0.02) and v["cascader_hist"]["excess_at_10"] == pytest.approx(0.08)
+    # at λ: never escalate is gain 0 at rate 0; λ 0.85 escalates the router's top point; λ -1 escalates everything
+    assert (v["router"]["gain_at_lambda"], v["router"]["rate_at_lambda"]) == (0.0, 0.0)
+    assert (v["router_hist"]["gain_at_lambda"], v["router_hist"]["rate_at_lambda"]) == pytest.approx((0.0, 0.1))
+    assert (v["cascader_nospread"]["gain_at_lambda"], v["cascader_nospread"]["rate_at_lambda"]) == pytest.approx((0.2, 0.2))
+    assert (v["cascader_hist"]["gain_at_lambda"], v["cascader_hist"]["rate_at_lambda"]) == pytest.approx((0.2, 1.0))
+    # failure AUROC, step-stratified: the two failing points are at step 0, against three others there
+    assert v["cascader_hist"]["failure_auroc"] == pytest.approx(0.5)          # p_continue is constant: all ties
+    # task 1: the cascaders' first point is the harm; no failing point, so the AUROC is undefined there
+    w = t1["values"]
+    assert w["cascader_hist"]["gain_at_10"] == pytest.approx(-0.1) and w["router"]["gain_at_10"] == pytest.approx(0.0)
+    assert w["cascader_hist"]["excess_at_10"] == pytest.approx(-0.1 + 0.01)
+    assert res["failure_auroc_undefined_tasks"]["router"] == [1]
+    # pooled: the unweighted mean of the two tasks; the AUROC over the task where it is defined
+    pool = res["pooled"]
+    assert pool["cascader_hist"]["gain_at_10"]["value"] == pytest.approx(0.0)
+    assert pool["cascader_hist"]["gain_at_20"]["value"] == pytest.approx((0.2 - 0.1) / 2)
+    assert pool["router"]["failure_auroc"]["value"] == pytest.approx(0.5)
+    lo, hi = pool["cascader_hist"]["gain_at_20"]["ci95"]
+    assert lo <= 0.05 <= hi and lo < hi
+    # contrasts, paired: the primary one is flagged, and the interaction is the difference of the two X-VLA contrasts
+    c = res["contrasts"]
+    assert set(c) == {"memory", "xvla_given_memory", "xvla_without_memory", "interaction"}
+    assert c["memory"]["gain_at_20"]["value"] == pytest.approx(0.0) and c["memory"]["gain_at_20"]["ci95"] == [0.0, 0.0]
+    assert c["xvla_given_memory"]["gain_at_20"]["value"] == pytest.approx(0.05)
+    assert c["interaction"]["gain_at_20"]["value"] == pytest.approx(0.0)
+    flagged = [(k, m) for k in c for m in c[k] if c[k][m]["primary"]]
+    assert flagged == [("xvla_given_memory", "gain_at_10")] and res["primary"]["value"] == pytest.approx(0.0)
+    assert res["intervals_reported"] == 4 * 8 + 4 * 8
+    assert res["curve"]["rate"][0] == 0.0 and res["curve"]["rate"][-1] == 0.5
+    assert res["curve"]["gain"]["cascader_hist"][20] == pytest.approx(0.05)   # rate 0.2: the pooled gain at 20%
+    text = B.table(res)
+    assert "PRIMARY: xvla_given_memory, gain_at_10" in text and "left out (no usable test point): [2]" in text
+    assert chr(8212) not in text
+
+
+def test_the_benefit_analysis_refuses_rows_that_differ_or_points_not_offered(tmp_path):
+    y, p = _labels([0, 1, 1], [1, 1, 1]), _pred([0.3, 0.2, 0.1])
+    _write_task(tmp_path / "a", 0, p=p, y=y, lam=0.0)
+    np.savez(tmp_path / "a" / "fold0" / "cascader_hist" / "test_predictions.npz", p=p, y=y, mask=np.ones((3, 4)),
+             weight=np.array([1.0, 2.0, 1.0]), episode=np.array(["ep0", "ep1", "ep2"]),
+             snapshot_id=np.array(["e0/x/dp00", "e0/x/dp01", "e0/x/dp02"]))
+    with pytest.raises(B.AnalysisError, match="not on the same test rows .weight"):
+        B.analyse(tmp_path / "a", tasks=[0], resamples=5)
+    _write_task(tmp_path / "b", 0, p=p, y=y, lam=0.0, can=[True, False, True])
+    with pytest.raises(B.AnalysisError, match="not offered"):
+        B.analyse(tmp_path / "b", tasks=[0], resamples=5)
+    _write_task(tmp_path / "c", 0, p=p, y=y, lam=0.0, variants=B.VARIANTS[:2])
+    with pytest.raises(B.AnalysisError, match="but not for"):
+        B.analyse(tmp_path / "c", tasks=[0], resamples=5)
+    with pytest.raises(B.AnalysisError, match="no test predictions"):
+        B.analyse(tmp_path / "d", tasks=[0], resamples=5)
+    # a point without a branch-2 label is not usable; a task left with none is left out
+    _write_task(tmp_path / "e", 0, p=p, y=y, lam=0.0, mask=[[1, 0, 0, 0]] * 3)
+    _write_task(tmp_path / "e", 1, p=p, y=y, lam=0.0, mask=[[1, 1, 0, 0], [1, 0, 0, 0], [1, 1, 0, 0]])
+    res = B.analyse(tmp_path / "e", tasks=[0, 1], resamples=5)
+    assert res["tasks_left_out"] == [0] and res["per_task"][0]["points"] == 2
+
+
+def test_the_resamples_are_those_of_the_cluster_bootstrap_and_are_shared():
+    rng = np.random.default_rng(2)
+    ep = rng.integers(0, 12, 80)
+    v, w = rng.normal(size=80), rng.uniform(1, 5, 80)
+    counts = B.resample_counts(ep, seed=11, resamples=300)
+    assert counts.shape == (300, 80) and all(len(set(c[ep == e])) == 1 for c in counts[:5] for e in range(12))
+    mine = np.percentile([(c * w * v).sum() / (c * w).sum() for c in counts], [2.5, 97.5])
+    theirs = ST.cluster_bootstrap(lambda r: ST.weighted_mean(v[r], w[r]), ep, seed=11, resamples=300)
+    assert list(mine) == pytest.approx(theirs)
+    assert np.array_equal(counts, B.resample_counts(ep, seed=11, resamples=300))          # seeded
+    assert np.array_equal(B.resample_counts(["one"] * 4, seed=1, resamples=3), np.ones((3, 4)))   # nothing to resample
+
+
+def test_the_profile_check_stops_when_the_two_profiles_differ(ps, two_by_two):
+    with pytest.raises(B.AnalysisError, match="labels.*exclusions.*remaining time"):
+        B.check_same_profiles(ps)                                # the synthetic set draws each profile apart
+    same = V.same_profiles(ps)
+    assert B.check_same_profiles(same)["points"] == len(ps)
+    assert np.array_equal(same.y["router"], ps.y["router"]) and np.array_equal(same.cols["proposal"], ps.cols["proposal"])
+    nan = D.PointSet(same.cols, same.task, same.snapshot_id, same.can_escalate, same.remaining_s,
+                     {k: np.where(np.arange(4) >= 2, np.nan, v) for k, v in same.y.items()}, same.excluded,
+                     same.weight, same.episode)
+    B.check_same_profiles(nan)                                   # labels absent in both are the same
+    off = {**same.remaining_s, "cascader_nospread": same.remaining_s["router"] + np.r_[1e-9, np.zeros(len(ps) - 1)]}
+    with pytest.raises(B.AnalysisError, match="remaining time: 1 of"):
+        B.check_same_profiles(D.PointSet(same.cols, same.task, same.snapshot_id, same.can_escalate, off, same.y,
+                                         same.excluded, same.weight, same.episode))
+
+
+def test_the_dry_run_goes_from_training_to_the_benefit_report(tmp_path, capsys, two_by_two):
+    out = tmp_path / "run"
+    R.main(["--synthetic", "--variants", "2x2", "--epochs", "2", "--out", str(out)])
+    assert "profile check:" in capsys.readouterr().out
+    z = np.load(out / "fold3" / "cascader_hist" / "test_predictions.npz")
+    assert z["can_escalate"].dtype == bool and len(z["can_escalate"]) == len(z["p"])
+    B.main(["--out", str(out), "--resamples", "40"])
+    res = json.loads((out / "benefit.json").read_text())
+    assert res["tasks_used"] == list(range(10)) and res["tasks_left_out"] == [] and res["variants"] == list(B.VARIANTS)
+    for v in B.VARIANTS:
+        for m in B.METRICS[:7]:
+            cell = res["pooled"][v][m]
+            assert math.isfinite(cell["value"]) and cell["ci95"][0] <= cell["ci95"][1]
+        assert res["pooled"][v]["gain_at_10"]["value"] == pytest.approx(
+            np.mean([t["values"][v]["gain_at_10"] for t in res["per_task"]]))
+    assert res["primary"]["contrast"] == "xvla_given_memory" and res["primary"]["ci95"] is not None
+    assert (out / "benefit.txt").read_text().startswith("Benefit analysis of the 2 x 2")

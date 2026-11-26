@@ -151,7 +151,7 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
         (d / "result.json").write_text(json.dumps(res, indent=1, default=float))
         if te.any():
             np.savez(d / "test_predictions.npz", p=model.predict(x[te]), y=y[te], mask=ym[te], weight=ps.weight[te],
-                     episode=ps.episode[te], p_constant=const,
+                     episode=ps.episode[te], p_constant=const, can_escalate=ps.can_escalate[te],
                      snapshot_id=np.array([s for s, k in zip(ps.snapshot_id, te) if k]))
     return res
 
@@ -214,8 +214,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if a.synthetic:
         from .data import synthetic
         ps = synthetic()
-        if history:
-            ps = V.with_synthetic_history(ps)      # shapes only: synthetic points have no episode to walk
+        if history:                                # shapes only: synthetic points have no episode to walk
+            ps = V.synthetic_two_by_two(ps)
     else:
         if not (a.records and a.label_map):
             ap.error("give --records and --label-map (or --synthetic)")
@@ -228,6 +228,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print("  incomplete:", row["snapshot_id"], "missing", ", ".join(row["missing"]))
         if rep["incomplete"]:
             print("  the remaining points' inclusion probabilities are no longer exact (amendment 65 (6))")
+    if a.variants == "2x2":                        # before anything is trained: the four variants are on the same
+        from .benefit import check_same_profiles   # rows only if the two profiles agree at every point
+        print("profile check:", check_same_profiles(ps))
     s = run_cv(ps, folds=_range(a.folds), deciders=deciders, out=Path(a.out),
                cfg=TrainConfig(epochs=a.epochs), max_rate=a.max_rate, min_episodes=a.min_episodes)
     for d in deciders:

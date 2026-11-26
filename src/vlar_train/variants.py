@@ -280,3 +280,21 @@ def with_synthetic_history(ps: PointSet, seed: int = 0) -> PointSet:
         cols[H.column(name)] = rng.normal(size=(len(ps), WIDTHS[name]))
     return PointSet(cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s, ps.y, ps.excluded, ps.weight,
                     ps.episode, ps.report)
+
+
+def same_profiles(ps: PointSet, source: str = "router", target: str = "cascader_nospread") -> PointSet:
+    """`ps` with `target`'s labels, exclusions and remaining time set to `source`'s. For dry runs on
+    `data.synthetic` only, which draws each profile's arrays separately; on real records the two profiles charge
+    the same and agree by themselves (`benefit.check_same_profiles` checks it)."""
+    put = lambda d: {**d, target: np.array(d[source], copy=True)}
+    return PointSet(ps.cols, ps.task, ps.snapshot_id, ps.can_escalate, put(ps.remaining_s), put(ps.y),
+                    put(ps.excluded), ps.weight, ps.episode, ps.report)
+
+
+def synthetic_two_by_two(ps: PointSet, seed: int = 0) -> PointSet:
+    """A `data.synthetic` set made fit for a dry run of the 2 x 2 and its analysis: history columns of the right
+    widths, the two profiles agreeing, and escalation offered at every point, as it is at every labelled point of
+    the real records (the branch plan's eligibility). Shapes only."""
+    ps = same_profiles(with_synthetic_history(ps, seed))
+    return PointSet(ps.cols, ps.task, ps.snapshot_id, np.ones(len(ps), dtype=bool), ps.remaining_s, ps.y, ps.excluded,
+                    ps.weight, ps.episode, ps.report)
