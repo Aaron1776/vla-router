@@ -8,6 +8,31 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 740 running (2026-11-26 10:57Z; approval 3, SPEC §17 amendments 68, 70, 71 (2), 72 (3), 73)
+
+**735 done** (10:47:56Z exit 0, VM self-stop, watcher "NOT a preemption"): `step_done` 2,838/2,838 with markers,
+exit 0 since 07:38Z. `phase1b-topup` closed at $1.8951 (stop $2.0312; no raise, so $0 toward the cap).
+**Yield** (VM `screen-yield.json`; recount from the markers matches exactly; `outputs/phase1b/reports-735/`,
+`outputs/phase1b/screen-rows-735.json`): failed per task 26, 21, 23, 23, 37, 30, 23, 23, 27, 28 of 115, 115, 220,
+788, 115, 375, 115, 229, 200, 566 screened. No task < 21: no shortfall, no amendment 57 fill. Golden check passed.
+**Selection reproduced on the Mac** (`select_reruns`, per_task 64, k 2, seed 20261126): 320 episodes, 21 failed + 11
+successful per task; successful mean 263.9 steps. **`project_740`:** $11.6234 at the measured 0.2329 VM-s/step,
+$12.5004 at the 8/7 high end. **Raise exactly `raise_for(11.6234, 11.0912)` = +$0.79** (amendment 71 (2): the
+projection, not the top of a range; the halfway re-projection catches a slower pace with ~$5.6 of runway).
+`phase1b` opened: allocation $11.32, line $11.32 -> $12.11, stop $11.0912 -> **$11.8812**. **Cap:** 730 $0.22 + 740
+$0.79 (in full while open) = $1.01; $1.49 left. Ledger total $29.75 at the start.
+**Queued 740 at `5f5d2eb`** (since `73208f4`: Mac-side tools, tests, docs only; 439 passed, 40 skipped). Watcher PID
+98714: `PHASE=phase1b MAX_AUTO=8 WATCH_HOURS=48` (the default 30 h is too short for 740). **Started 10:57:48Z.**
+**Done check:** `outputs/l4-retry/step_check_740.sh` (git-ignored): fetches the VM-built re-run and branch plans
+(`phase1b/rerun/plan.json`, `phase1b/plan/plan.json`) and runs `step_done` on both (`--step 740 --since 10:57:00Z`);
+the waiter runs it on any stop. **Waiter:** T0 10:57Z; ~25 min after each start a gate check (VM RUNNING, runner on
+740, this boot's golden pass, re-run plan uploaded; too early for a pace); **halfway `CHECK_AT` 19:25Z** (16.9 VM-h at
+the measured pace; recompute after any preemption). The halfway re-projection needs a 740 projector (remaining
+re-run steps x measured VM-s/step, remaining branch jobs x measured or 7.18 VM-s): write it before then.
+**Step cap 64,800 s per boot:** the high end (~18.2 h) is about that, so one unbroken boot could hit it (runner moves
+740 to failed, VM stops, markers kept): the user decides. A re-run mismatch -> exit 76 -> VM stops -> stop
+everything and report (no debugging).
+
 ## 735 approved (2026-11-26 ~07:40Z, SPEC §17 amendment 72): the full top-up, then 740 under amendment 68
 
 **The user approved 735 as the full 90%-to-21 top-up** (+510, +194, +75, +85 for tasks 3, 5, 7, 8; ~$2.03; replaces
