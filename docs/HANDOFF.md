@@ -8,6 +8,58 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Amendment 75, stall alarm, download check, final tier v2 (2026-11-26 ~19:00-19:30Z; 740 still running)
+
+**The user's directions (~19:00Z):** no access to the VM and no VM code change mid-740 (its exit-76 stop protects the
+data); every gate and pace check says **"VM-internal state not visible mid-step"** (mismatch marker, stop flag, queue
+counts) and never "clear" (the 11:23Z check called 740 clear ten minutes after the VM's 11:13Z stop); **no bucket
+publisher** of the VM's state for the final tier either. *Future phases:* a publisher (the runner writing the marker,
+the stop flag and the queue counts to the bucket each minute) may be added, written in and tested before that phase
+boots, never mid-step. Approval 4 amended: raises for 730/735/740 may total **$3.00** (overrun + $0.25, stop and ask
+past it); counted $2.07, **$0.93 left**. All in SPEC §17 amendment 75 (`07cad0e`).
+**Stall alarm** (`ops/gcp/stall_check.py`, tests `tests/test_stall_check.py`): results land as each job finishes
+(`queue.complete` uploads before marking done; 0.1 s after `finished_at`, 60 sampled). VM RUNNING and nothing landed
+past the allowance -> possible stop: re-runs 20 min (longest re-run job 17.0 min of 145, largest gap 8.5), branches
+5 min (longest job 1.7 min, largest gap 1.1 of 3,200), boot window 35 min, stage opening 15 min + its gap after its
+plan lands, finishing 10 min. It would not have fired on 740's first boot (in-flight re-runs landed until the VM
+stopped itself). The duty waiter runs it every 3 min (`STALL_CHECK=...`, `EVENT stall` + a macOS notification; tell
+the user and push a notification). `reproject_740.py` now prints `not_visible` and the stall verdict (`bucket_view`).
+Waiter re-armed 19:13Z with STALL_CHECK, `CHECK_AT` 23:10Z (halfway). 19:05Z: 147/320 re-runs, 3.7 min quiet.
+**gcloud CLI:** needs `gcloud auth login` already (reauth fails non-interactively at ~19:10Z); ADC still works (the
+watcher, every check). Both expire by 23:16Z: renew both at the 21:16Z reminder.
+**Download check (read-only; `gsutil du` could not run, the CLI needs a re-login: measured with the storage API).**
+Bucket now 30.55 GB: `containers/<commit>` 10.96 (the three image tarballs, harness-v1.0), `vla-router/snapshots`
+10.80 (base 7.70, explore 3.10), `images` 7.52 (base 5.36, explore 2.16), `records` 1.08, results 0.04, the rest 0.15.
+740 adds 36.8 MB per re-run (171 left: +6.3 GB), branches ~0.15 GB, the final tier ~0.06 GB: **~37.1 GB (34.5 GiB) at
+the end**, all of it the §13 download (dataset-v1 + harness-v1.0; the model weights are not in the bucket). Regional
+us-central1 STANDARD, **soft delete 30 days** (deleted objects bill 30 more days unless turned off first). Prices
+(cloud.google.com/storage/pricing, read 19:15Z; the Cloud Billing API is disabled here, so the account's own price
+view could not be read): internet egress $0.12/GiB (0-10 TiB), storage $0.020/GiB-month, Class A $0.005/1k, B
+$0.0004/1k. **Always Free:** 100 GB/month egress from North America (us-central1 included), per billing account,
+for an active Paid or Free Trial account in good standing without a negotiated contract or custom rate card; coupons
+are not an exclusion. Eligible on those terms; unconfirmed from here (the console's billing report would show it).
+November's GCS egress so far < 0.6 GB. **Total:** download $0 (free tier) or $4.14 (34.5 GiB x $0.12; $2.92 without
+the containers); storage now -> download (~11-28 10:00Z) $0.03; untracked by the ledger: external IP ~36 VM-h x
+$0.0025 = $0.09, storage it does not see (`containers/` is outside its scan; nothing accrues while the VM is off)
+~$0.05, operations ~60k Class A + ~85k Class B ~$0.33. **= $0.50 (free tier) or $4.64 vs $5.00 outside the guard**
+($50 coupon - $45; assumes the ledger still matches billing, reconciled 11-25). Close without the free tier, and
+deleting the bucket with soft delete on adds ~$0.69 (-> $5.33, short $0.33); amendment 65's "about six months of the
+bucket" at 37 GB is ~$0.69/month, not affordable with a paid download. **Proposal:** unless the console confirms the
+free tier, lower the guard $0.60 to $44.40 from the final tier; alternatives: skip the x86 container tarballs
+(-$1.23), or turn soft delete off before deleting (-$0.69). **Finished data now:** Tranche A's own outputs are ~0.15
+GB; the final, unchanging bulk (container tarballs 10.96 GB, Phase 0 base snapshots/images 13.06 GB, the screens'
+records) could be downloaded now, leaving ~13 GB for the end; same price (same month, same allowance); needs the
+user's go-ahead and a CLI re-login; verify each object's CRC32C/MD5.
+**Final tier v2** (`outputs/l4-retry/final_tier_v2.py` -> `outputs/phase1b/final-tier-v2-2026-11-26.json`; 740's
+actual selection: 21 failed + 11 successful episodes in every task): money if 740 lands at $12.836 = $4.38 - 735
+$1.8951 - 730 $0.2527 - 740 $1.516 = **$0.72**; releasing the disk/storage line beyond end + 1 day (11-28 ~10:00Z ->
+11-30 06:28Z, 44.5 h x $0.346/day; the VM's disk deleted by then) adds $0.64 -> **$1.36**. (a): $0.72 -> 7 pts/task,
++15.9 expected positives, total 289.2, min fold 231.3; $1.36 -> 16 pts/task, +35.2, 308.5, 246.8. (a) without 4, 7:
+$0.72 -> 8 pts/task in 8 tasks (64 points; rounding loses 6), +13.0 pooled / +15.2 own, min fold 228.4; $1.36 -> 20
+pts/task, +33.6 pooled / +39.3 own (vs +35.1 own for (a)), min fold 243.8. Amendment 58 passes in every version,
+flagged 4 and 7 in every version (own A+B+final 7.9-8.9 and 9.9-11.2). Guard -$0.60: no release -> $0.12, below one
+step's overhead, no final tier; with release -> $0.76 (like the $0.72 row). **The user decides** (tonight).
+
 ## 740 resumed 14:27Z after amendment 74 (the user's approval with conditions, ~14:15Z)
 
 **Approved:** fix and resume as proposed, with conditions: (1) explain why the stop came at the "8th" re-run; (2)
