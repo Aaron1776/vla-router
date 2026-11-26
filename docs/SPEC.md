@@ -593,6 +593,27 @@ the 7 re-runs already running finished (the queue's pending count stayed at 312 
 calibrated 8 do not fit. Amendment 70's re-run pace (0.2329 VM-s/step) was measured on Phase 0's base rollouts at 8
 workers, hence its 7-worker high end. The worker count stays as it is for this resume (the user).
 
+75. §12, §17 approval 4, amendments 70 (3), 73 (the user, 2026-11-26 ~19:00Z). (1) **Raise cap $3.00:** approval 4
+amended for 740: its raises may draw up to $0.50 more from the final tier, so the raises for finishing Tranche B (730,
+735, 740, counted as in amendment 73) total at most **$3.00** (was $2.50). Same rule (`phase1b.raise_for`: the
+overrun plus $0.25); a raise that would pass $3.00 stops for the user. At the amendment: $0.22 (730) + $0.79 and $1.06
+(740's two raises) = $2.07 counted, **$0.93 left**. (2) **What a check from the Mac sees:** the VM's mismatch marker,
+the spend guard's stop flag and the job queue stay on its disk until a step exits. No access to the VM is added and
+no VM code changes mid-740 (its own exit-76 stop already protects the data). Every gate and pace check states
+"VM-internal state not visible mid-step" and never calls a step clear (740's first boot: the 25-minute check at
+~11:23Z read the bucket's markers and called it clear ten minutes after the VM had raised its stop at 11:13Z).
+(3) **Stall alarm** (`ops/gcp/stall_check.py`, run by the session's duty waiter every 3 minutes; a macOS notification
+and a report to the user): results reach the bucket as each job finishes (`queue.complete` uploads before marking
+done; 0.1 s after `finished_at` on 60 sampled markers). If the VM is RUNNING and nothing has landed for longer than
+the allowance, it reports a possible stop. Allowances from the measured gaps (a gap cannot outlast the longest job a
+busy worker runs): re-runs 20 min (longest job 17.0 min of 145; largest gap 8.5 min); branches 5 min (longest job
+1.7 min of 400 sampled; largest gap 1.1 min of 3,200; screens 1.3); boot window 35 min from the VM's start (first
+claim 6-16 min after a start, plus the longest re-run); a stage's opening 15 min plus its gap from its plan's upload;
+between stages the finished stage's gap; finishing 10 min (tails <= 3.9 min). It would not have fired on 740's first
+boot (the in-flight re-runs kept landing until the VM stopped itself, which the watcher reads); it catches a RUNNING
+VM that stops landing results. (4) **No bucket publisher** of the VM's internal state for the final tier either; a
+future phase may add one, written in and tested before it boots (HANDOFF).
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
