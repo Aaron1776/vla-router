@@ -1,0 +1,11 @@
+# SHA-256 of References/spark-phase0 (the DGX Spark's Phase 0 reproduction results; README there), 2026-11-26.
+# Verify from the repo root: grep -v '^#' ops/spark/spark-phase0.sha256 | shasum -a 256 -c
+bcdaa7eed6a5d90fa4d319d220acb3f47dae63a08dad9dd7f9e2ec1df3f7ce2a  References/spark-phase0/README.md
+d30f6f70d452d5509fc34a646c6f2d2560e17146130d2ce84bb8cb2bf36a4ed4  References/spark-phase0/compare/base-compare.json
+44dfb58ea4184927ec0ff6dff29331da674169271055f926a487ba72165be14f  References/spark-phase0/compare/pi05-parity-compare.json
+0aceda7b843632b48af6ce71d0a95ff77a2b60f7e4cf31803b412a56106373cf  References/spark-phase0/network.json
+246842811b7454b27f4cd3f55a9296f64eef29ff4c2f3ab6e4dda2838c0305ee  References/spark-phase0/platform.json
+69bfbbbe9812b083625d5b5f68a0fd649129bd25159a4ae0a0abf2732789ac70  References/spark-phase0/runs/base-runs.csv
+f08bd37d1431460e9a599984fd54e5d6f410aa2d1c92356ae75e69f5eca4ee2b  References/spark-phase0/runs/pi05-parity-runs.csv
+0e577081f0182a1b0cd947385aa7977dd812d04151e84caaae0c49ebc0ad3521  References/spark-phase0/tables/base-per-task.csv
+8c7f58f925172af663b7cad774486e34663e62ec83f80dc1b4780f16f1c372f2  References/spark-phase0/tables/pi05-parity-per-task.csv

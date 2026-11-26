@@ -1,0 +1,79 @@
+{
+ "l4_only": 6,
+ "l4_success": 94,
+ "mcnemar_exact_p": 0.2890625,
+ "missing": 0,
+ "paired": 100,
+ "pass": true,
+ "pass_vs_l4": true,
+ "pass_vs_reference": true,
+ "per_task": {
+  "0": {
+   "l4": 10,
+   "spark": 10
+  },
+  "1": {
+   "l4": 10,
+   "spark": 10
+  },
+  "2": {
+   "l4": 8,
+   "spark": 9
+  },
+  "3": {
+   "l4": 10,
+   "spark": 10
+  },
+  "4": {
+   "l4": 9,
+   "spark": 9
+  },
+  "5": {
+   "l4": 10,
+   "spark": 10
+  },
+  "6": {
+   "l4": 10,
+   "spark": 10
+  },
+  "7": {
+   "l4": 10,
+   "spark": 9
+  },
+  "8": {
+   "l4": 8,
+   "spark": 4
+  },
+  "9": {
+   "l4": 9,
+   "spark": 9
+  }
+ },
+ "phase": "pi05_parity",
+ "spark_only": 2,
+ "spark_success": 90,
+ "vs_reference": {
+  "both": 88,
+  "mcnemar_p": 0.0654296875,
+  "n": 100,
+  "neither": 1,
+  "only_ours": 2,
+  "only_reference": 9,
+  "ours": 90,
+  "ours_ci": [
+   0.8256343377898756,
+   0.9447708631949274
+  ],
+  "paired_difference": -0.07,
+  "paired_difference_ci": [
+   -0.1338604324489568,
+   -0.00613956755104321
+  ],
+  "reference": 97,
+  "reference_ci": [
+   0.9154806351014251,
+   0.9897454760557185
+  ],
+  "within_sampling_error": true
+ }
+}

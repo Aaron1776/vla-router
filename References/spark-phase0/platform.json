@@ -1,0 +1,14 @@
+{
+ "arch": "aarch64",
+ "gpu": "NVIDIA GB10, 580.178.04",
+ "image_digests": {
+  "commit": "9b8d076324122f9d224c9c4b8110050031adba44",
+  "pi05": "sha256:b68d6b0e6743c2bd06863137af07e228c33b29ef5bed4c4213d39b580d7323b7",
+  "platform": "linux/aarch64",
+  "sim": "sha256:1b99d7e4fc568efc7f47af896997371d5153b1c9b202ce243fb4428b46d78cf4",
+  "xvla": "sha256:37ee50cada8296a6400eda7bfc0c733c8ee60a7a6cef5e642e4d48732cbe95b2"
+ },
+ "kernel": "7.0.0-1025-nvidia",
+ "machine": "dgx-spark",
+ "repo_commit": "fac42451aac83d19ea368ad01ed3f45f5f2dd0c5"
+}
