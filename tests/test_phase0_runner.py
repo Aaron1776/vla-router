@@ -315,7 +315,8 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
     import re
     steps = sorted((REPO / "ops" / "vm" / "postfreeze").glob("*.sh"))
     assert [p.name for p in steps] == ["700-smoke.sh", "710-pilot.sh", "720-phase1a.sh", "730-phase1b-screen.sh",
-                                       "735-phase1b-topup.sh", "739-phase1b-recompare.sh", "740-phase1b.sh"]
+                                       "735-phase1b-topup.sh", "739-phase1b-recompare.sh", "740-phase1b.sh",
+                                       "750-phase1f.sh"]
     recompare = (REPO / "ops" / "vm" / "postfreeze" / "739-phase1b-recompare.sh").read_text()   # amendment 74
     assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", recompare, re.M) == ["phase1b"]
     assert "--stop-flag" not in recompare and "--mismatch" not in recompare and "rm -f \"${MISMATCH}\"" not in recompare
@@ -354,6 +355,14 @@ def test_post_freeze_steps_parse_and_carry_the_headers_the_runner_reads():
             < a.index("vlar-ops queue resume >") < a.index("vlar-ops pilot reorder --plan-dir")
             < a.index('VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase "${PH}"'))
     assert "--min-limit-gib" not in a and "pilot check" not in a
+    # the final tier, version (a) (the user, 2026-11-26): Tranche A's step in its own spend phase, behind the same
+    # gate, its plan one draw with A, its exits tagged "750" for the Mac's step check
+    f = (REPO / "ops" / "vm" / "postfreeze" / "750-phase1f.sh").read_text()
+    assert re.findall(r"^# spend-phase: *([A-Za-z0-9_.-]+) *$", f, re.M) == ["phase1f"] and "PH=phase1f" in f
+    assert '\\"step\\": \\"750\\"' in f and 'get("combined_with", {}).get("phase") == "phase1a"' in f
+    assert (f.index("golden_check ||") < f.index("export VLAR_GOLDEN_DONE=1") < f.index('vlar-ops queue add "')
+            < f.index("vlar-ops queue resume >") < f.index("vlar-ops pilot reorder --plan-dir")
+            < f.index('VLAR_SUPERVISE_ARGS="--limit-gib 5.5 --servers-peak-gb 20.45 --max-jobs 2" run_phase "${PH}"'))
 
 
 def test_create_retry_tries_only_the_three_zones_and_queues_held_steps_only_after_the_guard_dry_run():

@@ -303,6 +303,40 @@ def tranche_a_settings(per_task: int, seed: int) -> dict[str, Any]:
                           "failed_share": FAILED_SHARE, "min_calls": 1}}
 
 
+# ---------------------------------------------------------------- the final tier, version (a) (the user, 2026-11-26)
+
+PHASE_F = "phase1f"
+ORDER_SEED_F = 13
+BASE_POINT_JOBS = 5                      # b1 x 3 seeds + b2 x 3 seeds, less the base rollout (b1's seed 1)
+BRANCH_JOB_VM_S = 7.18                   # Tranche A's measured VM-seconds per branch job
+STEP_OVERHEAD_H = 0.33                   # one step's boot, gate, plan and wind-down (amendment 70)
+BILLED_HOURLY_USD = 0.6865               # amendment 65 (2): the Spot VM with its L4 as billed (replan.HOURLY_USD,
+                                         # 0.472, predates the billing check)
+
+
+def final_tier_settings(per_task_a: int, per_task_f: int, seed: int) -> dict[str, Any]:
+    """`pilot.make_plan`'s arguments for the final tier's version (a): more base points, b1 and b2 with 3 seeds, A
+    and F ONE stratified draw (amendment 67 (3)): Tranche A's seed and settings at per_task_a + per_task_f per task,
+    A's points left out (`make_plan(earlier=...)`), so every A and F point's inclusion probability is the combined
+    draw's. Failed-parent share 2/3 of the combined count, as A's."""
+    if per_task_f < 1:
+        raise Phase1Error(f"per_task_f is {per_task_f}: at least 1 point per task")
+    s = tranche_a_settings(per_task_a + per_task_f, seed)
+    return {**s, "phase": PHASE_F, "order_seed": ORDER_SEED_F}
+
+
+def final_tier_points(stop_usd: float, *, tasks: int = 10, hourly_usd: float = BILLED_HOURLY_USD,
+                      job_vm_s: float = BRANCH_JOB_VM_S, overhead_h: float = STEP_OVERHEAD_H) -> dict[str, Any]:
+    """Base points per task the final tier buys at its phase's stop point (the user, 2026-11-26: version (a), sized
+    to the money left when 740 ends): one step's overhead, then equal points per task at 5 branch jobs each."""
+    point_usd = BASE_POINT_JOBS * job_vm_s / 3600 * hourly_usd
+    overhead = overhead_h * hourly_usd
+    n = max(0, math.floor((stop_usd - overhead) / (tasks * point_usd)))
+    return {"per_task": n, "points": n * tasks, "jobs": n * tasks * BASE_POINT_JOBS, "point_usd": point_usd,
+            "overhead_usd": overhead, "planned_usd": overhead + n * tasks * point_usd if n else 0.0,
+            "stop_usd": stop_usd}
+
+
 def run_analyses(root, plan_dir, *, n: float, cfg=None) -> dict[str, Any]:
     """(i) and (ii) from local copies of the base and pilot records and the pilot's labels (positives under
     cascader_nospread; unscored points count as not positive, as in the re-plan's pooled rates)."""

@@ -98,11 +98,30 @@ def strata_table(points: Sequence[DecisionPointRef], success: Mapping[str, bool]
     return dict(sorted(out.items()))
 
 
+def exclude_earlier(sel_total: Mapping[str, dict], sel_prev: Mapping[str, dict], earlier_points,
+                    *, earlier: Mapping[str, Any]) -> dict[str, dict]:
+    """A later tranche drawn as ONE stratified draw with an earlier one (SPEC §17 amendment 67 (3): A and F one
+    draw): the same seed, strata and settings at the combined per-task count. Within a stratum the draw takes the
+    first k points of a seeded order, so the earlier tranche's points must be exactly the draw at its own count
+    (`sel_prev`) and a subset of the combined draw; the later tranche is the rest. Each kept record keeps the
+    combined draw's stratum_drawn and inclusion probability (k_total / N) and names the earlier tranche."""
+    prev, pts, total = set(sel_prev), set(earlier_points), set(sel_total)
+    if prev != pts:
+        raise PilotError(f"the earlier tranche's {len(pts)} points are not the draw at its own count ({len(prev)} "
+                         f"points; {len(pts - prev)} not in it, {len(prev - pts)} missing): not one draw")
+    if not prev <= total:
+        raise PilotError(f"{len(prev - total)} of the earlier tranche's points are not in the combined draw")
+    return {sid: {**rec, "combined_draw": dict(earlier)} for sid, rec in sorted(sel_total.items()) if sid not in prev}
+
+
 def make_plan(root: Path, markers_dir: Path, out_dir: Path, *, cfg=None, phase: str = PHASE,
               selection: Optional[Mapping[str, Any]] = None, enabled: Sequence[str] = BRANCH_ORDER,
-              seeds: int = SEEDS, tier_one_seeds: int = TIER_ONE_SEEDS, order_seed: int = ORDER_SEED) -> dict[str, Any]:
+              seeds: int = SEEDS, tier_one_seeds: int = TIER_ONE_SEEDS, order_seed: int = ORDER_SEED,
+              earlier: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
     """The branch plan over a stratified draw of base points: the pilot's by default; Phase 1's Tranche A (and the
-    final tier's extra base points) with its own phase, selection settings and branches (`vlar_ops.phase1`)."""
+    final tier's extra base points) with its own phase, selection settings and branches (`vlar_ops.phase1`).
+    `earlier` ({"phase", "plan_id", "per_task", "points"}): this tranche and the earlier one are one stratified draw
+    at `selection`'s per_task (the combined count); the earlier tranche's points are left out (`exclude_earlier`)."""
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
     cfg = cfg or load_config()
@@ -112,6 +131,11 @@ def make_plan(root: Path, markers_dir: Path, out_dir: Path, *, cfg=None, phase: 
     if len(success) != 500:
         raise PilotError(f"{len(success)} base runs, not 500: download all of records/runs/base")
     sel = stratified_selection(points, success, step_limit=step_limit, interval=interval, dp_sampling=sel_settings)
+    if earlier is not None:
+        prev = stratified_selection(points, success, step_limit=step_limit, interval=interval,
+                                    dp_sampling={**sel_settings, "per_task": int(earlier["per_task"])})
+        sel = exclude_earlier(sel, prev, earlier["points"],
+                              earlier={k: earlier[k] for k in ("phase", "plan_id", "per_task")})
     listed = snapshots_listed(markers_dir)
     missing = sorted(set(sel) - listed)
     if missing:
@@ -139,6 +163,8 @@ def make_plan(root: Path, markers_dir: Path, out_dir: Path, *, cfg=None, phase: 
                  "strata": strata, "phase1_strata": phase1,
                  "base_episode_success": {t: sum(success[e] for e in success if int(e.split("/t")[1].split("/")[0]) == t)
                                           for t in sorted(strata)}}
+    if earlier is not None:       # one draw with the earlier tranche: settings.per_task is the combined count
+        selection["combined_with"] = {k: earlier[k] for k in ("phase", "plan_id", "per_task")}
     out_dir.mkdir(parents=True, exist_ok=True)
     plan.write(out_dir / "plan.json")
     for name, obj in (("labels", labels), ("checks", checks), ("selection", selection)):

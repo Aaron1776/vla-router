@@ -475,3 +475,27 @@ def test_check_timing_per_step_and_warm_up():
     t = pilot.check_timing(iii)
     assert t["timed"] == 2 and t["episode_s_per_step"] == pytest.approx(0.1)
     assert t["warm_up_s_per_load"] == pytest.approx(1.0) and t["search_s_per_episode"] == pytest.approx(2.0)
+
+
+def test_a_later_tranche_is_one_draw_with_the_earlier_one():
+    """The final tier (amendment 67 (3), the user 2026-11-26): A and F one stratified draw: the same seed at the
+    combined count holds the earlier draw; the later tranche is the rest, at the combined inclusion probability."""
+    pts, success = population({0: (3, 7), 1: (1, 9)})
+    prev, total = select(pts, success, per_task=15), select(pts, success, per_task=21)
+    assert set(prev) <= set(total)
+    later = pilot.exclude_earlier(total, prev, set(prev), earlier={"phase": "phase1a", "plan_id": "x", "per_task": 15})
+    assert set(later) == set(total) - set(prev) and len(later) == 12
+    for sid, rec in later.items():
+        assert rec["inclusion_prob"] == total[sid]["inclusion_prob"] == rec["stratum_drawn"] / rec["stratum_size"]
+        assert rec["combined_draw"] == {"phase": "phase1a", "plan_id": "x", "per_task": 15}
+    by = lambda t, o: sum(1 for r in later.values()                                       # noqa: E731
+                          if r["stratum"]["task_id"] == t and r["stratum"]["parent_outcome"] == o)
+    assert (by(0, "failure"), by(0, "success")) == (4, 2)          # round(2/3 x 21) = 14 failed, 10 of them earlier
+
+
+def test_a_later_tranche_refuses_an_earlier_draw_that_is_not_the_first_of_the_order():
+    pts, success = population({0: (3, 7)})
+    prev, total = select(pts, success, per_task=15), select(pts, success, per_task=21)
+    other = select(pts, success, per_task=15, seed=6)                # another seed: not one draw
+    with pytest.raises(pilot.PilotError, match="not one draw"):
+        pilot.exclude_earlier(total, prev, set(other), earlier={"phase": "a", "plan_id": "x", "per_task": 15})

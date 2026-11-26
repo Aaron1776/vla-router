@@ -536,9 +536,22 @@ def cmd_phase1(a) -> None:
         return
     if a.cmd in B_CMDS:
         return cmd_phase1b(a)
-    if not a.per_task or a.seed is None:      # plan-a
-        sys.exit("plan-a: --per-task and --seed are required")
-    sel = pilot.make_plan(Path(a.root), Path(a.markers), out, **phase1.tranche_a_settings(a.per_task, a.seed))
+    if not a.per_task or a.seed is None:      # plan-a, plan-f
+        sys.exit(f"{a.cmd}: --per-task and --seed are required")
+    if a.cmd == "plan-f":                     # the final tier, version (a): A and F one stratified draw
+        if not a.a_plan_dir:
+            sys.exit("plan-f: --a-plan-dir (Tranche A's plan directory) is required")
+        ad = Path(a.a_plan_dir)
+        asel = json.loads((ad / "selection.json").read_text())
+        want = phase1.tranche_a_settings(int(asel["settings"]["per_task"]), a.seed)["selection"]
+        if asel["phase"] != phase1.PHASE_A or asel["settings"] != want:
+            sys.exit(f"plan-f: Tranche A's settings {asel['settings']} are not {want} (the seed must be A's)")
+        earlier = {"phase": asel["phase"], "plan_id": asel["plan_id"], "per_task": int(asel["settings"]["per_task"]),
+                   "points": set(json.loads((ad / "labels.json").read_text()))}
+        sel = pilot.make_plan(Path(a.root), Path(a.markers), out, earlier=earlier,
+                              **phase1.final_tier_settings(earlier["per_task"], a.per_task, a.seed))
+    else:
+        sel = pilot.make_plan(Path(a.root), Path(a.markers), out, **phase1.tranche_a_settings(a.per_task, a.seed))
     print(json.dumps({k: sel[k] for k in ("phase", "n_points", "n_jobs", "plan_id")}))
 
 
@@ -688,7 +701,7 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--ops-config")
     pi.set_defaults(fn=cmd_pilot)
     p1 = sub.add_parser("phase1", help="Phase 1 after the handoff (amendment 65; vlar_ops/phase1.py)")
-    p1.add_argument("cmd", choices=["budget", "analyses", "plan-a", *B_CMDS])
+    p1.add_argument("cmd", choices=["budget", "analyses", "plan-a", "plan-f", *B_CMDS])
     p1.add_argument("--per-task-screen", type=int, help="plan-b-screen: screened episodes per task (~115)")
     p1.add_argument("--sizes-file", help="plan-b-screen: JSON {task: screened episodes} (amendment 68's top-up)")
     p1.add_argument("--front-load-base-runs", help="plan-b-screen: a base-runs CSV; each task's screen grows by "
@@ -709,7 +722,9 @@ def main(argv: list[str] | None = None) -> None:
     p1.add_argument("--plan-dir", help="analyses: the pilot's plan directory (labels.json); select-b: the screen "
                     "plan; compare-b, plan-b: the re-run plan")
     p1.add_argument("--markers", help="plan-a: local copy of results/base")
-    p1.add_argument("--per-task", type=int, help="analyses, plan-a: base points per task")
+    p1.add_argument("--per-task", type=int, help="analyses, plan-a: base points per task; plan-f: the final tier's "
+                    "new base points per task (A's count is added for the one draw)")
+    p1.add_argument("--a-plan-dir", help="plan-f: Tranche A's plan directory (selection.json, labels.json)")
     p1.add_argument("--seed", type=int, help="plan-a: the selection seed")
     p1.add_argument("--out", required=True, help="budget, analyses: the JSON report; plan-a: the output directory")
     p1.set_defaults(fn=cmd_phase1)

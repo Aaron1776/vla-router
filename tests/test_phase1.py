@@ -185,3 +185,21 @@ def test_the_final_tier_check_under_cascader_nospread():
     assert cap["b4_every_point"]["B"][0] == pytest.approx(42 * rf + 22 * rs)                         # p = 1: no cap
     assert cap["b4_every_point"]["B"][1] == pytest.approx(64 * rs)                                   # p = 0: none failed
     assert 64 * rs < cap["b4_every_point"]["B"][2] < unc["b4_every_point"]["B"][2]
+
+
+def test_the_final_tier_is_one_draw_with_tranche_a_at_the_combined_count():
+    s = P.final_tier_settings(64, 18, 20261125)
+    a = P.tranche_a_settings(64, 20261125)
+    assert s["phase"] == "phase1f" and s["order_seed"] == 13 != a["order_seed"]
+    assert s["selection"] == {**a["selection"], "per_task": 82}
+    assert (s["enabled"], s["seeds"], s["tier_one_seeds"]) == (a["enabled"], a["seeds"], a["tier_one_seeds"])
+    with pytest.raises(P.Phase1Error):
+        P.final_tier_settings(64, 0, 20261125)
+
+
+def test_the_final_tier_is_sized_to_its_stop_point():
+    r = P.final_tier_points(1.50)
+    assert r["point_usd"] == pytest.approx(5 * 7.18 / 3600 * 0.6865) and r["overhead_usd"] == pytest.approx(0.33 * 0.6865)
+    assert (r["per_task"], r["points"], r["jobs"]) == (18, 180, 900) and r["planned_usd"] <= 1.50
+    assert P.final_tier_points(r["overhead_usd"] + 10 * r["point_usd"] * 19)["per_task"] == 19
+    assert P.final_tier_points(0.20)["per_task"] == 0 and P.final_tier_points(0.20)["planned_usd"] == 0.0
