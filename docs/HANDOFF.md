@@ -42,6 +42,11 @@ no earlier boot started with it up. If the runner reads it first, it stops with 
 its gate: 9 re-runs this boot (17 of 320), all matching their screened runs' outcomes; no stop from `compare-b`.
 Projection (`reproject_740.py`, its fallback now the 7-worker pace until 10 markers): spent $0.6888 + 17.52 VM-h =
 **$12.715 vs $12.9412: no raise.** Waiter re-armed: `CHECK_AT` 16:30Z (first measured pace), then halfway ~23:25Z.
+**16:30Z pace read: no raise.** 67 of 320 re-runs (59 this boot); measured 0.2703 VM-s/step (13,321 steps/h; the
+7-worker fallback was 0.2662), 110,303 steps left; branches still at Tranche A's 7.18 VM-s/job (a 7-worker
+measurement: every boot since the pilot's resume ran 7). Spent $1.8048 + 16.07 VM-h = **$12.836 vs $12.9412: no
+raise** (margin $0.105, ~9 VM-min). Halfway by spend (~$6.42) is ~23:13Z: waiter `CHECK_AT` **23:10Z**, before the
+23:16Z sign-in expiry in case the user has not renewed. Cap: $0.43 left.
 
 ## 740 STOPPED: exit 76 at 11:26Z, a comparison defect, not a parity failure (resolved: amendment 74)
 
