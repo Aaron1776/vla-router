@@ -45,6 +45,12 @@ up (2, 3, 4, 5, 7, 8, 9), base only in 0, 1, 6.
 **730 money (amendment 69, ~20:35Z):** 333/1,974 done for $0.92 at 327-351 episodes/h; completion projected $4.18-4.41
 (~01:10-01:30Z). `spend phase-raise` +$1.33: line $4.89, stop $4.66 (allocation $3.30); reserve now $0.02, so a top-up
 comes out of the final tier. Watch the projection again near the end (markers: `results/explore/`).
+**730, 2026-11-26 01:30Z:** preempted 22:02:27Z and NOT restarted for 3.4 h: the gcloud CLI sign-in expired ~22:04Z, the
+watcher's status reads came back empty and it read that as "not stopped". Fixed (not committed, in `outputs/l4-retry/`):
+`gce.py` does the watcher's VM status, start, preemption check and runner-state read through application-default
+credentials; the watcher logs "status NOT readable" after 3 empty polls. 659/1,974 screened, $1.76 of the $4.66
+stop; restart 3 of 8 for 730 (5 left) hit a stockout at 01:28Z, retrying. `gcloud auth login` is needed before the
+next queueing (`31_phase0_queue.sh` uses the CLI). At 335/h completion projects ~$4.59: re-project after the restart.
 **Amendment 70 (pace checks, shared raise cap $2.50 from the final tier):** 740 projected $11.57-12.44 vs its $11.09 stop
 (`phase1b.project_740`: re-runs at 0.2329 VM-s/step x (7/8 scaling for the high end), branches 7.18 VM-s/job, 0.33 h
 overhead); redo before booting with the screen's final yield and pace, then `spend phase-raise --phase phase1b` by
