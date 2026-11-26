@@ -429,3 +429,25 @@ def test_the_watcher_restarts_only_after_a_preemption(tmp_path):
     env = _watch_env(other, ["RUNNING", "TERMINATED"])
     r = subprocess.run(["bash", str(script)], env={**env, "MAX_POLLS": "3"}, capture_output=True, text=True, timeout=60)
     assert "NOT a preemption" in r.stdout and r.returncode == 0
+
+
+def test_gce_adc_counts_a_preemption_during_the_start():
+    """ops/gcp/gce_adc.py's preemption check (2026-11-26 07:48Z): the preemption was inserted 0.6 s before the VM's
+    lastStartTimestamp; the newest successful start operation is the reference, a stockout start is not."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gce_adc", Path(__file__).parents[1] / "ops/gcp/gce_adc.py")
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)                          # no Google imports or credentials outside main()
+    last = "2026-11-25T23:48:34.695-08:00"
+    starts = [{"insertTime": "2026-11-25T23:38:10.814-08:00", "error": {"errors": [{"code": "ZONE_RESOURCE_POOL_EXHAUSTED"}]}},
+              {"insertTime": "2026-11-25T23:48:18.455-08:00"}]
+    during = [{"insertTime": "2026-11-25T19:42:06.903-08:00"}, {"insertTime": "2026-11-25T23:48:34.089-08:00"}]
+    assert g.preempted_since_start(last, starts, during)
+    assert not g.preempted_since_start(last, starts, during[:1])          # only an older preemption: a plain stop
+    assert not g.preempted_since_start(last, starts[:1], during)          # no successful start op: lastStartTimestamp
+    assert g.preempted_since_start(last, [], during + [{"insertTime": "2026-11-26T01:00:00-08:00"}])
+    # a stockout start after a preemption does not hide it (only successful starts are the reference)
+    assert g.preempted_since_start("2026-11-25T20:18:58.978-08:00",
+                                   [{"insertTime": "2026-11-25T20:18:40-08:00"},
+                                    {"insertTime": "2026-11-25T23:40:00-08:00", "error": {"errors": []}}],
+                                   [{"insertTime": "2026-11-25T23:15:00-08:00"}])

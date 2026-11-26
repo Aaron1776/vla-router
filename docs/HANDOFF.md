@@ -20,6 +20,11 @@ allocation $2.03, line $2.26, stop $2.0312. Pre-boot projection: 864 at 314/h + 
 **$2.01 vs $2.0312: no raise**. Source since 730's `41f7026`: additive only (amendments 68-70 Mac-side code; tests
 pass), so queueing moves CURRENT to HEAD. Next: queue 735, watcher `PHASE=phase1b-topup` (MAX_AUTO 8), duty waiter
 (T0 = 735's first start), 25-min re-projection after each start (`reproject.py --total 2838`).
+**07:48Z start preempted 16 s in** (start op 07:48:18Z, `compute.instances.preempted` 07:48:34.089Z, lastStartTimestamp
+07:48:34.695Z): the watcher compared with lastStartTimestamp, read a plain stop and ended (735 never ran). Fixed in
+`ops/gcp/gce_adc.py` (`preempted_since_start`: the newest successful start operation is the reference; test in
+`tests/test_phase0_runner.py`); Mac-side only, CURRENT stays `73208f4`. Relaunched under approval 5 as automatic
+restart 1/8 for 735: watcher `MAX_AUTO=7`.
 **Queued 07:37Z** (CURRENT `73208f4`); watcher PID 54529 (`PHASE=phase1b-topup`, MAX_AUTO 8) started 07:38:07Z: zone a
 stocked out at 07:38:16Z, retrying every 10 min for 6 h; waiter armed (T0 07:38Z). Also re-project at 735's halfway
 (~1,406/2,838 markers; amendment 70 (2)).
