@@ -687,7 +687,8 @@ def main(argv: list[str] | None = None) -> None:
     pi.add_argument("--markers", help="plan: local copy of results/base")
     pi.add_argument("--plan-dir", help="check, report: plan.json, labels.json, selection.json, checks.json")
     pi.add_argument("--reports", help="report: local copy of <storage>/pilot/reports/")
-    pi.add_argument("--hourly-usd", type=float, default=0.472, help="report: VM price per hour")
+    pi.add_argument("--hourly-usd", type=float, default=0.6865, help="report, replan: VM price per hour (billed, "
+                    "amendment 65 (2); the 2026-11-25 pilot report and re-plan used 0.472)")
     pi.add_argument("--phase-vm-usd", type=float, help="report: the ledger's VM spend in the pilot phase")
     pi.add_argument("--available-usd", type=float, help="replan: $40 less the ledger's total")
     pi.add_argument("--pilot-report", help="replan: the pilot report's JSON (its measured costs)")
@@ -717,7 +718,8 @@ def main(argv: list[str] | None = None) -> None:
     p1.add_argument("--untracked-usd", type=float, default=0.0, help="budget: charges outside the ledger in Phase 1")
     p1.add_argument("--ledger-total-usd", type=float, help="budget: the ledger's total now (for the guard's limits)")
     p1.add_argument("--pilot-report", help="budget: the pilot report's JSON (its measured costs)")
-    p1.add_argument("--hourly-usd", type=float, default=0.6865, help="the Spot price with its L4 (catalog 2026-11-25)")
+    p1.add_argument("--hourly-usd", type=float, default=0.6865, help="the Spot price with its L4 (billed; catalog "
+                    "2026-11-25)")
     p1.add_argument("--root", help="analyses: local records/{runs,events}/{base,pilot}; plan-a: records/*/base")
     p1.add_argument("--plan-dir", help="analyses: the pilot's plan directory (labels.json); select-b: the screen "
                     "plan; compare-b, plan-b: the re-run plan")

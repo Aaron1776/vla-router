@@ -310,8 +310,7 @@ ORDER_SEED_F = 13
 BASE_POINT_JOBS = 5                      # b1 x 3 seeds + b2 x 3 seeds, less the base rollout (b1's seed 1)
 BRANCH_JOB_VM_S = 7.18                   # Tranche A's measured VM-seconds per branch job
 STEP_OVERHEAD_H = 0.33                   # one step's boot, gate, plan and wind-down (amendment 70)
-BILLED_HOURLY_USD = 0.6865               # amendment 65 (2): the Spot VM with its L4 as billed (replan.HOURLY_USD,
-                                         # 0.472, predates the billing check)
+BILLED_HOURLY_USD = HOURLY_USD           # amendment 65 (2): the billed $0.6865/h (replan.HOURLY_USD, the one rate)
 
 
 def final_tier_settings(per_task_a: int, per_task_f: int, seed: int) -> dict[str, Any]:

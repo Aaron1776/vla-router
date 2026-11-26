@@ -49,7 +49,7 @@ FAILED_BOOTS_PREFIX = "ops/failed-boots/"
 class SpendConfig:
     soft_limit_usd: float = 40.0
     hard_limit_usd: float = 45.0
-    vm_hourly_usd: float = 0.46          # g2-standard-16 Spot with its L4; set from the current price
+    vm_hourly_usd: float = 0.6865        # g2-standard-16 Spot with its L4 as billed (amendment 65 (2)); ops.yaml sets it
     boot_allowance_s: float = 180.0      # billed time before the kernel starts (uptime covers the rest; generous)
     storage_usd_per_gb_month: float = 0.020
     tick_s: float = 60.0

@@ -60,7 +60,7 @@ def test_phase_lines_stop_branch_phases_at_their_allocation_and_let_rollouts_ove
     for r in lines:
         branch = "branches" in r["phase"]
         assert r["line_usd"] == pytest.approx(r["allocation_usd"] * (1.0 if branch else 1.08))
-        assert r["stop_usd"] == pytest.approx(max(0.0, r["line_usd"] - 1200 / 3600 * 0.472))
+        assert r["stop_usd"] == pytest.approx(max(0.0, r["line_usd"] - 1200 / 3600 * R.HOURLY_USD))   # billed 0.6865
     assert len(lines) == 5 and sum(r["allocation_usd"] for r in lines) == pytest.approx(
         sum(b["fixed_usd"].values()) + b["labels_usd"])
 

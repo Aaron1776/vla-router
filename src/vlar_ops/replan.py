@@ -25,7 +25,10 @@ from typing import Any, Mapping, Optional, Sequence
 
 from . import pilot
 
-HOURLY_USD = 0.472
+HOURLY_USD = 0.6865       # the Spot VM with its L4 as billed (amendment 65 (2), catalog 2026-11-25); the only rate
+                          # in code: phase1, the CLI and the spend default use it (tests/test_rates.py ties it to
+                          # ops.example.yaml). The 2026-11-25 re-plan was made at 0.472: pass --hourly-usd 0.472 to
+                          # reproduce it.
 PROFILES_COMPARED = ("none", "router", "cascader_nospread", "cascader_chunkspread", "cascader_full")
 RULE_PROFILE = pilot.STOP_PROFILE          # amendment 63 (2): cascader_nospread
 
