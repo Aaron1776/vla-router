@@ -61,3 +61,18 @@ counts are reconstructed and unchecked (no snapshots); base counts were checked 
 **Open:** π0.5 at the calibrated `max_batch` 4 is not batch-invariant on the GB10 (step 210: 6 of 10 exact checks,
 up to 0.017), while it is at 8 and on the L4 at 4. The parity run keeps every request alone (one shard) and the base
 rollouts never call π0.5, so the reproduction is not affected; concurrent π0.5 use (evaluation) is.
+
+## Evaluation (`ops/spark/evaluate.py`, `live.py`, `pi05_gate.py`; steps `640`, `650`)
+SPEC §10 runs, every method in the evaluation rollout-seed namespace (`eval`) with scene seed 142 + init, each
+episode on a fresh simulator at setup count 2 (option (A) for fresh-start runs, amendment 62 (2)), under the frozen
+calibration. Methods: `xvla_only`, `pi05_only`, `fixed` (escalate at every `--spacing`-th decision point), `random`
+(escalate with probability `--rate`, `vlar_ops.plan.unit_uniform` per point), and `decider`: a `vlar_train` fold
+(`result.json` and the best epoch's checkpoint) run live from `observe()` under its own profile with the live time
+limit (`live.py`; history inputs through `vlar_train.history`, mounted from a source with the hook). Scripted methods
+run to 520 steps and are scored offline with `score_eval.py` (`vlar_harness.clock.score`, the calibrated limits).
+
+π0.5 is reached only through `pi05_gate.py` (one `/act` in flight; its `/info` carries the gate, `evaluate.py run`
+refuses without it and records it in every result line), because π0.5 at `max_batch` 4 is not batch-invariant on the
+GB10 (step 210, row `pi05-batch-invariance-geometry`). `gate_check.py` is the gate's startup check: on real requests, a
+batch of one equals `act_unbatched` bit for bit, and a request alone at the calibrated geometry repeats exactly.
+Step `650` is the smoke test (servers, gate, its check, a few episodes per method with a dummy random decider).
