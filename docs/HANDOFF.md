@@ -8,6 +8,22 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 730 done (2026-11-26 07:15Z): the top-up is over $1.00 -> the user decides; nothing is running
+
+**730 ended clean** (step exit 0; VM stopped itself 07:15:33Z; the watcher logged "NOT a preemption" and ended; no
+waiter armed). 1,974/1,974 screened; `phase1b-screen` VM **$4.8827** vs stop $5.1312 (the +$0.47 raise used ~$0.25).
+Ledger total $27.81. **Yield** (VM's `reports/screen-yield.json` = the Mac's recount, `outputs/phase1b/screen-yield-mac.json`):
+failed per task 0-9 **26, 21, 23, 9, 37, 12, 23, 16, 14, 28** of 115, 115, 220, 278, 115, 181, 115, 154, 115, 566
+(rates 22.6, 18.3, 10.5, **3.2**, 32.2, 6.6, 20.0, 10.4, 12.2, 4.9%); short of 21: tasks 3, 5, 7, 8; below 15: 3, 5, 8.
+**Approval 2's top-up (`outputs/l4-retry/topup_decide.py` -> `outputs/phase1b/topup-decision.json`):** $/episode
+$0.002204 (phase VM $ less 5 boots' boot+gate, mean 7.35 min, and the 3.7-min tail; slowest pace 314/h gives
+$0.002187), one boot's overhead $0.126. 90% to 21: +510, +194, +75, +85 (864 episodes) = **$2.03 > $1.00: STOP,
+the user decides** (no rate < 2%). Alternatives costed for the user: every task >= 15 at 90% each (+285, +79, 0, +18;
+382 episodes) $0.97; tasks 5, 7, 8 to 21 only (354) $0.91 (task 3 stays 9); none (740 fills from successes, needs
+approval: 3 tasks < 15). Final-tier costing (approval 6) is due now that the yield is in; it depends on this choice.
+**Sign-ins renewed 11-26 00:16 MST** (CLI and ADC): expire ~16:16 MST (23:16Z); `renew-gcloud-signin-2` moved to
+14:16 MST (21:16Z).
+
 ## Takeover (2026-11-26 ~02:00Z): read this first
 
 **Taken over 2026-11-26 ~02:10Z (verified, VM untouched).** Previous session ended clean (tree clean, pushed, only
