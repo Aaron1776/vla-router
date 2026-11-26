@@ -38,6 +38,17 @@ at n = 18: 180 points (12 failed + 6 successful parents per task), 900 jobs, non
 tier's end + 1 day (~$0.37), line ~$1.72, stop ~$1.50 -> **18 points/task, 900 jobs, ~$1.46, ~2.1 h**, ~+38.6
 expected positives. More than the earlier $1.36 / 16 points: that release priced only the hours past end + 1 day at
 the actual rate; sizing from the ledger releases the line's whole remainder (its ~15% slack and the $0.02 reserve).
+**Hourly-rate audit (the user, ~19:40Z; `a1c32a5`):** one price in code, $0.6865/h (amendment 65 (2)).
+Pinned: `replan.HOURLY_USD` (was 0.472; fed `phase1.budget`/`lines` defaults and `phase1.DRAIN_MARGIN_USD`, 0.157
+instead of 0.229), the `pilot` group's `--hourly-usd` default (0.472), `SpendConfig.vm_hourly_usd`'s fallback
+(0.46); `phase1.BILLED_HOURLY_USD` is now an alias. `tests/test_rates.py` ties them to `ops.example.yaml` and forbids
+old-price literals. Already right: the live guard (`ops.yaml` from `ops.example.yaml` at boot; every ledger session
+since 11-25 06:27Z records 0.6865; the 11 earlier sessions at 0.46/0.472 were corrected by amendment 65's $4.70
+charge), the phase margins in the ledger (0.2288; the pilot's 0.1533 predates the check), `33_create_retry.sh` (the
+zone-move path: reads the price from `ops.example.yaml`, checks the guard's sessions match), and every Mac projector
+(`reproject*.py`, `topup_decide.py`, `final_tier_*.py`, `size_750.py`). Nothing live was sized at 0.472 except the
+final tier's draft, caught by its test. Reproducing the 2026-11-25 pilot report or re-plan needs `--hourly-usd 0.472`.
+The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-month, Spot IP $0.0025/h).
 **Runbook at 740's end** (the waiter's EVENT watcher with the step verdict):
 1. `step_check_740.sh` must say done (every re-run and branch marker, exit 0 since 10:57Z); anything else: report,
    stop (exit 76: no debugging).
