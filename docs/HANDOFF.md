@@ -16,8 +16,12 @@ bucket is deleted (only after the download is verified), not a guard cut. (3) **
 reads only, `containers/<commit>/`, `vla-router/snapshots/base/`, `vla-router/images/base/` (~24.0 GB) into
 `/Users/miggy/vla-router-download-2026-11-26/` (outside the repo, object paths kept), every file checked against the
 bucket's checksums (`ops/gcp/verify_download.py`: size, CRC32C, MD5 where the object has one; missing and extra
-files). Free disk first: **316.4 GB** (>= 60). Started ~19:24Z with `gcloud storage rsync -r` per prefix (log
-`outputs/l4-retry/download-2026-11-26.log`). (4) **Final tier: version (a) as is**, sized to the money left when 740
+files). Free disk first: **316.4 GB** (>= 60). `gcloud storage rsync -r` per prefix, 19:28:06-19:57:35Z, 10-16 MiB/s,
+all exit 0 (log `outputs/l4-retry/download-2026-11-26.log`). **Verified 19:58Z: 16,275 objects (11 container files,
+500 image shards, 15,764 snapshots), 24,013,921,528 bytes, every size, CRC32C and MD5 equal to the bucket's (all had
+an MD5), none missing, none extra** (`outputs/l4-retry/verify-download-2026-11-26.json`). November's egress now
+~24.6 GB. Left for the end of Phase 1: ~13 GB (740's re-run snapshots and images, records, results, the final
+tier, reports); re-run the check on these three prefixes then too (they are final: it should pass unchanged). (4) **Final tier: version (a) as is**, sized to the money left when 740
 ends including the storage release, **booted right after 740** under the same raise rule (`raise_for`, the shared
 $3.00 cap; past it stop and ask). **Deleting the VM's disk needs the user's explicit OK after the download is
 verified.**
