@@ -18,6 +18,13 @@ planned with the uniform per-point draw has no `selection`; its π_i is the plan
 The weights are kept un-normalised here; each fold normalises them to mean 1 within its training rows and within its
 validation rows (`train.unit_mean`).
 
+Complete points only (§12, as `vlar_ops.plan.complete_points`: training uses only complete points): a labelled point
+one of whose branch seeds has no finished run in the records (no log, or a log without its `end` event) is left out
+and listed in `PointSet.report`, with the label entries that have no row in the points table; the build goes on with
+the others. Every other inconsistency still stops the build (`vlar_harness.labels` checks that the logs fit). Leaving
+points out makes the remaining points' recorded inclusion probabilities inexact (amendment 65 (6): "a tranche cut
+short leaves a labelled subset without exact inclusion probabilities"), so the report is printed, never silent.
+
 Per point, its parent episode (`PointSet.episode`, the label entry's `point.episode_id`): points from one episode
 share its outcome, so reports count and resample by episode (amendments 57 (5) and 68 (3); `stats`). Folds are by
 whole task (§7), so an episode never straddles a split."""
@@ -26,7 +33,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -50,6 +57,7 @@ class PointSet:
     excluded: dict[str, np.ndarray]          # profile -> (n,)
     weight: Optional[np.ndarray] = None      # (n,) 1/π_i (amendment 57 (3)), un-normalised; all 1 when not given
     episode: Optional[np.ndarray] = None     # (n,) parent episode id (amendment 68 (3)); from the snapshot id if absent
+    report: dict = field(default_factory=dict)   # what the build left out and why (`build`); empty for synthetic sets
 
     def __post_init__(self) -> None:
         if self.episode is None:               # snapshot id = <episode_id>/dpNN (datacard, "Identifiers and seeds")
@@ -76,7 +84,8 @@ class PointSet:
         return PointSet({k: v[idx] for k, v in self.cols.items()}, self.task[idx],
                         [self.snapshot_id[i] for i in idx], self.can_escalate[idx],
                         {p: v[idx] for p, v in self.remaining_s.items()}, {p: v[idx] for p, v in self.y.items()},
-                        {p: v[idx] for p, v in self.excluded.items()}, self.weight[idx], self.episode[idx])
+                        {p: v[idx] for p, v in self.excluded.items()}, self.weight[idx], self.episode[idx],
+                        dict(self.report))
 
 
 def prefix_of(parent_events: Sequence[Mapping], index: int) -> list[Mapping]:
@@ -114,6 +123,21 @@ def inclusion_prob(snapshot_id: str, entry: Mapping[str, Any]) -> float:
         raise DataError(f"label entry {snapshot_id} records no inclusion probability in (0, 1] (amendment 57 (3)): "
                         f"{pi!r}")
     return float(pi)
+
+
+def missing_seeds(entry: Mapping[str, Any], own: Mapping[tuple[str, int], Sequence[Mapping]], seeds: int) -> list[str]:
+    """The branch seeds of a label entry with no finished run in the records: no log at all, or a log that does not
+    end with its `end` event. Seeds the parent rollout provides are not branch runs (§7). A point with any such
+    seed is incomplete (§12: training uses only complete points)."""
+    out = []
+    for canon in dict.fromkeys(entry["shares"].values()):         # each canonical branch once, in the entry's order
+        for s in range(1, seeds + 1):
+            if s in entry["parent_seeds"].get(canon, []):
+                continue
+            log = own.get((canon, s))
+            if not log or log[-1].get("t") != "end":
+                out.append(f"{canon}/s{s}")
+    return out
 
 
 def _vec(v, n: int) -> np.ndarray:
@@ -156,6 +180,8 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
     rows = [p for p in points if p.get("snapshot_id") in label_map]
     if not rows:
         raise DataError("no point of the label map is in the points table")
+    report = {"label_entries": len(label_map), "points": 0, "incomplete": [],
+              "no_points_row": sorted(set(label_map) - {p["snapshot_id"] for p in rows})}
     cols: dict[str, list] = defaultdict(list)
     task, sid, can, rem, ys, exc = [], [], [], defaultdict(list), defaultdict(list), defaultdict(list)
     weight, episode = [], []
@@ -166,6 +192,10 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         if not (entry.get("settings") or {}).get("seeds"):
             raise DataError(f"label entry {p['snapshot_id']} records no planner settings (amendment 49)")
         pi = inclusion_prob(p["snapshot_id"], entry)
+        missing = missing_seeds(entry, own.get(p["snapshot_id"], {}), int(entry["settings"]["seeds"]))
+        if missing:                                               # incomplete: left out and reported (§12)
+            report["incomplete"].append({"snapshot_id": p["snapshot_id"], "missing": missing})
+            continue
         parent_log = logs[p["run_id"]]
         pl = L.point_labels(prefix_of(parent_log, p["index"]), entry, own.get(p["snapshot_id"], {}),
                             seeds=int(entry["settings"]["seeds"]),
@@ -183,11 +213,15 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
             exc[prof].append(prof in pl.excluded)
             ys[prof].append([pl.labels[b][prof].value if b in pl.labels and prof in pl.labels[b] else np.nan
                              for b in BRANCHES])
+    report["points"] = len(sid)
+    if not sid:
+        raise DataError(f"none of the {len(rows)} labelled points is complete: every one misses a branch seed "
+                        f"(first: {report['incomplete'][0]})")
     return PointSet({k: np.stack(v) for k, v in cols.items()}, np.array(task), sid, np.array(can),
                     {k: np.array(v, dtype=np.float64) for k, v in rem.items()},
                     {k: np.array(v, dtype=np.float64) for k, v in ys.items()},
                     {k: np.array(v, dtype=bool) for k, v in exc.items()}, np.array(weight, dtype=np.float64),
-                    np.array(episode, dtype=str))
+                    np.array(episode, dtype=str), report)
 
 
 def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> PointSet:

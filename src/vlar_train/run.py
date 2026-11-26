@@ -152,6 +152,7 @@ def run_cv(ps: PointSet, *, folds: Sequence[int] = range(F.N_TASKS), deciders: S
     results = [run_fold_decider(ps, i, dname, out, cfg, max_rate=max_rate, min_episodes=min_episodes)
                for i in folds for dname in deciders]
     summary = {"results": results, "branches": list(BRANCHES), "config": cfg.__dict__,
+               "data": ps.report,
                "lambda_rule": {"share": LAM.SHARE, "max_rate": max_rate, "min_episodes": min_episodes,
                                "min_positives": MIN_POSITIVES}}
     for dname in deciders:
@@ -196,6 +197,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             ap.error("give --records and --label-map (or --synthetic)")
         from .data import from_records
         ps = from_records(a.records, a.label_map)   # seeds from each label entry (amendment 49)
+        rep = ps.report
+        print(f"points: {rep['points']} of {rep['label_entries']} label entries; left out: {len(rep['incomplete'])} "
+              f"incomplete (a branch seed without a finished run), {len(rep['no_points_row'])} without a points row")
+        for row in rep["incomplete"][:20]:
+            print("  incomplete:", row["snapshot_id"], "missing", ", ".join(row["missing"]))
+        if rep["incomplete"]:
+            print("  the remaining points' inclusion probabilities are no longer exact (amendment 65 (6))")
     s = run_cv(ps, folds=_range(a.folds), deciders=a.deciders.split(","), out=Path(a.out),
                cfg=TrainConfig(epochs=a.epochs), max_rate=a.max_rate, min_episodes=a.min_episodes)
     for d in a.deciders.split(","):

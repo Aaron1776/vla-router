@@ -476,3 +476,68 @@ def test_cross_validation_applies_the_rate_cap_and_the_support_guard(ps):
         assert not math.isnan(s[d]["median_lambda"]) and "lambda_never_folds" in s[d]
     loose = run_cv(ps, folds=[0], deciders=["router"], cfg=FAST, max_rate=1.0, min_episodes=1)["results"][0]
     assert loose["lambda"]["rate"] >= s["results"][0]["lambda"]["rate"]
+
+
+# ---------------------------------------------------------------- building from records
+
+def _records(episodes=("ep", "ep2")):
+    """Records of base episodes with one labelled point each (point 2), built with the label tests' logs: per
+    episode the parent run, its branch runs, their events, the points row and the planner's label entry."""
+    TL = pytest.importorskip("test_labels_calibration")
+    runs, events, points, label_map = [], [], [], {}
+
+    def add(run_id, log, **row):
+        runs.append({"run_id": run_id, "task_id": 0, "snapshot_id": None, "branch": None, "seed_index": None,
+                     "record": "full", "phase": "base", "job_id": f"job-{run_id}", **row})
+        events.extend({"run_id": run_id, "seq": k, "event": json.dumps(e)} for k, e in enumerate(log))
+    for ep in episodes:
+        prefix, entry, parent, own = TL.setup_point()
+        sid = f"{ep}/dp02"
+        add(ep, parent, episode_id=ep)
+        for (b, k), log in own.items():
+            add(f"{sid}/{b}/s{k}", log, snapshot_id=sid, branch=b, seed_index=k, episode_id=ep, phase="branches")
+        points.append({"run_id": ep, "index": 2, "snapshot_id": sid, "features_main": [0.0] * 1024,
+                       "features_wrist": [0.0] * 1024, "robot_state": [0.0] * 11, "proposal": [0.0] * 70,
+                       "budget_remaining_steps": 20, "step": 20, "chunk_pos": 10, "prev_segment_pi05": False,
+                       "track_pos_err": 0.001, "track_rot_err": 0.01, "tracking_valid": True,
+                       "prev_actions": [0, 0, 0, 0, 0, 0, 1.0] * 2, "prev_gripper_qpos": [0.0, 0.0, 0.02, -0.02]})
+        label_map[sid] = {**entry, "point": {**entry["point"], "snapshot_id": sid, "episode_id": ep},
+                          "selection": {"inclusion_prob": 0.25, "by": "point"}}
+    kw = dict(limits_s={0: 1e9}, thresholds=(0.01, 0.07), charges=TL.CH)
+    return runs, events, points, label_map, kw
+
+
+def test_build_computes_labels_weights_and_episodes_from_records():
+    runs, events, points, label_map, kw = _records()
+    ps = D.build(runs, events, points, label_map, **kw)
+    assert ps.snapshot_id == ["ep/dp02", "ep2/dp02"] and list(ps.episode) == ["ep", "ep2"]
+    assert list(ps.weight) == [4.0, 4.0] and ps.can_escalate.all()                 # 1/π, amendment 57 (3)
+    assert ps.y["router"][0] == pytest.approx([2 / 3, 2 / 3, 1 / 3, 1 / 3])        # as the label tests work out
+    assert ps.report == {"label_entries": 2, "points": 2, "incomplete": [], "no_points_row": []}
+
+
+def test_an_incomplete_point_is_left_out_and_reported_not_fatal():
+    """§12: training uses only complete points. A branch seed without a finished run (no log, or a log cut before
+    its end event) leaves that one point out, with a report; the other points still build."""
+    runs, events, points, label_map, kw = _records()
+    gone = "ep2/dp02/b2_one_call/s3"
+    cut = "ep2/dp02/b1_continue/s2"
+    last = max(e["seq"] for e in events if e["run_id"] == cut)
+    ev = [e for e in events if e["run_id"] != gone and not (e["run_id"] == cut and e["seq"] == last)]
+    ps = D.build([r for r in runs if r["run_id"] != gone], ev, points, {**label_map, "ep3/dp02": label_map["ep/dp02"]},
+                 **kw)
+    assert ps.snapshot_id == ["ep/dp02"] and len(ps) == 1
+    assert ps.report["incomplete"] == [{"snapshot_id": "ep2/dp02", "missing": ["b1_continue/s2", "b2_one_call/s3"]}]
+    assert ps.report["no_points_row"] == ["ep3/dp02"] and ps.report["points"] == 1 and ps.report["label_entries"] == 3
+    assert ps.subset(np.array([0])).report == ps.report
+    # the parent provides seed 1 of b1 at a base point: it is not a missing branch run
+    assert D.missing_seeds(label_map["ep/dp02"], {}, 3)[:2] == ["b1_continue/s2", "b1_continue/s3"]
+    # a log that does not fit is still an error, not an incomplete point
+    bad = [dict(e) for e in events]
+    for e in bad:
+        if e["run_id"] == "ep/dp02/b2_one_call/s1" and e["seq"] == 1:
+            e["event"] = json.dumps({**json.loads(e["event"]), "seed_index": 2})
+    with pytest.raises(ValueError, match="seed"):
+        D.build(runs, bad, points, label_map, **kw)
+    with pytest.raises(D.DataError, match="none of the 2 labelled points is complete"):
+        D.build(runs, [e for e in events if "/b2_one_call/" not in e["run_id"]], points, label_map, **kw)
