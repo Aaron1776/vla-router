@@ -36,6 +36,12 @@ re-running); `CHECK_AT` 16:30Z early pace read (`reproject_740.py`); halfway ~23
 **Untested path:** the old stop flag is on the VM's disk; the guard clears it at boot (`run_daemon`, state ok), but
 no earlier boot started with it up. If the runner reads it first, it stops with "STOP flag is up; no step started"
 (no work, ~$0.05): report it; another start needs the user.
+**25-min check 14:52Z: 739 passed and 740 is running.** The stop flag cleared at boot (runner started 14:27:53Z, ran
+739 at 14:28:02Z). 739 exit 0 at 14:28:38Z: `recompare-739-<boot>.json` 8 compared, 8 passed (t6/i43/r2 among them),
+312 pending; `MISMATCH-set-aside-740-boot1.json` in the bucket's reports (the diagnosed marker, unchanged). 740 past
+its gate: 9 re-runs this boot (17 of 320), all matching their screened runs' outcomes; no stop from `compare-b`.
+Projection (`reproject_740.py`, its fallback now the 7-worker pace until 10 markers): spent $0.6888 + 17.52 VM-h =
+**$12.715 vs $12.9412: no raise.** Waiter re-armed: `CHECK_AT` 16:30Z (first measured pace), then halfway ~23:25Z.
 
 ## 740 STOPPED: exit 76 at 11:26Z, a comparison defect, not a parity failure (resolved: amendment 74)
 
