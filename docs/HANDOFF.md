@@ -38,6 +38,10 @@ the next try); waiter armed (re-projection ~08:31Z, then halfway).
 **735 re-projection 08:31Z:** past the gate (RUNNING, runner on 735, 97 markers this boot); 2,071/2,838; 340/h boot,
 335.5/h last 15 min; spent $0.3187 -> **$1.943 vs stop $2.0312: no raise**; completion ~10:50Z. Waiter re-armed
 (`CHECK_AT` 09:32Z for the halfway re-projection, `STEP_CHECK` on any stop). Cap: $0.22 counted, $2.28 left.
+**735 halfway re-projection 09:32Z:** same boot, 2,423/2,838 (449 this boot); 343/h boot, 344/h last 15 min;
+spent $1.0202 -> **$1.905 vs stop $2.0312: no raise**; completion ~10:45Z. Waiter re-armed without `CHECK_AT`
+(`STEP_CHECK` on any stop). On the end: step_done must say done; read the yield; any task < 15 failed -> ask;
+else 740 under approval 3 (project, close phase1b-topup, open phase1b $11.32, raise, queue, watcher MAX_AUTO 8).
 **Queued 07:37Z** (CURRENT `73208f4`); watcher PID 54529 (`PHASE=phase1b-topup`, MAX_AUTO 8) started 07:38:07Z: zone a
 stocked out at 07:38:16Z, retrying every 10 min for 6 h; waiter armed (T0 07:38Z). Also re-project at 735's halfway
 (~1,406/2,838 markers; amendment 70 (2)).
