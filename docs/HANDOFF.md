@@ -145,6 +145,7 @@ plan lands, finishing 10 min. It would not have fired on 740's first boot (in-fl
 stopped itself). The duty waiter runs it every 3 min (`STALL_CHECK=...`, `EVENT stall` + a macOS notification; tell
 the user and push a notification). `reproject_740.py` now prints `not_visible` and the stall verdict (`bucket_view`).
 Waiter re-armed 19:13Z with STALL_CHECK, `CHECK_AT` 23:10Z (halfway). 19:05Z: 147/320 re-runs, 3.7 min quiet.
+**740 halfway re-projection, 23:10Z (boot from 14:27:06Z; VM-internal state not visible mid-step):** re-runs 276/320 (13,478 steps/h this boot, 20,175 steps left), branches 0/3,840 (Tranche A's 7.18 VM-s/job until 50 markers); spent $6.38, 9.29 h left -> **$12.757 vs stop $12.9412: no raise** ($0.93 of approval 4 still unused); end ~08:30Z. Bucket view: RUNNING, last result 23:09:55Z, not stalled. Waiter re-armed 23:12Z without `CHECK_AT` (STALL_CHECK + STEP_CHECK).
 **gcloud CLI:** needs `gcloud auth login` already (reauth fails non-interactively at ~19:10Z); ADC still works (the
 watcher, every check). Both expire by 23:16Z: renew both at the 21:16Z reminder.
 **Download check (read-only; `gsutil du` could not run, the CLI needs a re-login: measured with the storage API).**
