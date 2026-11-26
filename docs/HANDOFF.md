@@ -8,6 +8,54 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## The user's decisions (~19:25Z) and the 740 -> 750 hand-over runbook (740 still running)
+
+**Decisions:** (1) sign-ins renewed (CLI 19:21:50Z, ADC 19:22:20Z). (2) **Guard: no change.** The user checks the
+billing console for the free download allowance today; if it does not apply, soft delete is turned off just before the
+bucket is deleted (only after the download is verified), not a guard cut. (3) **Download now, approved:** bucket
+reads only, `containers/<commit>/`, `vla-router/snapshots/base/`, `vla-router/images/base/` (~24.0 GB) into
+`/Users/miggy/vla-router-download-2026-11-26/` (outside the repo, object paths kept), every file checked against the
+bucket's checksums (`ops/gcp/verify_download.py`: size, CRC32C, MD5 where the object has one; missing and extra
+files). Free disk first: **316.4 GB** (>= 60). Started ~19:24Z with `gcloud storage rsync -r` per prefix (log
+`outputs/l4-retry/download-2026-11-26.log`). (4) **Final tier: version (a) as is**, sized to the money left when 740
+ends including the storage release, **booted right after 740** under the same raise rule (`raise_for`, the shared
+$3.00 cap; past it stop and ask). **Deleting the VM's disk needs the user's explicit OK after the download is
+verified.**
+**Sign-ins (the user asked):** the CLI's 07:16:38Z sign-in last worked at 14:26:42Z and failed at 19:10:36Z
+("Reauthentication failed"): 7.2-11.9 h, not 16 h; ADC kept refreshing >= 11 h. `signin_expiry.py` now counts CLI 7 h,
+ADC 11 h: **CLI ~02:21Z, ADC ~06:22Z.** The halfway check and raises use ADC only (`reproject_740.py`,
+`stall_check.py`, `vlar-ops spend status/phase-raise` through google-cloud-storage); the CLI is needed only to queue
+750 (`31_phase0_queue.sh`) at 740's end (~08:35Z). Reminder `renew-gcloud-signin-2` moved to 21:45 MST (04:45Z):
+renew both before ~06:20Z.
+**Built (`f457c72`, CURRENT not moved):** `vlar-ops phase1 plan-f` (A and F ONE stratified draw: Tranche A's seed and
+settings at 64 + n per task, A's points left out by `pilot.exclude_earlier`, the combined inclusion probability on
+every F point; A's plan reproduces byte for byte from `outputs/pilot/base`); `phase1.final_tier_settings` (phase1f,
+order seed 13) and `final_tier_points` (at the billed $0.6865/h: `replan.HOURLY_USD` is still the pre-billing-check
+$0.472, caught by a test); `ops/vm/postfreeze/750-phase1f.sh` (720 with spend phase phase1f, the plan checked as one
+draw with A, exits tagged "750", cap 4 h); `outputs/l4-retry/size_750.py`, `reproject_750.py` (git-ignored). Dry run
+at n = 18: 180 points (12 failed + 6 successful parents per task), 900 jobs, none of A's, inclusion e.g. 55/1040.
+**Sizing at 740's projection ($12.836, ledger ~$42.90 at its end):** hold the disk + tracked storage to the final
+tier's end + 1 day (~$0.37), line ~$1.72, stop ~$1.50 -> **18 points/task, 900 jobs, ~$1.46, ~2.1 h**, ~+38.6
+expected positives. More than the earlier $1.36 / 16 points: that release priced only the hours past end + 1 day at
+the actual rate; sizing from the ledger releases the line's whole remainder (its ~15% slack and the $0.02 reserve).
+**Runbook at 740's end** (the waiter's EVENT watcher with the step verdict):
+1. `step_check_740.sh` must say done (every re-run and branch marker, exit 0 since 10:57Z); anything else: report,
+   stop (exit 76: no debugging).
+2. `.venv-ops/bin/vlar-ops spend phase-close --phase phase1b --ops-config ops/ops.yaml`.
+3. `.venv-ops/bin/python outputs/l4-retry/size_750.py`: the numbers and the commands; per_task < 1: ask the user.
+4. Its commands in order: `plan-f` -> `outputs/phase1b/750/plan` (check 10 x n points, no overlap with A,
+   `combined_with` phase1a), upload to `phase1f/plan/` (ADC), `phase-open phase1f` (allocation = planned, line =
+   money), `31_phase0_queue.sh ops/vm/postfreeze/750-phase1f.sh` (CLI; moves CURRENT to HEAD), the watcher
+   `PHASE=phase1f MAX_AUTO=8 WATCH_HOURS=12` (it starts the VM).
+5. Waiter: T0 = the start; `STEP_CHECK='.venv-ops/bin/python ops/gcp/step_done.py --plan
+   outputs/phase1b/750/plan/plan.json --phase phase1f --step 750 --since <start> --exits
+   vla-router/phase1f/reports/step-exits.jsonl'`; `STALL_CHECK='.venv-ops/bin/python ops/gcp/stall_check.py --stage
+   branches:phase1f:vla-router/phase1f/plan/plan.json:5'`.
+6. 25 min after each start: `reproject_750.py`; past the stop: `phase-raise` by `raise_for` within the $3.00 cap
+   (left: $0.93 less any further 740 raise); past the cap: stop and ask.
+7. 750's end: the step check, report. Then the end-of-Phase-1 download (the rest: ~13 GB) and its verification;
+   disk deletion and soft delete only on the user's OK.
+
 ## Amendment 75, stall alarm, download check, final tier v2 (2026-11-26 ~19:00-19:30Z; 740 still running)
 
 **The user's directions (~19:00Z):** no access to the VM and no VM code change mid-740 (its exit-76 stop protects the
