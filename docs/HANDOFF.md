@@ -20,6 +20,28 @@ allocation $2.03, line $2.26, stop $2.0312. Pre-boot projection: 864 at 314/h + 
 **$2.01 vs $2.0312: no raise**. Source since 730's `41f7026`: additive only (amendments 68-70 Mac-side code; tests
 pass), so queueing moves CURRENT to HEAD. Next: queue 735, watcher `PHASE=phase1b-topup` (MAX_AUTO 8), duty waiter
 (T0 = 735's first start), 25-min re-projection after each start (`reproject.py --total 2838`).
+**Queued 07:37Z** (CURRENT `73208f4`); watcher PID 54529 (`PHASE=phase1b-topup`, MAX_AUTO 8) started 07:38:07Z: zone a
+stocked out at 07:38:16Z, retrying every 10 min for 6 h; waiter armed (T0 07:38Z). Also re-project at 735's halfway
+(~1,406/2,838 markers; amendment 70 (2)).
+**Final-tier costing (approval 6, amendments 71 (4), 72 (4); `outputs/l4-retry/final_tier_cost.py` ->
+`outputs/phase1b/final-tier-costing-2026-11-26.json`):** A's pooled rates (131/430, 7/210), own-rate flags; measured
+costs (base point 5 jobs x 7.18 VM-s = $0.0068; exploration unit of 2 failed + 1 successful screened episode, 6 points,
+re-runs at 0.2329 VM-s/step + 6 jobs/point = ~$0.106; one step's overhead 0.33 h = $0.23). **740 with the full top-up
+projects $11.60-12.48** (210 failed to 520 steps, 110 successful at 257 steps, 3,840 branch jobs) -> raise $0.77-1.64
+before the boot. **Final-tier money** = $4.18 + $0.02 reserve - 735 $2.03 - 730's raise used $0.25 - 740's overrun past
+its $11.32 allocation: **$1.63 (740 low) to $0.76 (high)**; $0.06 if raises count as granted; **floor -$0.33** (after
+the $2.03 top-up the final tier can fund only $1.70 more raises, not the cap's $2.03: past that, ask the user).
+Versions at $1.63 -> $0.76: (a) all base 20 -> 7 points/task, +41.9 -> +15.9 positives, A+B+F 314.8 -> 288.8, min fold
+251.8 -> 231.0; (b) exploration for 2, 3, 5, 7, 9 (one unit each at $1.63, none at $0.76, from screen spares), +27.4 ->
++7.9, min fold 237.2 -> 223.0; (c) exploration for 2-5, 7-9: +21.6 -> +4.8, min fold 231.4 -> 219.8. At the floor, A+B
+only: 272.9, min fold 218.2. **Amendment 58 passes everywhere; flagged 4 and 7 only** (own rates: A+B 7.9 and 9.8).
+**What the extra $1.06 bought** (full vs top-up to 15): A+B min fold 218.2 vs 209.6, +8.7 positives, distinct failed
+episodes A+B 305 vs 289 (+2.9, +3.6, +4.8, +4.6 in tasks 3, 5, 7, 8), no 10% risk of a task < 15; but it costs $1.24
+of final-tier money (+$0.18 of 740 re-runs), so with version (a) at 740's low end: 314.8 vs 344.7 positives, min fold
+251.8 vs 274.0. (a)'s new base points: 2/3 from failed parents, in tasks 2-5, 7-9 only episodes A already used (new
+points within them), tasks 0, 1, 6 up to 2, 3, 1 new failed episodes; 1/3 from successful parents, mostly new
+episodes. Run order (each version one step after 740): gate -> (b, c) exploration units from the screen's spare
+failed episodes -> record-full re-runs with the mismatch check -> branches interleaved by task. The user decides.
 
 ## 730 done (2026-11-26 07:15Z): the top-up is over $1.00 -> the user decides; nothing is running
 
