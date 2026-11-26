@@ -540,6 +540,17 @@ any other raise needs the user. 735's own cost stays within amendment 68's $1.00
 re-run episode:** the re-runs are the expensive part, but fewer episodes would worsen the clustering (amendment 68
 (3)), and the record-full re-runs carry the history features Oscar's deciders need.
 
+71. §12 (the user, 2026-11-26 ~02:30Z; operations). (1) **Zone-move trigger, replacing "a stockout lasts over 2
+hours":** the zone-move plan (disk, images, time, cost) goes to the user when the VM has run less than 30 minutes in
+any 2-hour window (windows starting from the rule's adoption, 02:30Z, and from each later step's first start); a move
+still needs the user's approval. Restarts otherwise unchanged (preemption only, 8 per step, spend check before each,
+us-central1-a). (2) **Raises are exactly `phase1b.raise_for(projection, stop)`** at the time of the projection
+(overrun + $0.25), not the top of a range. (3) **Sign-in reminders:** 08:15 and 22:15 MST daily until Phase 1 ends,
+and 2 h before each sign-in's expiry (16-hour Workspace session), with both expiries recomputed after each renewal.
+(4) **The final-tier costing (amendment 68 (3), approval 6) also shows** each version at the floor (all $2.50 of
+raises and a full $1.00 top-up used), the order it would run in, and for the all-base version whether its new points'
+parents are successful episodes or failed episodes Tranche A already used.
+
 ## 18. Milestone checkpoint: harness build complete
 
 The harness build is complete only when all of the following are true:
