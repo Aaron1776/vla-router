@@ -12,7 +12,9 @@ torch = pytest.importorskip("torch")
 
 from vlar_train import data as D  # noqa: E402
 from vlar_train import folds as F  # noqa: E402
+from vlar_train import history as H  # noqa: E402
 from vlar_train import lam as LAM  # noqa: E402
+from vlar_train import deciders as DC  # noqa: E402
 from vlar_train.deciders import COLUMNS, DECIDERS, FORBIDDEN_FOR_ROUTER, inputs, width  # noqa: E402
 from vlar_train import run as R  # noqa: E402
 from vlar_train import stats as ST  # noqa: E402
@@ -636,3 +638,153 @@ def test_results_carry_the_constant_predictor_baseline(ps, tmp_path):
     again = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(0, "router"), cfg=FAST,
                   w_tr=ps.weight[tr], w_va=ps.weight[va])
     assert weighted_bce(again.predict(x[va]), y[va], ym[va], ps.weight[va]) == pytest.approx(r["val_loss"], rel=1e-4)
+
+
+# ---------------------------------------------------------------- history inputs (extension point)
+
+@pytest.fixture
+def toy_history():
+    """Two toy history features, registered for one test only: one from the common inputs (motion of the end
+    effector over the last 30 steps), one from the cascader groups (tracking error per commanded step)."""
+    before = (dict(H.FEATURES), dict(COLUMNS), dict(DC.PROFILE_OF))
+
+    @H.register("toy_motion", width=2, uses=["common"])
+    def motion(views):
+        recent = [v for v in views if views[-1]["step"] - v["step"] <= 30]
+        pos = np.array([v["robot_state"][:3] for v in recent])
+        return [np.linalg.norm(np.diff(pos, axis=0), axis=1).sum(), np.linalg.norm(pos[-1] - pos[0])]
+
+    @H.register("toy_track", width=1, uses=["proposal", "free_signals"])
+    def track(views):
+        if len(views) < 2:
+            return [0.0]
+        cmd = np.linalg.norm(np.diff(views[-2]["proposal"][:, :3], axis=0), axis=1).mean()
+        return [views[-1]["track_pos_err"] / max(cmd, 1e-6)]
+    yield
+    for now, was in zip((H.FEATURES, COLUMNS, DC.PROFILE_OF), before):
+        now.clear()
+        now.update(was)
+
+
+def _point_row(index, budget=260, **over):
+    rng = np.random.default_rng(index)
+    row = {"run_id": "ep", "index": index, "step": 10 * index, "snapshot_id": f"ep/dp{index:02d}",
+           "budget_remaining_steps": budget, "robot_state": list(rng.normal(size=11)),
+           "proposal": list(rng.normal(size=70).astype(np.float32)), "chunk_pos": 10 * (index % 3),
+           "prev_segment_pi05": False, "track_pos_err": 0.01 * (index + 1), "track_rot_err": 0.02,
+           "tracking_valid": index > 0, "prev_actions": [0, 0, 0, 0, 0, 0, 1.0] * 2,
+           "prev_gripper_qpos": [0.0, 0.0, 0.02, -0.02], "features_main": [0.0] * 1024,
+           "features_wrist": [0.0] * 1024}
+    return {**row, **over}
+
+
+def _observed(row, view, profile="cascader_nospread"):
+    """What `observe()` would return at the point of `row` (the harness API's own classes)."""
+    from vlar_harness import api as A
+    point = A.DecisionPoint(row["index"], row["step"], "mid", row["budget_remaining_steps"], True)
+    common = A.CommonInputs(None, None, np.array(row["robot_state"]), row["budget_remaining_steps"], 12.0, row["step"])
+    if profile == "router":
+        return A.DeciderInputs(profile, point, common)
+    return A.DeciderInputs(profile, point, common,
+                           proposal=A.Proposal(np.array(row["proposal"], dtype=np.float32).reshape(10, 7),
+                                               row["chunk_pos"], row["prev_segment_pi05"]),
+                           free_signals=A.FreeSignals(view["track_pos_err"], view["track_rot_err"],
+                                                      view["tracking_valid"], view["grip_shut_frac"],
+                                                      view["grip_partial_frac"]))
+
+
+def test_no_history_feature_is_registered_and_no_decider_changed():
+    """The hook changes nothing by itself: the four deciders of §8, their columns, widths and profiles as before."""
+    assert H.FEATURES == {} and not any(c.startswith(H.PREFIX) for cs in COLUMNS.values() for c in cs)
+    assert tuple(COLUMNS) == DECIDERS and DC.PROFILE_OF == {d: d for d in DECIDERS}
+    assert COLUMNS["router"] == ("features_main", "features_wrist", "robot_state", "budget_frac", "steps_frac")
+    cols = D.synthetic(n_per_task=2).cols
+    assert [width(cols, d) for d in DECIDERS] == [2062, 2139, 2143, 2146]
+
+
+def test_history_columns_are_the_same_offline_and_live(toy_history):
+    """One code path: the views from points-table rows and from `observe()` give identical history columns."""
+    th = (0.01, 0.07)
+    rows = [_point_row(k) for k in range(6)]
+    off, live = H.EpisodeHistory(), H.EpisodeHistory()
+    for row, view in H.episode_views(rows[::-1], thresholds=th):          # any row order: walked by index
+        lv = H.live_view(_observed(row, view))
+        assert set(lv) == set(view) and H.groups_of(lv) == H.GROUPS
+        a, b = off.push(view), live.push(lv)
+        assert set(a) == {"hist_toy_motion", "hist_toy_track"} and a["hist_toy_motion"].shape == (2,)
+        for k in a:
+            assert np.array_equal(a[k], b[k])
+    # the motion feature by hand at the last point: the views within 30 steps are points 2..5
+    pos = np.array([r["robot_state"][:3] for r in rows[2:]])
+    assert a["hist_toy_motion"] == pytest.approx([np.linalg.norm(np.diff(pos, axis=0), axis=1).sum(),
+                                                  np.linalg.norm(pos[-1] - pos[0])])
+    assert a["hist_toy_track"][0] > 0
+
+
+def test_history_follows_what_a_live_decider_sees(toy_history):
+    th = (0.01, 0.07)
+    rows = [_point_row(0), _point_row(1), _point_row(2, budget=0), _point_row(3, budget=5), _point_row(4)]
+    seen = [r["index"] for r, _ in H.episode_views(rows, thresholds=th)]
+    assert seen == [0, 1, 4]                                  # no view where the π0.5 budget is spent (amendment 15)
+    h = H.EpisodeHistory(["toy_motion"])
+    h.push(H.offline_view(rows[1], thresholds=th))
+    with pytest.raises(ValueError, match="order"):
+        h.push(H.offline_view(rows[0], thresholds=th))
+    # the router observes the common inputs only: a common-only feature works, a cascader feature is refused
+    view = H.offline_view(rows[0], thresholds=th, groups=("common",))
+    router_live = H.live_view(_observed(rows[0], view, profile="router"))
+    assert router_live["proposal"] is None and H.groups_of(router_live) == ("common",)
+    assert "hist_toy_motion" in H.EpisodeHistory(["toy_motion"]).push(router_live)
+    with pytest.raises(ValueError, match="does not observe"):
+        H.EpisodeHistory(["toy_track"]).push(router_live)
+    assert H.router_safe("toy_motion") and not H.router_safe("toy_track")
+    with pytest.raises(KeyError, match="not registered"):
+        H.EpisodeHistory(["nope"])
+    for bad in (dict(name="toy_motion", width=1, uses=["common"]), dict(name="x y", width=1, uses=["common"]),
+                dict(name="w0", width=0, uses=["common"]), dict(name="g", width=1, uses=["features"])):
+        with pytest.raises(ValueError):
+            H.register(bad["name"], width=bad["width"], uses=bad["uses"])
+
+    @H.register("toy_wrong_width", width=3, uses=["common"])
+    def wrong(views):
+        return [1.0]
+    with pytest.raises(ValueError, match="3 finite numbers"):
+        H.EpisodeHistory(["toy_wrong_width"]).push(H.offline_view(rows[0], thresholds=th))
+
+
+def test_build_adds_history_columns_only_when_asked(toy_history):
+    runs, events, points, label_map, kw = _records()
+    plain = D.build(runs, events, points, label_map, **kw)
+    assert not any(k.startswith("hist_") for k in plain.cols)
+    earlier = [dict(points[0], index=k, step=10 * k, snapshot_id=f"ep/dp{k:02d}", budget_remaining_steps=260,
+                    robot_state=[float(k)] * 11) for k in (0, 1)]
+    ps = D.build(runs, events, points + earlier, label_map, history=["toy_motion"], **kw)
+    assert ps.cols["hist_toy_motion"].shape == (2, 2) and "hist_toy_track" not in ps.cols
+    # episode "ep" has two earlier measured points (unlabelled), "ep2" none: its history is the point alone
+    assert ps.cols["hist_toy_motion"][0][0] > 0 and list(ps.cols["hist_toy_motion"][1]) == [0.0, 0.0]
+    for k in plain.cols:
+        assert np.array_equal(ps.cols[k], plain.cols[k])
+
+
+def test_a_decider_variant_with_history_trains_under_its_profile(ps, toy_history):
+    """A variant is a new name with its own columns, trained and scored under an existing profile; the four
+    deciders of §8 stay as they are."""
+    cols = {**ps.cols, "hist_toy_motion": np.random.default_rng(3).normal(size=(len(ps), 2))}
+    ps2 = D.PointSet(cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s, ps.y, ps.excluded, ps.weight,
+                     ps.episode)
+    DC.add_variant("router_hist", profile="router", columns=COLUMNS["router"] + ("hist_toy_motion",))
+    assert width(ps2.cols, "router_hist") == width(ps2.cols, "router") + 2
+    s = run_cv(ps2, folds=[0], deciders=["router", "router_hist"], cfg=FAST)
+    base, var = s["results"]
+    assert (var["profile"], var["width"]) == ("router", base["width"] + 2) and base["profile"] == "router"
+    assert var["points"] == base["points"] and var["points"]["excluded"] == int(ps.excluded["router"].sum())
+    assert var["baseline"]["p"] == base["baseline"]["p"] and var["baseline"]["val_loss"] == base["baseline"]["val_loss"]
+    with pytest.raises(ValueError, match="router's profile"):                 # §6: nothing derived from the proposal
+        DC.add_variant("router_bad", profile="router", columns=COLUMNS["router"] + ("hist_toy_track",))
+    with pytest.raises(ValueError, match="router's profile"):
+        DC.add_variant("router_bad", profile="router", columns=COLUMNS["router"] + ("proposal",))
+    DC.add_variant("nospread_hist", profile="cascader_nospread",
+                   columns=COLUMNS["cascader_nospread"] + ("hist_toy_motion", "hist_toy_track"))
+    for bad in (dict(name="router", profile="router", columns=()), dict(name="v", profile="none", columns=())):
+        with pytest.raises(ValueError):
+            DC.add_variant(bad["name"], profile=bad["profile"], columns=bad["columns"])

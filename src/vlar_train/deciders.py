@@ -31,6 +31,34 @@ COLUMNS: dict[str, tuple[str, ...]] = {
 }
 FORBIDDEN_FOR_ROUTER = ("proposal", "chunk_spread_", "fresh_spread_", "drift_", "track_", "grip_")
 
+# Each decider's overhead profile (§5): its labels, exclusions and remaining time are that profile's. The four
+# deciders of §8 are their own profiles. A further variant (`add_variant`, e.g. a decider with history inputs,
+# `history`) shares the profile of the decider whose measurements it pays for.
+PROFILE_OF: dict[str, str] = {d: d for d in DECIDERS}
+
+
+def profile_of(decider: str) -> str:
+    return PROFILE_OF[decider]
+
+
+def add_variant(name: str, *, profile: str, columns: tuple[str, ...]) -> None:
+    """Register a further decider variant: its input columns and the profile it is trained and scored under. The
+    four deciders of §8 cannot be redefined. A variant under the router's profile keeps the router's rule (§6: it
+    never sees X-VLA's proposed actions or anything derived from them): none of the cascader columns, and history
+    inputs only if they read the common inputs alone (`history.router_safe`)."""
+    from . import history as H
+    if name in COLUMNS:
+        raise ValueError(f"decider {name!r} exists; the deciders of §8 are not redefined")
+    if profile not in DECIDERS:
+        raise ValueError(f"profile {profile!r} is not one of {DECIDERS}")
+    if profile == "router":
+        bad = [c for c in columns if c.startswith(FORBIDDEN_FOR_ROUTER)
+               or (c.startswith(H.PREFIX) and not H.router_safe(c[len(H.PREFIX):]))]
+        if bad:
+            raise ValueError(f"a decider under the router's profile may not use {bad} (§6)")
+    COLUMNS[name] = tuple(columns)
+    PROFILE_OF[name] = profile
+
 
 def inputs(cols: Mapping[str, np.ndarray], remaining_s: np.ndarray, decider: str) -> np.ndarray:
     """(n, width) float32: the decider's columns in order, then its own profile's remaining time (seconds / 100)."""

@@ -7,5 +7,7 @@ local copy of the records: `python -m vlar_train` (needs numpy, torch and pyarro
 - `folds`: leave-one-task-out with a separate validation task (§7).
 - `train`: from scratch per fold and decider, a checkpoint every epoch, early stopping on the validation loss.
 - `lam`: λ on the validation task from branch labels (§8).
+- `history`: the extension point for inputs a decider builds from its own episode history, the same code offline
+  and live; no feature is registered and no decider uses one yet.
 - `stats`: effective sample size, re-weighted label statistics and episode-bootstrap intervals (amendments 57, 68).
 """

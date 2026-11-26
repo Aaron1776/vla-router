@@ -40,7 +40,7 @@ from . import folds as F
 from . import lam as LAM
 from . import stats as ST
 from .data import PointSet
-from .deciders import BRANCHES, DECIDERS, inputs
+from .deciders import BRANCHES, DECIDERS, inputs, profile_of
 from .train import TrainConfig, constant_predictor, seed_for, train, unit_mean, weighted_bce
 
 
@@ -110,10 +110,11 @@ def choose_lambda(sel: dict, *, seed: int, max_rate: float = LAM.MAX_RATE,
 
 def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cfg: TrainConfig, *,
                      max_rate: float = LAM.MAX_RATE, min_episodes: int = LAM.MIN_EPISODES) -> dict:
-    keep = ~ps.excluded[decider]
+    prof = profile_of(decider)                              # the four deciders of §8 are their own profiles
+    keep = ~ps.excluded[prof]
     m = F.masks(ps.task, i)
-    x = inputs(ps.cols, ps.remaining_s[decider], decider)
-    y, ym = ps.targets(decider)
+    x = inputs(ps.cols, ps.remaining_s[prof], decider)
+    y, ym = ps.targets(prof)
     tr, va, te = (m[k] & keep for k in ("train", "val", "test"))
     d = None if out is None else out / f"fold{i}" / decider
     w_tr, w_va = unit_mean(ps.weight[tr], int(tr.sum())), unit_mean(ps.weight[va], int(va.sum()))   # amendment 57 (3)
@@ -140,7 +141,7 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
     base_val = weighted_bce(const, y[va], ym[va], w_va)
     baseline = {"p": [float(v) for v in const], "train_loss": weighted_bce(const, y[tr], ym[tr], w_tr),
                 "val_loss": base_val, "val_loss_minus_baseline": model.val_loss[model.best_epoch] - base_val}
-    res = {"fold": i, "decider": decider, "width": int(x.shape[1]), "best_epoch": model.best_epoch,
+    res = {"fold": i, "decider": decider, "profile": prof, "width": int(x.shape[1]), "best_epoch": model.best_epoch,
            "val_loss": model.val_loss[model.best_epoch], "epochs_run": len(model.val_loss), "baseline": baseline,
            "points": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum()),
                       "excluded": int((~keep).sum())},

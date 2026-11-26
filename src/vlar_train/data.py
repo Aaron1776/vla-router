@@ -210,9 +210,31 @@ def point_columns(row: Mapping[str, Any], *, thresholds: tuple[float, float]) ->
     return {k: np.nan_to_num(v.astype(np.float64), nan=0.0) for k, v in c.items()}
 
 
+def history_columns(points: Sequence[Mapping], wanted: set, names: Sequence[str], *,
+                    thresholds: tuple[float, float]) -> dict[str, dict[str, np.ndarray]]:
+    """{snapshot id: {`hist_<name>`: values}} for the labelled points (`wanted`): each of their parent runs' measured
+    points is walked in order through an `EpisodeHistory`, as a live decider would see them (`history`)."""
+    from . import history as H
+    by_run: dict[str, list] = defaultdict(list)
+    for p in points:
+        by_run[p["run_id"]].append(p)
+    out = {}
+    for rows in by_run.values():
+        if not any(p.get("snapshot_id") in wanted for p in rows):
+            continue
+        h = H.EpisodeHistory(names)
+        for row, view in H.episode_views(rows, thresholds=thresholds):
+            cols = h.push(view)
+            if row.get("snapshot_id") in wanted:
+                out[row["snapshot_id"]] = cols
+    return out
+
+
 def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[Mapping],
           label_map: Mapping[str, Mapping], *, limits_s: Mapping[int, float], thresholds: tuple[float, float],
-          charges, profiles: Sequence[str] = DECIDERS) -> PointSet:
+          charges, profiles: Sequence[str] = DECIDERS, history: Sequence[str] = ()) -> PointSet:
+    """`history`: names of registered history features (`vlar_train.history`) to add as columns `hist_<name>`;
+    none by default, and no decider's `COLUMNS` uses one."""
     from vlar_harness import labels as L
     runs, shared = record_full_runs(runs)                       # amendment 66 (5): the record-full row of a shared id
     if shared:
@@ -229,6 +251,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
     rows = [p for p in points if p.get("snapshot_id") in label_map]
     if not rows:
         raise DataError("no point of the label map is in the points table")
+    hist = history_columns(points, {p["snapshot_id"] for p in rows}, history, thresholds=thresholds) if history else {}
     report = {"label_entries": len(label_map), "points": 0, "incomplete": [], "shared_run_ids": len(shared),
               "no_points_row": sorted(set(label_map) - {p["snapshot_id"] for p in rows})}
     cols: dict[str, list] = defaultdict(list)
@@ -254,6 +277,11 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
                             parent_log=parent_log if entry.get("parent_seeds") else None, profiles=tuple(profiles))
         for k, v in point_columns(p, thresholds=thresholds).items():
             cols[k].append(v)
+        if history:
+            if p["snapshot_id"] not in hist:
+                raise DataError(f"point {p['snapshot_id']} has no history view (π0.5 budget spent at the point?)")
+            for k, v in hist[p["snapshot_id"]].items():
+                cols[k].append(v)
         task.append(t)
         sid.append(p["snapshot_id"])
         can.append(int(p["budget_remaining_steps"]) >= 10)
@@ -275,7 +303,7 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
                     np.array(episode, dtype=str), report)
 
 
-def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> PointSet:
+def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None, history: Sequence[str] = ()) -> PointSet:
     from vlar_harness import clock as clk
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
@@ -295,7 +323,7 @@ def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None) -> P
                  read_table(root, "points").to_pylist(), label_map,
                  limits_s={int(k): float(v) for k, v in tl["per_task_s"].items()},
                  thresholds=(float(g["shut_width_m"]), float(g["open_width_m"])),
-                 charges=clk.Charges.from_config(cfg))
+                 charges=clk.Charges.from_config(cfg), history=history)
 
 
 def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: float = 3.0,
