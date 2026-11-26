@@ -8,6 +8,70 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Takeover (2026-11-26 ~02:00Z): read this first
+
+**730 (Tranche B screen) state.** VM STOPPED (preempted 2026-11-25 22:02:27Z; not restarted for 3.4 h because the
+gcloud CLI sign-in expired). 659 of 1,974 screened episodes have markers (`results/explore/`). Spend phase
+`phase1b-screen` open: $1.76 of VM, stop $4.66, line $4.89, allocation $3.30 (amendment 69 raised it by $1.33 from the
+reserve). Restarts for 730: 2 automatic used; the running watcher's pending start counts as the 3rd, then 5 left
+(8 per step). us-central1-a stocked out at every try since 01:28Z (every 10 min, up to 6 h from 01:39Z, i.e. ~07:39Z).
+At 335 episodes/h the remaining 1,315 take ~3.9 VM-h: completion projects ~$4.59 against the $4.66 stop.
+
+**Still running after this session exits:** the restart watcher only, `ops/gcp/34_restart_watch.sh`, PID in
+`outputs/l4-retry/restart.pid` (15499 at handover; parent launchd, `nohup caffeinate -i -s`), started with
+`PHASE=phase1b-screen MAX_AUTO=5`, log `outputs/l4-retry/retry.log`. It restarts only after a preemption, never
+moves zones, ends on any other stop (including 730 finishing: "NOT a preemption"), alerts (macOS notification with
+sound) after 3 unreadable statuses. **Nothing else runs:** the previous session's wait scripts (restart -> 25-min
+re-projection, screen-end, golden-gate confirmations, the 20:30Z zone check) lived in the session and are gone; their
+sources were scratch files, not kept. The 08:32 MST (15:32Z) sign-in reminder is an app scheduled task
+(`renew-gcloud-signin`), not a process.
+
+**Duties the next session must re-arm:**
+1. After each "start issued" in `retry.log`: ~25 min later re-project 730 (`phase1b.project_remaining` from that
+   boot's marker pace, `spend status` for the phase spend) and, if past its stop, `vlar-ops spend phase-raise
+   --phase phase1b-screen --raise-usd <phase1b.raise_for(...)> --reason ...` (amendment 70; from the final tier).
+2. ~20 min after a restart: confirm 730 is past its golden gate (VM still RUNNING, runner on 730).
+3. When the watcher logs "NOT a preemption" (730 done, VM stops itself): the yield (`vlar-ops phase1 yield-b
+   --plan-dir outputs/phase1b/screen --per-task 64 --k 2 --out ...`), then amendment 68: `phase1b.top_up_decision`
+   (screen's measured $/episode, one boot's overhead) -> if `go`: sizes file, `plan-b-screen --sizes-file ... --seed
+   20261126`, superset check, upload plan.json, `phase-close phase1b-screen`, `phase-open phase1b-topup`
+   (line <= $1.00), queue 735 (`ops/gcp/31_phase0_queue.sh ops/vm/postfreeze/735-phase1b-topup.sh`), watcher with
+   `PHASE=phase1b-topup` (default MAX_AUTO 8); if not `go`, or < 15 failed in a task after the top-up: ask the user.
+   Then 740: `project_740` with the final yield and measured paces, `phase-close`, `phase-open phase1b
+   --allocation-usd 11.32 --line-usd 11.32`, `phase-raise` by `raise_for(projection, 11.09)` before queueing, queue
+   740, watcher `PHASE=phase1b`; re-project at 740's halfway point.
+4. Before ~10:32 MST 11-26: the user renews `gcloud auth login` and `gcloud auth application-default login`.
+
+**Standing approvals (the user's, in SPEC §17):** 66 (review fixes; 740 boots only with approval, superseded by 67
+(4)/68); 67 (front-loaded screen sizes, `phase1b-screen` budget, final tier = ~54 more base points per task with b1+b2
+x 3 seeds, boot only on approval; 740 pre-approved on conditions; same zone retry and preemption-only restarts); 68
+(one top-up <= $1.00 if no observed failure rate < 2%, then 740 with the yield there is unless a task < 15 failed);
+69 (`phase-raise` for a projected overrun + $0.25); 70 (pace projections before and during 730/735/740; raises from
+the final tier, total **<= $2.50** for finishing Tranche B, past that ask; k = 2). Restart cap: 8 automatic restarts
+per step, preemption-only, spend check before each, us-central1-a only; a zone move needs the user. Nothing else
+spends without the user.
+
+**Open items.** (a) Sign-ins: 16-hour Workspace session (gcloud logs: 15 h 59 min - 16 h 03 min); renewed 11-25
+18:32:41 MST (CLI) and 18:34:54 MST (ADC) -> expire ~10:32 / ~10:35 MST 11-26 (17:32Z / 17:35Z). (b) Final tier:
+cost three versions with the screen's observed rates and measured paces and the money left after the top-up and
+raises ($4.18 less those): all base; exploration for 2, 3, 5, 7, 9; exploration for 2, 3, 4, 5, 7, 8, 9 with base only
+in 0, 1, 6; each with expected positives, distinct failed episodes per task and the amendment 58 result; the user
+decides after 740. (c) Oscar's Spark questions answered in Slack (#harness-data thread, 11-25 ~15:41 MST); the router
+design date and the real deadline are still owed to him; the Spark amendments wait until after Nov 28.
+
+**First commands for the next session (from /Users/miggy/vla-router):**
+```
+git fetch -q && git status -sb
+ps -p "$(cat outputs/l4-retry/restart.pid)" -o pid,etime,command
+tail -n 8 outputs/l4-retry/retry.log
+source ops/gcp/env.sh && export PROJECT_ID VM_NAME BUCKET
+.venv-ops/bin/python ops/gcp/gce_adc.py status && .venv-ops/bin/python ops/gcp/gce_adc.py state
+.venv-ops/bin/vlar-ops spend status --ops-config ops/ops.yaml
+gcloud storage ls "gs://${BUCKET}/vla-router/results/explore/" | wc -l
+```
+If the watcher PID is gone and 730 is unfinished: relaunch detached with `PHASE=phase1b-screen MAX_AUTO=<8 minus
+restarts used>` (count "automatic restart" / "start issued" lines for 730 in `retry.log`).
+
 ## START HERE (2026-11-25, ~16:30Z): Tranche A done; Tranche B screen (730) booting; 740 pre-approved on conditions
 
 **Tranche A finished** 15:57:52Z (every queued step done; phase1a $5.28 of $6.27; VM stopped since). **730** with
