@@ -1,8 +1,8 @@
-# Draft amendment 76: the 2 x 2 of memory by X-VLA information, pre-registered before Phase 1 labels are opened
+# Draft amendment (number assigned when logged): the 2 x 2 of memory by X-VLA information, pre-registered before Phase 1 labels are opened
 
 Draft by Oscar, 2026-11-26, for Miguel's review. Not approved. To be logged in SPEC §17 **before any Phase 1 label is opened** (labels expected about 2026-11-27 UTC). Items marked **[decide]** need both of us before logging.
 
-**76. §6, §8, §10 (planned analyses; the harness and the four §8 deciders are unchanged).**
+**[next number]. §6, §8, §10 (planned analyses; the harness and the four §8 deciders are unchanged).**
 
 (1) **Purpose.** Separate two things the router versus `cascader_nospread` comparison mixes: the value of memory (features built from the robot states both deciders see) and the value of X-VLA's information (features that take X-VLA's commands as an argument). On the Spark's 500 base rollouts, against "the episode fails", both mattered and were about the same size: with the features below, memory added +0.041 [+0.021, +0.060] to the router's step-stratified held-out AUROC, and X-VLA's information added +0.030 [+0.006, +0.054] on top of memory (logistic models, not the shared MLP; `cascader-signal-study.md` and `cascader-intent-screen.md`). The spec's comparison credits the cascader with neither memory nor those X-VLA features. That result is about predicting failure, not about the benefit of a π0.5 call. The analyses below are fixed now, before any Phase 1 label is opened, and are reported whatever their sign.
 
