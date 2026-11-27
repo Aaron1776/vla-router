@@ -21,7 +21,7 @@ from vlar_train import stats as ST  # noqa: E402
 from vlar_train.run import run_cv  # noqa: E402
 from vlar_train.train import TrainConfig, constant_predictor, seed_for, train, weighted_bce  # noqa: E402
 
-FAST = TrainConfig(epochs=12, patience=4, batch=64, hidden=(64, 32))
+FAST = TrainConfig(epochs=12, patience=4, batch=64, hidden=(64, 32), seeds=1)
 
 
 @pytest.fixture(scope="module")
@@ -1273,3 +1273,84 @@ def test_redrawn_inclusion_probabilities_replace_the_label_maps_and_are_checked(
         (tmp_path / "bad.json").write_text(json.dumps(bad))
         with pytest.raises(D.DataError, match=msg):
             D.read_inclusion(tmp_path / "bad.json")
+
+
+# ---------------------------------------------------------------- several training seeds, averaged
+
+from vlar_train.train import Averaged, member_seeds, train_seeds  # noqa: E402
+
+
+def test_a_decider_is_the_mean_of_its_training_seeds_and_lambda_is_chosen_on_the_mean(ps, tmp_path, monkeypatch):
+    three = TrainConfig(epochs=12, patience=4, batch=64, hidden=(64, 32), seeds=3)
+    assert TrainConfig().seeds == 5                                     # the shared procedure's default
+    seeds = member_seeds(0, "router", 3)
+    assert seeds[0] == seed_for(0, "router") and len(set(seeds)) == 3 and seeds[:1] == member_seeds(0, "router", 1)
+    assert member_seeds(0, "router", 3) != member_seeds(0, "router_hist", 3)
+    with pytest.raises(ValueError):
+        member_seeds(0, "router", 0)
+    prof = "router"
+    keep = ~ps.excluded[prof]
+    m = F.masks(ps.task, 0)
+    x = inputs(ps.cols, ps.remaining_s[prof], "router")
+    y, ym = ps.targets(prof)
+    tr, va, te = (m[k] & keep for k in ("train", "val", "test"))
+    w_tr, w_va = R.unit_mean(ps.weight[tr], int(tr.sum())), R.unit_mean(ps.weight[va], int(va.sum()))
+    alone = [train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=s, cfg=three, w_tr=w_tr, w_va=w_va) for s in seeds]
+    # one seed: the member itself, bit for bit, with its checkpoints where they always were
+    one = train_seeds(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seeds=seeds[:1], cfg=three, w_tr=w_tr, w_va=w_va,
+                      ckpt_dir=tmp_path / "one")
+    assert np.array_equal(one.predict(x[te]), alone[0].predict(x[te])) and one.best_epoch == alone[0].best_epoch
+    assert one.val_loss(x[va], y[va], ym[va], w_va) == alone[0].val_loss[alone[0].best_epoch]
+    assert (tmp_path / "one" / "best.json").exists() and not (tmp_path / "one" / "seed0").exists()
+    # the fold's decider with three seeds
+    seen = {}
+    real = LAM.choose
+
+    def spy(*a, **k):
+        seen["p0"], seen["p1"] = np.array(a[0]), np.array(a[1])
+        return real(*a, **k)
+    monkeypatch.setattr(R.LAM, "choose", spy)
+    res = R.run_fold_decider(ps, 0, "router", tmp_path, three)
+    mean_va = np.mean([t.predict(x[va]) for t in alone], axis=0)
+    mean_te = np.mean([t.predict(x[te]) for t in alone], axis=0)
+    both = (ym[va][:, 0] > 0) & (ym[va][:, 1] > 0)
+    assert res["lambda"]["source"] == "validation"
+    assert np.allclose(seen["p0"], mean_va[both, 0], atol=0, rtol=0) and np.array_equal(seen["p1"], mean_va[both, 1])
+    saved = np.load(tmp_path / "fold0" / "router" / "test_predictions.npz")
+    assert np.array_equal(saved["p"], mean_te)                          # what the benefit analysis reads
+    ts = res["training_seeds"]
+    assert ts["seeds"] == seeds and ts["best_epochs"] == [t.best_epoch for t in alone]
+    assert ts["val_loss"] == [t.val_loss[t.best_epoch] for t in alone] and ts["averaged"] == "predicted probabilities"
+    assert res["best_epoch"] == float(np.median(ts["best_epochs"])) and res["epochs_run"] == max(ts["epochs_run"])
+    assert res["val_loss"] == pytest.approx(weighted_bce(mean_va, y[va], ym[va], w_va))
+    assert res["baseline"]["val_loss_minus_baseline"] == pytest.approx(res["val_loss"] - res["baseline"]["val_loss"])
+    ck = tmp_path / "fold0" / "router" / "checkpoints"
+    assert sorted(p.name for p in ck.iterdir()) == ["seed0", "seed1", "seed2"]
+    assert [json.loads((ck / f"seed{k}" / "best.json").read_text())["seed"] for k in range(3)] == seeds
+    # the mean differs from any single member, and a member's score is not the decider's
+    assert not np.array_equal(mean_te, alone[0].predict(x[te]))
+    avg = Averaged(alone, seeds)
+    assert np.array_equal(avg.predict(x[te]), mean_te)
+    assert np.allclose((avg.predict(x[te])[:, 1] - avg.predict(x[te])[:, 0]),
+                       np.mean([t.predict(x[te])[:, 1] - t.predict(x[te])[:, 0] for t in alone], axis=0))
+
+
+def test_every_decider_and_the_lambda_fallback_use_the_same_number_of_seeds(ps, monkeypatch):
+    two = TrainConfig(epochs=6, patience=3, batch=64, hidden=(32, 16), seeds=2)
+    calls = []
+    real = R.train_seeds
+
+    def spy(*a, seeds, **k):
+        calls.append(list(seeds))
+        return real(*a, seeds=seeds, **k)
+    monkeypatch.setattr(R, "train_seeds", spy)
+    few = _few_positives(ps, task=1)                                    # fold 0 falls back to cross-fitted λ
+    s = run_cv(few, folds=[0], deciders=["router", "cascader_nospread", "cascader_full"], cfg=two)
+    assert s["config"]["seeds"] == 2 and [len(c) for c in calls] and all(len(c) == 2 for c in calls)
+    assert all(len(r["training_seeds"]["seeds"]) == 2 for r in s["results"])
+    router = s["results"][0]
+    assert router["lambda"]["source"] == "cross_fitted"
+    assert calls[0] == member_seeds(0, "router", 2)                     # the decider, then its two auxiliary deciders
+    assert calls[1] == member_seeds(0, "router|lambda-fallback-aux0", 2)
+    assert calls[2] == member_seeds(0, "router|lambda-fallback-aux1", 2)
+    assert len({tuple(c) for c in calls}) == len(calls)                 # no two trainings share their seeds

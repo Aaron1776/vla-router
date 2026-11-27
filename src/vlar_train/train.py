@@ -14,7 +14,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -32,6 +32,7 @@ class TrainConfig:
     weight_decay: float = 1e-4
     hidden: tuple[int, ...] = (512, 256)
     dropout: float = 0.1
+    seeds: int = 5              # training seeds per decider; their predicted probabilities are averaged (`train_seeds`)
 
 
 @dataclass
@@ -151,3 +152,59 @@ def train(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seed: int, cfg: TrainConfig = T
         (ckpt_dir / "best.json").write_text(json.dumps({"best_epoch": best_epoch, "val_loss": va_hist,
                                                         "train_loss": tr_hist, "seed": seed}, indent=1))
     return Trained(model, mean, std, best_epoch, va_hist, tr_hist)
+
+
+@dataclass
+class Averaged:
+    """A decider as the mean of its training seeds: each member is trained from scratch with its own seed and
+    stopped early on its own validation loss; the decider's probabilities are the mean of the members' (so its
+    score p_one_call - p_continue is the mean of theirs). With one member it is that member, bit for bit."""
+    members: list
+    seeds: list
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        if len(self.members) == 1:
+            return self.members[0].predict(x)
+        return np.mean([m.predict(x) for m in self.members], axis=0)
+
+    @property
+    def best_epochs(self) -> list:
+        return [int(m.best_epoch) for m in self.members]
+
+    @property
+    def best_epoch(self):
+        """The member's stopping epoch, or with several the median of theirs (it can be fractional)."""
+        return self.members[0].best_epoch if len(self.members) == 1 else float(np.median(self.best_epochs))
+
+    @property
+    def member_val_loss(self) -> list:
+        return [float(m.val_loss[m.best_epoch]) for m in self.members]
+
+    @property
+    def epochs_run(self) -> list:
+        return [len(m.val_loss) for m in self.members]
+
+    def val_loss(self, x_va, y_va, m_va, w_va=None) -> float:
+        """The validation loss of the averaged prediction; with one member, that member's own at its best epoch."""
+        if len(self.members) == 1:
+            return self.members[0].val_loss[self.members[0].best_epoch]
+        return weighted_bce(self.predict(x_va), y_va, m_va, w_va)
+
+
+def member_seeds(fold: int, name: str, n: int, base: int = 0) -> list[int]:
+    """The training seeds of a decider's members: the first is the seed a single run always had."""
+    if n < 1:
+        raise ValueError(f"at least one training seed, not {n}")
+    return [seed_for(fold, name, base)] + [seed_for(fold, f"{name}|seed{k}", base) for k in range(1, n)]
+
+
+def train_seeds(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seeds: Sequence[int], cfg: TrainConfig = TrainConfig(),
+                ckpt_dir: Optional[Path] = None, w_tr: Optional[np.ndarray] = None,
+                w_va: Optional[np.ndarray] = None) -> Averaged:
+    """`train` once per seed, every member on the same rows and settings. Checkpoints: with one seed in `ckpt_dir`
+    as before, with several in `ckpt_dir/seed<k>`."""
+    seeds = [int(x) for x in seeds]
+    members = [train(x_tr, y_tr, m_tr, x_va, y_va, m_va, seed=sd, cfg=cfg, w_tr=w_tr, w_va=w_va,
+                     ckpt_dir=None if ckpt_dir is None else (ckpt_dir if len(seeds) == 1 else ckpt_dir / f"seed{k}"))
+               for k, sd in enumerate(seeds)]
+    return Averaged(members, seeds)

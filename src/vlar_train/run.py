@@ -41,7 +41,7 @@ from . import lam as LAM
 from . import stats as ST
 from .data import PointSet
 from .deciders import BRANCHES, DECIDERS, inputs, profile_of
-from .train import TrainConfig, constant_predictor, seed_for, train, unit_mean, weighted_bce
+from .train import TrainConfig, constant_predictor, member_seeds, seed_for, train_seeds, unit_mean, weighted_bce
 
 
 POSITIVE = ST.POSITIVE      # a positive labelled point: p_2 − p_1 ≥ 1/3 under the decider's profile (amendment 63 (2))
@@ -78,9 +78,9 @@ def cross_fitted_set(ps: PointSet, i: int, decider: str, cfg: TrainConfig, *, x,
     tr_task = task[tr]
     for k, (fit, held) in enumerate(((h["a"], h["b"]), (h["b"], h["a"]))):
         fit_rows, held_in_tr = tr & np.isin(task, fit), np.isin(tr_task, held)
-        aux = train(x[fit_rows], y[fit_rows], ym[fit_rows], x[va], y[va], ym[va],
-                    seed=seed_for(i, f"{decider}|lambda-fallback-aux{k}"), cfg=cfg,
-                    w_tr=ps.weight[fit_rows], w_va=w_va)
+        aux = train_seeds(x[fit_rows], y[fit_rows], ym[fit_rows], x[va], y[va], ym[va],
+                          seeds=member_seeds(i, f"{decider}|lambda-fallback-aux{k}", cfg.seeds), cfg=cfg,
+                          w_tr=ps.weight[fit_rows], w_va=w_va)
         p_tr[held_in_tr] = aux.predict(x[tr][held_in_tr])
     p = np.concatenate([p_tr, pv])
     yy, mm = np.concatenate([y[tr], y[va]]), np.concatenate([ym[tr], ym[va]])
@@ -118,9 +118,10 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
     tr, va, te = (m[k] & keep for k in ("train", "val", "test"))
     d = None if out is None else out / f"fold{i}" / decider
     w_tr, w_va = unit_mean(ps.weight[tr], int(tr.sum())), unit_mean(ps.weight[va], int(va.sum()))   # amendment 57 (3)
-    model = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=seed_for(i, decider), cfg=cfg,
-                  ckpt_dir=None if d is None else d / "checkpoints", w_tr=w_tr, w_va=w_va)
-    pv = model.predict(x[va])
+    model = train_seeds(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seeds=member_seeds(i, decider, cfg.seeds), cfg=cfg,
+                        ckpt_dir=None if d is None else d / "checkpoints", w_tr=w_tr, w_va=w_va)
+    pv = model.predict(x[va])                               # the mean over the training seeds: λ is chosen on it
+    val_loss = model.val_loss(x[va], y[va], ym[va], w_va)
     both = (ym[va][:, 0] > 0) & (ym[va][:, 1] > 0)          # λ needs labels of branches 1 and 2 at the point
     pos_va = positives(y[va], ym[va])
     n_pos = int(pos_va.sum())
@@ -140,9 +141,14 @@ def run_fold_decider(ps: PointSet, i: int, decider: str, out: Optional[Path], cf
     const = constant_predictor(y[tr], ym[tr], w_tr)
     base_val = weighted_bce(const, y[va], ym[va], w_va)
     baseline = {"p": [float(v) for v in const], "train_loss": weighted_bce(const, y[tr], ym[tr], w_tr),
-                "val_loss": base_val, "val_loss_minus_baseline": model.val_loss[model.best_epoch] - base_val}
+                "val_loss": base_val, "val_loss_minus_baseline": val_loss - base_val}
+    one = len(model.members) == 1
     res = {"fold": i, "decider": decider, "profile": prof, "width": int(x.shape[1]), "best_epoch": model.best_epoch,
-           "val_loss": model.val_loss[model.best_epoch], "epochs_run": len(model.val_loss), "baseline": baseline,
+           "val_loss": val_loss, "epochs_run": model.epochs_run[0] if one else max(model.epochs_run),
+           "training_seeds": {"seeds": model.seeds, "best_epochs": model.best_epochs,
+                              "val_loss": model.member_val_loss, "epochs_run": model.epochs_run,
+                              "averaged": "predicted probabilities"},
+           "baseline": baseline,
            "points": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum()),
                       "excluded": int((~keep).sum())},
            "data": data, "lambda": lam}
@@ -204,6 +210,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     help="2x2: also register the planned memory by X-VLA-information analysis (`variants`): "
                          "router_hist and cascader_hist, with their history inputs; the §8 deciders are unchanged")
     ap.add_argument("--epochs", type=int, default=TrainConfig.epochs)
+    ap.add_argument("--seeds", type=int, default=TrainConfig.seeds,
+                    help="training seeds per decider; their predicted probabilities are averaged, and λ is chosen "
+                         "on the averaged validation predictions (every decider alike)")
     ap.add_argument("--max-rate", type=float, default=LAM.MAX_RATE,
                     help="λ: highest escalation rate a candidate may have (§8; default the π0.5 budget's share, §4)")
     ap.add_argument("--min-episodes", type=int, default=LAM.MIN_EPISODES,
@@ -243,7 +252,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         from .benefit import check_same_profiles   # rows only if the two profiles agree at every point
         print("profile check:", check_same_profiles(ps))
     s = run_cv(ps, folds=_range(a.folds), deciders=deciders, out=Path(a.out),
-               cfg=TrainConfig(epochs=a.epochs), max_rate=a.max_rate, min_episodes=a.min_episodes)
+               cfg=TrainConfig(epochs=a.epochs, seeds=a.seeds), max_rate=a.max_rate, min_episodes=a.min_episodes)
     for d in deciders:
         print(d, s[d])
 
