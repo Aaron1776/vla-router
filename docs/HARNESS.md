@@ -824,9 +824,8 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
 
 Read with `gcloud compute instances/disks/images describe` (VM TERMINATED, 11-27 ~11:15Z) and the VM's own logs in the
 bucket (`phase0/logs/010-load-images.log`, `phase0/logs/system-20261127T090419Z.log`). This VM (`$VM_NAME`) was
-created 2026-11-25 06:27:38Z (amendment 65's zone-move path, `ops/gcp/33_create_retry.sh`) and ran Phase 1 (pilot
-resume, Tranche A, 730/735/740, 750); it replaced the Phase 0 VM, whose disk is archived under
-`phase0/archive/l4-disk-2026-11-23/`.
+created 2026-11-25 06:27:38Z and ran Phase 1 from Tranche A (720) on: 730/735/740 and 750 (its queue database holds
+the explore, phase1a, phase1b and phase1f jobs only; the pilot ran before it).
 
 | Item | Value |
 |---|---|

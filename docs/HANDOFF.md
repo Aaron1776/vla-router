@@ -8,6 +8,35 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## VM AND BOOT DISK DELETED (2026-11-27 11:33Z); only the bucket remains; next: Oscar's package (local)
+
+**Export boot:** queued through ADC (the CLI needed reauthentication again at 11:22Z: an ADC mirror of
+`31_phase0_queue.sh`: source `2c21d09` uploaded, CURRENT, the step), watcher `PHASE=vmexport MAX_AUTO=2`, start
+11:23:58Z, step done and the runner idle 11:25:41Z, VM stopped by ~11:30Z; **phase vmexport $0.0548** (line $0.25).
+**Export (`vm-export-2026-11-27/`, 11 files, 21.5 MB, its SHA256SUMS all OK locally):** queue database (raw
+`queue.sqlite` 7.49 MB + -wal (empty) + -shm, consolidated copy: integrity ok; jobs explore 3,158, phase1a 3,200,
+phase1b 3,840, phase1f 550, all done: this VM ran from Tranche A on). **Retry history: 4 jobs had one failed
+attempt, all done afterwards** (3 explore, 1 phase1b; errors: 2 lease-lost tracebacks, 1 "worker w4 exited with
+status 0", 1 numba unpickle error). Journal (zstd JSON, 190 MB on the VM): workers 6,059-6,146 entries each, π0.5
+server 177, X-VLA server 133, spend guard 40 (11-26 08:06Z on), systemd's start/stop lines 16,623 (`init.scope`),
+from 11-25 09:29Z (13 boots) to 11-27 10:14Z. **The π0.5 server logged only its start-up (model load, warnings: 14
+lines per boot), nothing per request: which requests shared a batch is not recorded anywhere** (the batch geometry
+is: calibration file, every marker's server settings); the workers' journal has no batch lines either.
+**Download + verification (11:30-11:33Z, ADC):** 11 objects fetched (the export, the boot's logs, state, history,
+source, ledger). (a) the three early prefixes: 16,275 objects, 24,013,921,528 bytes, all match (unchanged); (b)
+everything: **82,076 objects, 37,041,687,835 bytes, every size, CRC32C and MD5 equal, none missing, none extra**
+(`outputs/l4-retry/verify-download-2026-11-27-{early2,all2}.json`).
+**Deletion (11:33Z, Compute API through ADC; the CLI still needed reauthentication):** guards passed (TERMINATED, one
+disk: the boot disk, autoDelete, the zone's only disk, no deletion protection); `instances.delete` done with no
+error; the instance and the disk both 404 after. `spend disk-deleted` closed the disk record (until 11:33:40Z):
+**ledger $44.11** (VM $35.71, disk $1.36, storage $0.04, + adjustments). **Listing after (ADC, read-only):** no
+instances, disks, addresses (regional or global), reservations, instance groups, forwarding rules, routers,
+snapshots, images, machine images or instance templates; buckets: only the project's one. Free and left as they
+were: the `default` network and its four firewall rules, the log buckets, budgets.
+**Dataset check for the package:** `vlar-ops dataset manifest` over a copy-on-write clone of records/, results/,
+snapshots/, images/ with the freeze record and `phase0/src` as ops archives: **passed, no warnings** (dataset-v1,
+harness 1.0.0, 12,569 jobs, 81,551 files, 25.91 GB); its MANIFEST.json and DATACARD.md go into part 1.
+
 ## Export boot before deletion (amendment 77, the user ~11:35Z): copy the queue DB and container journal, then delete
 
 `ops/vm/postfreeze/760-vm-export.sh` (tests `tests/test_vm_export.py`, header check in `test_phase0_runner.py`):
