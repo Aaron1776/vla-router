@@ -8,6 +8,33 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Overnight downloads approved (the user, 2026-11-26 ~23:40Z; 740 running, ends ~08:25Z)
+
+**Approval (verbatim):** "Overnight downloads, approved: when 740 ends, download its outputs while 750 runs; when 750
+ends, download the rest. Use application-default credentials if the CLI sign-in has run out. Verify everything with
+verify_download.py against the bucket, re-checking the three prefixes downloaded today, and report. Then stop:
+deleting the VM and its disk waits for my OK in the morning."
+**Tool:** `ops/gcp/sync_download.py` (tests `tests/test_sync_download.py`): per prefix, `gcloud storage rsync -r` while
+the CLI sign-in works, else (or if a CLI copy fails) ADC through the storage client; copies only objects missing
+locally or differing in size/CRC32C (re-runs fetch only new objects), never deletes; `--exclude` skips prefixes.
+Checked live without moving data (23:55Z): CLI `--dry-run` into an empty folder with `-x` from `cli_exclude_regex`
+listed the 305 explore image objects and none of base; ADC over `vla-router/images` (explore excluded) into the
+download folder listed 805, fetched 0. Same folder as today: `DL=/Users/miggy/vla-router-download-2026-11-26`
+(272 GB free). Run (after `source ops/gcp/env.sh && export PROJECT_ID BUCKET`):
+`.venv-ops/bin/python ops/gcp/sync_download.py --dest $DL --prefix vla-router --exclude vla-router/images/base
+--exclude vla-router/snapshots/base` (background; log `outputs/l4-retry/download-<740|750>.log`).
+**Size:** bucket 36.22 GB at 23:30Z, 12.21 GB of it not yet downloaded; re-runs add ~44 MB each (records included;
+the earlier 36.8 MB counted snapshots and images only): ~13.8 GB in all at the end (~$1.54 vs $1.46 costed), so
+**~$0.60 of credit left** (bucket kept 3 days after Friday), not ~$0.68.
+**Order:** runbook steps 1-5 at 740's end, then step 4b (740's download, while 750 runs), then step 7: the same
+command again (fetches only what 750 and the last of 740 added; the VM is stopped by then, so nothing changes under
+it), then two checks: (a) `verify_download.py --dest $DL --prefix containers/<commit> --prefix vla-router/images/base
+--prefix vla-router/snapshots/base` (must be today's 16,275 objects / 24,013,921,528 bytes, unchanged); (b) the
+same with `--prefix containers/<commit> --prefix vla-router` (everything in the bucket). JSON to
+`outputs/l4-retry/verify-download-2026-11-27-{early,all}.json`. Then report and **stop**: the VM and its disk are
+deleted only on the user's OK (morning); the bucket stays a few days. A step exit 76 (740 or 750): report and stop,
+no download (the user decides).
+
 ## Amendment 76 (the user, ~21:40Z): no 750 raises, guard $44.75 for 750, a cut-short final tier stays one draw
 
 **Decisions:** (1) no raises for 750: past its stop it runs to its stop and ends with fewer points; (2) the guard's
@@ -115,6 +142,8 @@ The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-mont
    `combined_with` phase1a), upload to `phase1f/plan/` (ADC), `phase-open phase1f` (allocation = planned, line =
    money), `31_phase0_queue.sh ops/vm/postfreeze/750-phase1f.sh` (CLI; moves CURRENT to HEAD), the watcher
    `PHASE=phase1f MAX_AUTO=8 WATCH_HOURS=12` (it starts the VM).
+4b. (approved ~23:40Z) Once 750's VM is started: 740's download, `sync_download.py` as in "Overnight downloads"
+   above, in the background (`download-740.log`).
 5. Waiter: T0 = the start; `STEP_CHECK='.venv-ops/bin/python ops/gcp/step_done.py --plan
    outputs/phase1b/750/plan/plan.json --phase phase1f --step 750 --since <start> --exits
    vla-router/phase1f/reports/step-exits.jsonl'`; `STALL_CHECK='.venv-ops/bin/python ops/gcp/stall_check.py --stage
@@ -124,7 +153,7 @@ The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-mont
 7. 750's end: the step check. Done (exit 0), or **exit 75 at the phase stop = ended with fewer points** (not a
    failure); exit 76 or anything else: report, stop. Report the finished points per task and their π
    (`pilot.finished_inclusion(A labels, 750 labels, points with all 5 markers)`). Then the end-of-Phase-1 download
-   (the rest: ~13 GB) and its verification (re-check the three early prefixes too). Then ask the user to approve
+   (the rest, approved: `sync_download.py` again, then checks (a) and (b) in "Overnight downloads"). Then ask the user to approve
    deleting the VM and its boot disk (Friday morning); the bucket stays a few days as a backup; soft delete off just
    before the bucket is deleted, on the user's OK.
 
