@@ -1103,8 +1103,21 @@ def test_the_benefit_analysis_by_hand(tmp_path):
     assert res["intervals_reported"] == 4 * 8 + 4 * 8
     assert res["curve"]["rate"][0] == 0.0 and res["curve"]["rate"][-1] == 0.5
     assert res["curve"]["gain"]["cascader_hist"][20] == pytest.approx(0.05)   # rate 0.2: the pooled gain at 20%
-    text = B.table(res)
+    text = B.write_report(res, tmp_path / "report")
+    assert text == B.table(res) == (tmp_path / "report" / "benefit.txt").read_text()
     assert "PRIMARY: xvla_given_memory, gain_at_10" in text and "left out (no usable test point): [2]" in text
+    # the JSON file is strict: no NaN or Infinity token; undefined is null, the never-escalate λ a string
+    def refuse(token):
+        raise AssertionError(f"bare {token} in benefit.json")
+    saved = json.loads((tmp_path / "report" / "benefit.json").read_text(), parse_constant=refuse)
+    assert math.isnan(res["per_task"][1]["values"]["router"]["failure_auroc"])
+    assert saved["per_task"][1]["values"]["router"]["failure_auroc"] is None
+    assert saved["per_task"][0]["lambda"] == {"router": "Infinity", "router_hist": 0.85, "cascader_nospread": 0.75,
+                                              "cascader_hist": -1.0}
+    assert saved["pooled"]["cascader_hist"]["gain_at_20"] == res["pooled"]["cascader_hist"]["gain_at_20"]
+    assert saved["contrasts"]["xvla_given_memory"]["gain_at_10"]["primary"] is True
+    assert B.strict({"a": [float("nan"), float("-inf"), np.float64(1.5), np.int64(2), np.bool_(True), "s", None]}) == \
+        {"a": [None, "-Infinity", 1.5, 2, True, "s", None]}
     assert chr(8212) not in text
 
 

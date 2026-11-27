@@ -6,7 +6,8 @@ when it is logged, so nothing here depends on it).
 
 Reads what `python -m vlar_train --variants 2x2 --out TRAINING_OUT` wrote: per fold and variant, the held-out test
 task's predictions (`test_predictions.npz`: p, y, mask, weight, episode, snapshot_id, can_escalate) and the
-validation-chosen λ (`result.json`). Writes `benefit.json` and `benefit.txt`. Everything below is fixed before any
+validation-chosen λ (`result.json`). Writes `benefit.json` (strict JSON: an undefined value is null, an infinite λ
+the string "Infinity") and `benefit.txt`. Everything below is fixed before any
 Phase 1 label is opened; nothing here chooses an analysis from the data.
 
 Per test task (fold i tests task i), on the points with labels for branches 1 and 2, with w = 1/π:
@@ -338,6 +339,35 @@ def table(res: Mapping) -> str:
     return "\n".join(lines) + "\n"
 
 
+def strict(obj):
+    """`obj` as strict JSON can hold it: an undefined value (NaN) becomes null, and an infinite one (a "never
+    escalate" λ is +inf) the string "Infinity" or "-Infinity". Finite numbers are unchanged."""
+    if isinstance(obj, Mapping):
+        return {str(k): strict(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [strict(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return strict(obj.tolist())
+    if isinstance(obj, (bool, np.bool_)):
+        return bool(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (float, np.floating)):
+        x = float(obj)
+        return x if math.isfinite(x) else None if math.isnan(x) else "Infinity" if x > 0 else "-Infinity"
+    return obj
+
+
+def write_report(res: Mapping, dst: Path | str) -> str:
+    """Write `benefit.json` (strict JSON, `strict`) and `benefit.txt` into `dst`; returns the text table."""
+    dst = Path(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / "benefit.json").write_text(json.dumps(strict(res), indent=1, allow_nan=False))
+    text = table(res)
+    (dst / "benefit.txt").write_text(text)
+    return text
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     ap = argparse.ArgumentParser(prog="python -m vlar_train.benefit", description=__doc__.splitlines()[0])
     ap.add_argument("--out", required=True, help="the folder a `python -m vlar_train --variants 2x2` run wrote")
@@ -345,12 +375,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--resamples", type=int, default=ST.RESAMPLES)
     a = ap.parse_args(argv)
     res = analyse(a.out, resamples=a.resamples)
-    dst = Path(a.report or a.out)
-    dst.mkdir(parents=True, exist_ok=True)
-    (dst / "benefit.json").write_text(json.dumps(res, indent=1, default=float))
-    text = table(res)
-    (dst / "benefit.txt").write_text(text)
-    print(text, end="")
+    print(write_report(res, a.report or a.out), end="")
 
 
 if __name__ == "__main__":
