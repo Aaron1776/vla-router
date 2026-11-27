@@ -61,23 +61,13 @@ class ArchiveSet:
     sums: Path
 
 
-def build(src_dir: Path | str, out_dir: Path | str, name: str, part_bytes: int = DEFAULT_PART_BYTES) -> ArchiveSet:
-    src, out = Path(src_dir), Path(out_dir)
-    if not src.is_dir():
-        raise FileNotFoundError(src)
-    out.mkdir(parents=True, exist_ok=True)
-    if out.resolve().is_relative_to(src.resolve()):
-        raise ValueError("out_dir must not be inside src_dir")
-    files = _files(src)
-    if not files:
-        raise ValueError(f"{src} has no files")
-    rel = {p.relative_to(src).as_posix(): p for p in files}
-    groups = _assign_parts(((r, rel[r].stat().st_size) for r in rel), part_bytes)
-    width = max(3, len(str(len(groups))))
+def _write_parts(src: Path, out: Path, name: str, groups: list[tuple[str, list[str]]],
+                 rel: dict[str, Path]) -> ArchiveSet:
+    """Write one stored zip per (part file name, files) group, the index and SHA256SUMS."""
     index: dict[str, dict] = {}
     parts: list[Path] = []
-    for k, group in enumerate(groups, start=1):
-        part = out / f"{name}.part{k:0{width}d}-of-{len(groups):0{width}d}.zip"
+    for part_name, group in groups:
+        part = out / part_name
         with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
             for r in group:
                 info = zipfile.ZipInfo(r, date_time=FIXED_DATE)
@@ -97,6 +87,59 @@ def build(src_dir: Path | str, out_dir: Path | str, name: str, part_bytes: int =
     lines = [f"{sha256_file(p)}  {p.name}" for p in [*parts, index_path]]
     sums.write_text("\n".join(lines) + "\n")
     return ArchiveSet(name, out, parts, index_path, sums)
+
+
+def _source(src_dir: Path | str, out_dir: Path | str) -> tuple[Path, Path, dict[str, Path]]:
+    src, out = Path(src_dir), Path(out_dir)
+    if not src.is_dir():
+        raise FileNotFoundError(src)
+    out.mkdir(parents=True, exist_ok=True)
+    if out.resolve().is_relative_to(src.resolve()):
+        raise ValueError("out_dir must not be inside src_dir")
+    files = _files(src)
+    if not files:
+        raise ValueError(f"{src} has no files")
+    return src, out, {p.relative_to(src).as_posix(): p for p in files}
+
+
+def build(src_dir: Path | str, out_dir: Path | str, name: str, part_bytes: int = DEFAULT_PART_BYTES) -> ArchiveSet:
+    src, out, rel = _source(src_dir, out_dir)
+    groups = _assign_parts(((r, rel[r].stat().st_size) for r in rel), part_bytes)
+    width = max(3, len(str(len(groups))))
+    return _write_parts(src, out, name, [(f"{name}.part{k:0{width}d}-of-{len(groups):0{width}d}.zip", g)
+                                         for k, g in enumerate(groups, start=1)], rel)
+
+
+def build_groups(src_dir: Path | str, out_dir: Path | str, name: str,
+                 groups: list[tuple[str, list[str]]]) -> ArchiveSet:
+    """One part per named group, in the order given (priority order: part 1 first), whatever its size: the handoff
+    package (SPEC §17 amendment 77). Each file goes to the group with the longest prefix that matches its path (so
+    "vla-router/" can hold what "vla-router/images/" does not); a file no prefix matches, an empty group, or a
+    prefix given twice is refused. Same format as `build`: stored zips with fixed timestamps, the index and
+    SHA256SUMS, so `verify` checks it."""
+    src, out, rel = _source(src_dir, out_dir)
+    owner: dict[str, int] = {}
+    for g, (_, prefixes) in enumerate(groups):
+        for pre in prefixes:
+            if pre in owner:
+                raise ValueError(f"prefix {pre!r} given twice")
+            owner[pre] = g
+    members: list[list[str]] = [[] for _ in groups]
+    unmatched = []
+    for r in rel:
+        hits = [p for p in owner if r == p or r.startswith(p)]
+        if not hits:
+            unmatched.append(r)
+            continue
+        members[owner[max(hits, key=len)]].append(r)
+    if unmatched:
+        raise ValueError(f"{len(unmatched)} file(s) in no group, e.g. {unmatched[:3]}")
+    empty = [label for (label, _), m in zip(groups, members) if not m]
+    if empty:
+        raise ValueError(f"empty group(s): {empty}")
+    n = len(groups)
+    return _write_parts(src, out, name, [(f"{name}.part{k}-of-{n}.{label}.zip", m)
+                                         for k, ((label, _), m) in enumerate(zip(groups, members), start=1)], rel)
 
 
 def verify(out_dir: Path | str, deep: bool = True) -> list[str]:

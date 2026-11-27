@@ -208,3 +208,53 @@ def test_verify_detects_damage(tmp_path):
     assert any("checksum mismatch" in p for p in packaging.verify(out))
     s.parts[1].unlink()
     assert any("missing" in p for p in packaging.verify(out))
+
+
+def _handoff_tree(root):
+    files = {"vla-router/records/runs/a.parquet": b"r" * 50, "vla-router/phase1f/plan/plan.json": b"{}",
+             "vla-router/images/base/t0/x.npz": b"i" * 70, "vla-router/imagesX/y.json": b"not images",
+             "vla-router/snapshots/base/t0/s.npz": b"s" * 90, "containers/c1/vlar-sim.tar.zst": b"c" * 120,
+             "dataset-v1/MANIFEST.json": b"{}", "README.md": b"# r"}
+    for k, v in files.items():
+        (root / k).parent.mkdir(parents=True, exist_ok=True)
+        (root / k).write_bytes(v)
+    return files
+
+
+GROUPS = [("training-data", ["vla-router/", "dataset-v1/", "README.md"]), ("images", ["vla-router/images/"]),
+          ("snapshots", ["vla-router/snapshots/"]), ("harness-containers", ["containers/"])]
+
+
+def test_handoff_parts_follow_the_groups_by_longest_prefix_in_priority_order(tmp_path):
+    src = tmp_path / "src"
+    files = _handoff_tree(src)
+    s = packaging.build_groups(src, tmp_path / "out", "h", GROUPS)
+    assert [p.name for p in s.parts] == ["h.part1-of-4.training-data.zip", "h.part2-of-4.images.zip",
+                                         "h.part3-of-4.snapshots.zip", "h.part4-of-4.harness-containers.zip"]
+    names = [sorted(zipfile.ZipFile(p).namelist()) for p in s.parts]
+    assert names[0] == sorted(["README.md", "dataset-v1/MANIFEST.json", "vla-router/imagesX/y.json",
+                               "vla-router/phase1f/plan/plan.json", "vla-router/records/runs/a.parquet"])
+    assert names[1:] == [["vla-router/images/base/t0/x.npz"], ["vla-router/snapshots/base/t0/s.npz"],
+                         ["containers/c1/vlar-sim.tar.zst"]]
+    assert sum(len(n) for n in names) == len(files)
+    assert packaging.verify(tmp_path / "out") == []
+    again = packaging.build_groups(src, tmp_path / "out2", "h", GROUPS)        # reproducible, byte for byte
+    assert [p.read_bytes() for p in s.parts] == [p.read_bytes() for p in again.parts]
+    with open(s.parts[2], "r+b") as f:                                          # a changed byte is caught
+        f.seek(40)
+        b = f.read(1)
+        f.seek(40)
+        f.write(bytes([b[0] ^ 1]))
+    assert any("checksum mismatch" in p for p in packaging.verify(tmp_path / "out"))
+
+
+def test_handoff_groups_refuse_unassigned_files_empty_groups_and_repeated_prefixes(tmp_path):
+    src = tmp_path / "src"
+    _handoff_tree(src)
+    with pytest.raises(ValueError, match="in no group"):
+        packaging.build_groups(src, tmp_path / "o1", "h", GROUPS[1:])
+    (src / "containers/c1/vlar-sim.tar.zst").unlink()
+    with pytest.raises(ValueError, match="empty group"):
+        packaging.build_groups(src, tmp_path / "o2", "h", GROUPS)
+    with pytest.raises(ValueError, match="given twice"):
+        packaging.build_groups(src, tmp_path / "o3", "h", GROUPS + [("again", ["containers/"])])
