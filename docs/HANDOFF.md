@@ -22,6 +22,7 @@ $43.17, hold $0.366, **line $1.21, stop $0.9812, 11 points/task (110 points, 550
 `ops.example.yaml`), watcher `PHASE=phase1f MAX_AUTO=8 WATCH_HOURS=12`: **start issued 09:03:32Z**.
 **4b:** 740's download started ~09:05Z (`download-740.log`, CLI first). Waiter armed `FROM=849 T0=09:03:00Z` with
 the 750 STEP_CHECK and STALL_CHECK (runbook 5); `reproject_750.py` at 09:28Z, report only.
+The size_750 launch line does not write `restart.pid`: set by hand to the new watcher's bash (**86550**; its caffeinate 86551 holds PreventSystemSleep), after the waiter's watcher-gone event on the old pid 28971; waiter re-armed.
 
 ## Overnight downloads approved (the user, 2026-11-26 ~23:40Z; 740 running, ends ~08:25Z)
 
