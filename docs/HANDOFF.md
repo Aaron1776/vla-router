@@ -32,8 +32,10 @@ it), then two checks: (a) `verify_download.py --dest $DL --prefix containers/<co
 --prefix vla-router/snapshots/base` (must be today's 16,275 objects / 24,013,921,528 bytes, unchanged); (b) the
 same with `--prefix containers/<commit> --prefix vla-router` (everything in the bucket). JSON to
 `outputs/l4-retry/verify-download-2026-11-27-{early,all}.json`. Then report and **stop**: the VM and its disk are
-deleted only on the user's OK (morning); the bucket stays a few days. A step exit 76 (740 or 750): report and stop,
-no download (the user decides).
+deleted only on the user's OK (morning); the bucket stays a few days. **A step exit 76 (740 or 750; the user,
+~00:05Z): download anyway** (read-only; after a 740 exit 76 there is no 750, so its money stays unspent): the same
+command once the VM has stopped, checks (a) and (b), report, stop; everything else about the mismatch waits for the
+user (no debugging, no re-run). Any other unfinished end (not exit 0, 75 or 76): report and stop.
 
 ## Amendment 76 (the user, ~21:40Z): no 750 raises, guard $44.75 for 750, a cut-short final tier stays one draw
 
@@ -132,7 +134,7 @@ final tier's draft, caught by its test. Reproducing the 2026-11-25 pilot report 
 The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-month, Spot IP $0.0025/h).
 **Runbook at 740's end** (the waiter's EVENT watcher with the step verdict):
 1. `step_check_740.sh` must say done (every re-run and branch marker, exit 0 since 10:57Z); anything else: report,
-   stop (exit 76: no debugging).
+   stop (exit 76: no debugging, but download, verify and report first: "Overnight downloads" above).
 2. `.venv-ops/bin/vlar-ops spend phase-close --phase phase1b --ops-config ops/ops.yaml`.
 2b. (amendment 76) Set the Mac's `ops/ops.yaml` `hard_limit_usd` to 44.75 (git-ignored; `ops.example.yaml` already
    says 44.75 at HEAD, which 750's VM loads).
@@ -151,7 +153,7 @@ The download estimates use no VM rate (egress $0.12/GiB, storage $0.020/GiB-mont
 6. 25 min after each start: `reproject_750.py`, report only: **no raises for 750** (amendment 76); past its stop it
    runs to its stop (it prints `over_stop_usd` and `jobs_short_est`).
 7. 750's end: the step check. Done (exit 0), or **exit 75 at the phase stop = ended with fewer points** (not a
-   failure); exit 76 or anything else: report, stop. Report the finished points per task and their π
+   failure); exit 76: download, verify, report, stop ("Overnight downloads"); anything else: report, stop. Report the finished points per task and their π
    (`pilot.finished_inclusion(A labels, 750 labels, points with all 5 markers)`). Then the end-of-Phase-1 download
    (the rest, approved: `sync_download.py` again, then checks (a) and (b) in "Overnight downloads"). Then ask the user to approve
    deleting the VM and its boot disk (Friday morning); the bucket stays a few days as a backup; soft delete off just
