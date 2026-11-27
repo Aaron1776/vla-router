@@ -1232,17 +1232,50 @@ def test_several_label_maps_are_merged_and_refused_when_they_disagree(tmp_path, 
     # the entry point takes one file or several and passes them on
     seen = {}
 
-    def fake(records, label_maps, history=()):
-        seen.update(records=records, label_maps=label_maps)
+    def fake(records, label_maps, history=(), inclusion=None):
+        seen.update(records=records, label_maps=label_maps, inclusion=inclusion)
         return D.PointSet(ps.cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s, ps.y, ps.excluded,
                           ps.weight, ps.episode, {"points": len(ps), "label_entries": len(ps), "incomplete": [],
                                                   "no_points_row": [], "label_maps": files})
     monkeypatch.setattr(D, "from_records", fake)
     args = ["--records", "r", "--folds", "0", "--deciders", "router", "--epochs", "1", "--out", str(tmp_path / "o")]
-    R.main(args + ["--label-map", "a.json", "b.json"])
-    assert seen["label_maps"] == ["a.json", "b.json"] and "label map a.json: 1 entries (1 already" in capsys.readouterr().out
-    R.main(args + ["--label-map", "all.json"])
-    assert seen["label_maps"] == ["all.json"]
+    R.main(args + ["--label-map", "a.json", "b.json", "--inclusion", "inc.json"])
+    assert seen["label_maps"] == ["a.json", "b.json"] and seen["inclusion"] == "inc.json"
+    assert "label map a.json: 1 entries (1 already" in capsys.readouterr().out
+    R.main(args + ["--label-map", "all.json", "--dry-run-without-inclusion"])
+    assert seen["label_maps"] == ["all.json"] and seen["inclusion"] is None
+
+
+def test_records_are_refused_without_the_inclusion_file(tmp_path, ps, monkeypatch, capsys):
+    """On records the run needs --inclusion; only a declared dry run goes without, and says so. Synthetic points
+    have no inclusion file and say so too."""
+    called = []
+
+    def fake(records, label_maps, history=(), inclusion=None):
+        called.append(inclusion)
+        report = {"points": len(ps), "label_entries": len(ps), "incomplete": [], "no_points_row": []}
+        if inclusion is not None:
+            report["inclusion"] = {"file": "inc.json", "applied": 3}
+        return D.PointSet(ps.cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s, ps.y, ps.excluded,
+                          ps.weight, ps.episode, report)
+    monkeypatch.setattr(D, "from_records", fake)
+    args = ["--records", "r", "--label-map", "m.json", "--folds", "0", "--deciders", "router", "--epochs", "1",
+            "--seeds", "1", "--out", str(tmp_path / "o")]
+    with pytest.raises(SystemExit):
+        R.main(args)                                                # refused before anything is read
+    assert called == [] and "records need --inclusion" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        R.main(args + ["--inclusion", "inc.json", "--dry-run-without-inclusion"])
+    assert called == []
+    R.main(args + ["--inclusion", "inc.json"])
+    out = capsys.readouterr().out
+    assert called == ["inc.json"] and "inclusion probabilities:" in out and "DRY RUN" not in out
+    R.main(args + ["--dry-run-without-inclusion"])
+    out = capsys.readouterr().out
+    assert called == ["inc.json", None] and "DRY RUN WITHOUT THE INCLUSION FILE" in out
+    assert json.loads((tmp_path / "o" / "summary.json").read_text())["data"]["dry_run_without_inclusion"] is True
+    R.main(["--synthetic", "--folds", "0", "--deciders", "router", "--epochs", "1", "--seeds", "1", "--out", str(tmp_path / "s")])
+    assert "synthetic points: a dry run, no inclusion file applies" in capsys.readouterr().out and len(called) == 2
 
 
 # ---------------------------------------------------------------- re-drawn inclusion probabilities (final tier)

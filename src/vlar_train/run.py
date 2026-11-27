@@ -201,6 +201,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--inclusion", default=None,
                     help="the file of re-drawn inclusion probabilities (the final tier extended batch A's draw): "
                          "every labelled base point takes its π from it, and one that is missing stops the run")
+    ap.add_argument("--dry-run-without-inclusion", action="store_true",
+                    help="dry runs only: load records without the inclusion file, with every weight from its label "
+                         "map (records that are not the Phase 1 collection, such as a pipeline dry run's own)")
     ap.add_argument("--synthetic", action="store_true", help="dry run on synthetic points")
     ap.add_argument("--out", required=True)
     ap.add_argument("--folds", default="0-9")
@@ -227,11 +230,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if a.synthetic:
         from .data import synthetic
         ps = synthetic()
+        print("synthetic points: a dry run, no inclusion file applies")
         if history:                                # shapes only: synthetic points have no episode to walk
             ps = V.synthetic_two_by_two(ps)
     else:
         if not (a.records and a.label_map):
             ap.error("give --records and --label-map (or --synthetic)")
+        if a.inclusion and a.dry_run_without_inclusion:
+            ap.error("give --inclusion or --dry-run-without-inclusion, not both")
+        if not (a.inclusion or a.dry_run_without_inclusion):
+            ap.error("records need --inclusion (the re-drawn inclusion probabilities of batch A and the final tier): "
+                     "without it batch A's weights would be the stale ones. A dry run on records that are not the "
+                     "Phase 1 collection may pass --dry-run-without-inclusion")
         from .data import from_records
         ps = from_records(a.records, a.label_map, history=history,   # seeds from each label entry (amendment 49)
                           **({"inclusion": a.inclusion} if a.inclusion else {}))
@@ -239,7 +249,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if "inclusion" in rep:
             print("inclusion probabilities:", rep["inclusion"])
         else:
-            print("no --inclusion file: every weight is from its label map's own inclusion probability")
+            print("DRY RUN WITHOUT THE INCLUSION FILE: every weight is from its label map's own inclusion "
+                  "probability. Not valid for the Phase 1 collection")
+            ps.report["dry_run_without_inclusion"] = True
         for f in rep.get("label_maps", []):
             print(f"label map {f['file']}: {f['entries']} entries ({f['already_held']} already in an earlier map)")
         print(f"points: {rep['points']} of {rep['label_entries']} label entries; left out: {len(rep['incomplete'])} "
