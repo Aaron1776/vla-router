@@ -1238,3 +1238,38 @@ def test_several_label_maps_are_merged_and_refused_when_they_disagree(tmp_path, 
     assert seen["label_maps"] == ["a.json", "b.json"] and "label map a.json: 1 entries (1 already" in capsys.readouterr().out
     R.main(args + ["--label-map", "all.json"])
     assert seen["label_maps"] == ["all.json"]
+
+
+# ---------------------------------------------------------------- re-drawn inclusion probabilities (final tier)
+
+def test_redrawn_inclusion_probabilities_replace_the_label_maps_and_are_checked(tmp_path):
+    runs, events, points, label_map, kw = _records()               # two base points, each with its own π of 0.25
+    plain = D.build(runs, events, points, label_map, **kw)
+    assert list(plain.weight) == [4.0, 4.0] and "inclusion" not in plain.report
+    ps = D.build(runs, events, points, label_map, inclusion={"ep/dp02": 0.05, "ep2/dp02": 0.25, "ep9/dp00": 0.5}, **kw)
+    assert list(ps.weight) == [20.0, 4.0]
+    assert ps.report["inclusion"] == {"applied": 2, "changed_from_label_map": 1, "base_points": 2, "in_file_not_labelled": 1}
+    assert all(np.array_equal(ps.y[k], plain.y[k], equal_nan=True) for k in ps.y)       # only the weights change
+    # the check: a labelled base point the file does not hold would keep a stale π, so nothing is built
+    with pytest.raises(D.DataError, match="1 labelled base points have no inclusion probability.*first: ep2/dp02"):
+        D.build(runs, events, points, label_map, inclusion={"ep/dp02": 0.05}, **kw)
+    with pytest.raises(D.DataError, match="not in .0, 1."):
+        D.build(runs, events, points, label_map, inclusion={"ep/dp02": 0.0, "ep2/dp02": 0.25}, **kw)
+    # a point of another kind of parent (a re-run exploration episode) keeps its own π when the file omits it
+    other = [dict(r, phase="explore") if r["run_id"] == "ep2" else r for r in runs]
+    mixed = D.build(other, events, points, label_map, inclusion={"ep/dp02": 0.05}, **kw)
+    assert list(mixed.weight) == [20.0, 4.0] and mixed.report["inclusion"]["base_points"] == 1
+    # the file: points, strata and dropped; a point's π must be that of one of its task's strata
+    doc = {"points": {"base/t0/i1/dp03": 0.05, "base/t0/i2/dp07": 0.02, "base/t1/i1/dp00": 0.1},
+           "strata": {"t0/failure": {"inclusion_prob": 0.05}, "t0/success": {"inclusion_prob": 0.02},
+                      "t1/failure": {"inclusion_prob": 0.1}, "t1/success": {"inclusion_prob": 0.01}}, "dropped": []}
+    (tmp_path / "inc.json").write_text(json.dumps(doc))
+    got, info = D.read_inclusion(tmp_path / "inc.json")
+    assert got == doc["points"]
+    assert info == {"file": "inc.json", "points": 3, "strata": 4, "checked_against_strata": 3, "dropped": 0}
+    for bad, msg in (({**doc, "points": {**doc["points"], "base/t1/i5/dp01": 0.05}}, "not that of a stratum of t1"),
+                     ({**doc, "points": {"base/t0/i1/dp03": 1.5}}, "no inclusion probability in"),
+                     ({"strata": {}}, "no `points`")):
+        (tmp_path / "bad.json").write_text(json.dumps(bad))
+        with pytest.raises(D.DataError, match=msg):
+            D.read_inclusion(tmp_path / "bad.json")

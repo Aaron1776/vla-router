@@ -192,6 +192,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--records", help="local copy of the bucket (records/runs, events, points)")
     ap.add_argument("--label-map", nargs="+", help="the branch planner's label map (JSON); several files, one per "
                     "tranche, are merged, and refused if they disagree about a point")
+    ap.add_argument("--inclusion", default=None,
+                    help="the file of re-drawn inclusion probabilities (the final tier extended batch A's draw): "
+                         "every labelled base point takes its π from it, and one that is missing stops the run")
     ap.add_argument("--synthetic", action="store_true", help="dry run on synthetic points")
     ap.add_argument("--out", required=True)
     ap.add_argument("--folds", default="0-9")
@@ -221,8 +224,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if not (a.records and a.label_map):
             ap.error("give --records and --label-map (or --synthetic)")
         from .data import from_records
-        ps = from_records(a.records, a.label_map, history=history)   # seeds from each label entry (amendment 49)
+        ps = from_records(a.records, a.label_map, history=history,   # seeds from each label entry (amendment 49)
+                          **({"inclusion": a.inclusion} if a.inclusion else {}))
         rep = ps.report
+        if "inclusion" in rep:
+            print("inclusion probabilities:", rep["inclusion"])
+        else:
+            print("no --inclusion file: every weight is from its label map's own inclusion probability")
         for f in rep.get("label_maps", []):
             print(f"label map {f['file']}: {f['entries']} entries ({f['already_held']} already in an earlier map)")
         print(f"points: {rep['points']} of {rep['label_entries']} label entries; left out: {len(rep['incomplete'])} "

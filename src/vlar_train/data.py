@@ -131,6 +131,38 @@ def inclusion_prob(snapshot_id: str, entry: Mapping[str, Any]) -> float:
     return float(pi)
 
 
+def read_inclusion(path: Path | str) -> tuple[dict[str, float], dict]:
+    """The inclusion probabilities that replace the label maps' own for the points a later tier re-drew: the final
+    tier extended batch A's draw within the same strata, so every point of batch A and of the final tier has the
+    probability of the combined draw, not the one its label map recorded. The file holds `points` (snapshot id ->
+    π), `strata` (per task and parent outcome: sizes and the stratum's π) and `dropped`. Checked here: every π is in
+    (0, 1], and a point of task T has the π of one of task T's strata. Returns the points and what was read."""
+    path = Path(path)
+    doc = json.loads(path.read_text())
+    points = doc.get("points") if isinstance(doc, dict) else None
+    if not isinstance(points, dict) or not points:
+        raise DataError(f"{path.name}: no `points` (snapshot id -> inclusion probability)")
+    out = {}
+    for sid, pi in points.items():
+        if not isinstance(pi, (int, float)) or isinstance(pi, bool) or not 0.0 < float(pi) <= 1.0:
+            raise DataError(f"{path.name}: point {sid} has no inclusion probability in (0, 1]: {pi!r}")
+        out[str(sid)] = float(pi)
+    strata = doc.get("strata") or {}
+    by_task: dict[str, list[float]] = defaultdict(list)
+    for name, st in strata.items():
+        by_task[name.split("/")[0]].append(float(st["inclusion_prob"]))
+    checked = 0
+    for sid, pi in out.items():
+        parts = sid.split("/")
+        if len(parts) > 1 and parts[1] in by_task:
+            checked += 1
+            if not any(abs(pi - q) <= 1e-12 for q in by_task[parts[1]]):
+                raise DataError(f"{path.name}: point {sid} has π {pi}, not that of a stratum of {parts[1]} "
+                                f"({sorted(by_task[parts[1]])})")
+    return out, {"file": path.name, "points": len(out), "strata": len(strata), "checked_against_strata": checked,
+                 "dropped": len(doc.get("dropped") or [])}
+
+
 def record_full_runs(runs: Sequence[Mapping]) -> tuple[list[Mapping], dict[str, str]]:
     """One row per run id (amendment 66 (5)). A run id may appear twice only as a screened exploration run and its
     re-run: both rows of phase `explore`, one record `off` and one record `full`; the record-`full` row is kept.
@@ -232,9 +264,15 @@ def history_columns(points: Sequence[Mapping], wanted: set, names: Sequence[str]
 
 def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[Mapping],
           label_map: Mapping[str, Mapping], *, limits_s: Mapping[int, float], thresholds: tuple[float, float],
-          charges, profiles: Sequence[str] = DECIDERS, history: Sequence[str] = ()) -> PointSet:
+          charges, profiles: Sequence[str] = DECIDERS, history: Sequence[str] = (),
+          inclusion: Optional[Mapping[str, float]] = None) -> PointSet:
     """`history`: names of registered history features (`vlar_train.history`) to add as columns `hist_<name>`;
-    none by default, and no decider's `COLUMNS` uses one."""
+    none by default, and no decider's `COLUMNS` uses one.
+
+    `inclusion`: snapshot id -> π for the points a later tier re-drew (`read_inclusion`). Where given, a point in
+    it takes that π in place of its label entry's own. Check: every labelled point whose parent is a base rollout
+    must be in it (batch A and the final tier are base points, and all of them were re-drawn); one that is not
+    stops the build, since its label map's π would be the stale one. Points of other parents keep their own."""
     from vlar_harness import labels as L
     runs, shared = record_full_runs(runs)                       # amendment 66 (5): the record-full row of a shared id
     if shared:
@@ -257,6 +295,18 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
     cols: dict[str, list] = defaultdict(list)
     task, sid, can, rem, ys, exc = [], [], [], defaultdict(list), defaultdict(list), defaultdict(list)
     weight, episode = [], []
+    stale, inc = [], {"applied": 0, "changed_from_label_map": 0, "base_points": 0}
+    if inclusion is not None:
+        for p in rows:
+            if run[p["run_id"]].get("phase") == "base":
+                inc["base_points"] += 1
+                if p["snapshot_id"] not in inclusion:
+                    stale.append(p["snapshot_id"])
+        if stale:
+            raise DataError(f"{len(stale)} labelled base points have no inclusion probability in the inclusion file "
+                            f"(first: {sorted(stale)[0]}): their label map's own would be the stale one")
+        inc["in_file_not_labelled"] = len(set(inclusion) - {p["snapshot_id"] for p in rows})
+        report["inclusion"] = inc
     for p in rows:
         parent = run[p["run_id"]]
         if parent.get("record") not in (None, "full"):            # points are measured only in record-full runs
@@ -265,7 +315,15 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
         entry = label_map[p["snapshot_id"]]
         if not (entry.get("settings") or {}).get("seeds"):
             raise DataError(f"label entry {p['snapshot_id']} records no planner settings (amendment 49)")
-        pi = inclusion_prob(p["snapshot_id"], entry)
+        if inclusion is not None and p["snapshot_id"] in inclusion:
+            pi = float(inclusion[p["snapshot_id"]])
+            if not 0.0 < pi <= 1.0:
+                raise DataError(f"inclusion probability of {p['snapshot_id']} is not in (0, 1]: {pi!r}")
+            mapped = (entry.get("selection") or {}).get("inclusion_prob")
+            inc["applied"] += 1
+            inc["changed_from_label_map"] += mapped is None or float(mapped) != pi
+        else:
+            pi = inclusion_prob(p["snapshot_id"], entry)
         missing = missing_seeds(entry, own.get(p["snapshot_id"], {}), int(entry["settings"]["seeds"]))
         if missing:                                               # incomplete: left out and reported (§12)
             report["incomplete"].append({"snapshot_id": p["snapshot_id"], "missing": missing})
@@ -327,8 +385,10 @@ def read_label_maps(paths) -> tuple[dict, list[dict]]:
     return merged, files
 
 
-def from_records(root: Path | str, label_map_path, *, cfg=None, history: Sequence[str] = ()) -> PointSet:
-    """`label_map_path`: one label map file or a sequence of them (`read_label_maps`)."""
+def from_records(root: Path | str, label_map_path, *, cfg=None, history: Sequence[str] = (),
+                 inclusion: Optional[Path | str] = None) -> PointSet:
+    """`label_map_path`: one label map file or a sequence of them (`read_label_maps`). `inclusion`: the file of
+    re-drawn inclusion probabilities (`read_inclusion`), applied and checked by `build`."""
     from vlar_harness import clock as clk
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
@@ -344,12 +404,15 @@ def from_records(root: Path | str, label_map_path, *, cfg=None, history: Sequenc
     if tl.get("status") != "calibrated" or g.get("status") != "calibrated":
         raise DataError("the calibration file must hold calibrated time limits and gripper thresholds (Phase 0)")
     label_map, files = read_label_maps(label_map_path)
+    redrawn, redrawn_info = read_inclusion(inclusion) if inclusion is not None else (None, None)
     ps = build(read_table(root, "runs").to_pylist(), read_events(root),
                read_table(root, "points").to_pylist(), label_map,
                limits_s={int(k): float(v) for k, v in tl["per_task_s"].items()},
                thresholds=(float(g["shut_width_m"]), float(g["open_width_m"])),
-               charges=clk.Charges.from_config(cfg), history=history)
+               charges=clk.Charges.from_config(cfg), history=history, inclusion=redrawn)
     ps.report["label_maps"] = files
+    if redrawn_info is not None:
+        ps.report["inclusion"] = {**redrawn_info, **ps.report["inclusion"]}
     return ps
 
 
