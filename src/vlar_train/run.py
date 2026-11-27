@@ -44,6 +44,7 @@ from .deciders import BRANCHES, DECIDERS, inputs, profile_of
 from .train import TrainConfig, constant_predictor, member_seeds, seed_for, train_seeds, unit_mean, weighted_bce
 
 
+COLLECTORS_2X2 = ("router_hist", "cascader_hist")      # §9's collectors under the 2 x 2: the two history deciders
 POSITIVE = ST.POSITIVE      # a positive labelled point: p_2 − p_1 ≥ 1/3 under the decider's profile (amendment 63 (2))
 MIN_POSITIVES = 10          # fewer on the validation task: λ from cross-fitted predictions (amendment 63 (5))
 HALVES_SEED = 63            # base of the recorded seed that draws each fold's two halves
@@ -212,6 +213,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--variants", choices=["2x2"], default=None,
                     help="2x2: also register the planned memory by X-VLA-information analysis (`variants`): "
                          "router_hist and cascader_hist, with their history inputs; the §8 deciders are unchanged")
+    ap.add_argument("--collectors", default=None, metavar="CV_OUT",
+                    help="train §9's DAgger collectors instead of the folds: on all tasks, at the median stopping "
+                         "epoch and median λ of their folds under CV_OUT, with that run's settings (`collectors`); "
+                         "with --variants 2x2 they are router_hist and cascader_hist")
     ap.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     ap.add_argument("--seeds", type=int, default=TrainConfig.seeds,
                     help="training seeds per decider; their predicted probabilities are averaged, and λ is chosen "
@@ -226,7 +231,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         from . import variants as V
         V.install()
         history = V.HISTORY
-    deciders = a.deciders.split(",") if a.deciders else list(V.TWO_BY_TWO if a.variants == "2x2" else DECIDERS)
+    if a.collectors and not a.deciders and a.variants != "2x2":
+        ap.error("--collectors needs --deciders (or --variants 2x2: router_hist and cascader_hist)")
+    deciders = a.deciders.split(",") if a.deciders else \
+        list(COLLECTORS_2X2 if a.collectors else V.TWO_BY_TWO) if a.variants == "2x2" else list(DECIDERS)
     if a.synthetic:
         from .data import synthetic
         ps = synthetic()
@@ -263,6 +271,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if a.variants == "2x2":                        # before anything is trained: the four variants are on the same
         from .benefit import check_same_profiles   # rows only if the two profiles agree at every point
         print("profile check:", check_same_profiles(ps))
+    if a.collectors:
+        from . import collectors as C
+        for d, c in C.run(ps, a.collectors, deciders, Path(a.out)).items():
+            print(f"collector {d}: stopping epoch {c['stop_epoch']} (median {c['median_best_epoch']}, rounded "
+                  f"{c['rounding']}), λ {c['lambda']}{' (NEVER ESCALATES)' if c['never_escalates'] else ''}, "
+                  f"{len(c['seeds'])} seeds, {c['points']['trained_on']} points of tasks {c['points']['tasks']}")
+        return
     s = run_cv(ps, folds=_range(a.folds), deciders=deciders, out=Path(a.out),
                cfg=TrainConfig(epochs=a.epochs, seeds=a.seeds), max_rate=a.max_rate, min_episodes=a.min_episodes)
     for d in deciders:

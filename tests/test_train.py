@@ -1392,3 +1392,97 @@ def test_every_decider_and_the_lambda_fallback_use_the_same_number_of_seeds(ps, 
     assert calls[1] == member_seeds(0, "router|lambda-fallback-aux0", 2)
     assert calls[2] == member_seeds(0, "router|lambda-fallback-aux1", 2)
     assert len({tuple(c) for c in calls}) == len(calls)                 # no two trainings share their seeds
+
+
+# ---------------------------------------------------------------- §9's collectors (`collectors`)
+
+from vlar_train import collectors as C  # noqa: E402
+
+
+def _fold_results(out, decider, epochs, lambdas):
+    for i, (e, lam) in enumerate(zip(epochs, lambdas)):
+        d = out / f"fold{i}" / decider
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "result.json").write_text(json.dumps({"best_epoch": e, "lambda": {"lambda": lam, "source": "validation"}}))
+
+
+def test_a_collector_takes_the_median_epoch_rounded_half_up_and_the_median_lambda(tmp_path):
+    assert [C.round_epoch(m) for m in (0, 2.0, 2.4, 2.5, 3.5, 4.49)] == [0, 2, 2, 3, 4, 4]
+    with pytest.raises(C.CollectorError):
+        C.round_epoch(float("nan"))
+    _fold_results(tmp_path, "router", [1, 2, 3, 4, 2.0, 3.0, 9, 0, 3, 2], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+    pl = C.plan(tmp_path, "router")
+    assert pl["median_best_epoch"] == 2.5 and pl["stop_epoch"] == 3 and pl["epochs_trained"] == 4     # half up
+    assert pl["lambda"] == pytest.approx(0.55) and not pl["never_escalates"] and len(pl["folds"]) == 10
+    assert "half up" in pl["rounding"]
+    # a median λ of "never escalate" is kept and flagged; a fold without a result stops everything
+    _fold_results(tmp_path, "never", [2] * 10, [0.1] * 4 + [float("inf")] * 6)
+    assert C.plan(tmp_path, "never")["lambda"] == math.inf and C.plan(tmp_path, "never")["never_escalates"]
+    _fold_results(tmp_path, "short", [2] * 9, [0.1] * 9)
+    with pytest.raises(C.CollectorError, match="short: fold 9 has no result"):
+        C.plan(tmp_path, "short")
+    with pytest.raises(C.CollectorError, match="no summary.json"):
+        C.config_of(tmp_path)
+
+
+def test_training_to_a_fixed_epoch_is_the_early_stopped_training_cut_there(ps, tmp_path):
+    x = inputs(ps.cols, ps.remaining_s["router"], "router")
+    y, ym = ps.targets("router")
+    m = F.masks(ps.task, 0)
+    tr, va = m["train"], m["val"]
+    long = TrainConfig(epochs=6, patience=99, batch=64, hidden=(32, 16), seeds=1)
+    full = train(x[tr], y[tr], ym[tr], x[va], y[va], ym[va], seed=5, cfg=long, w_tr=ps.weight[tr], w_va=ps.weight[va],
+                 ckpt_dir=tmp_path / "full")
+    cut = train(x[tr], y[tr], ym[tr], seed=5, cfg=long, w_tr=ps.weight[tr], stop_epoch=3, ckpt_dir=tmp_path / "cut")
+    assert cut.best_epoch == 3 and len(cut.train_loss) == 4 and cut.val_loss == [None] * 4
+    assert cut.train_loss == full.train_loss[:4]                         # the same passes over the same rows
+    a, b = (torch.load(tmp_path / k / "epoch003.pt", weights_only=False)["state"] for k in ("full", "cut"))
+    assert all(torch.equal(a[k], b[k]) for k in a)                       # the model after epoch 3, bit for bit
+    assert json.loads((tmp_path / "cut" / "best.json").read_text())["stop_epoch"] == 3
+    assert sorted(p.name for p in (tmp_path / "cut").glob("epoch*.pt")) == [f"epoch00{k}.pt" for k in range(4)]
+    with pytest.raises(ValueError):
+        train(x[tr], y[tr], ym[tr], seed=5, cfg=long, stop_epoch=-1)
+    with pytest.raises(ValueError, match="validation points"):
+        train(x[tr], y[tr], ym[tr], seed=5, cfg=long)                    # without a stop epoch, validation is needed
+
+
+def test_the_collectors_train_on_every_task_with_the_folds_settings_and_seeds(ps, tmp_path, two_by_two, capsys):
+    data = V.synthetic_two_by_two(ps)
+    cfg = TrainConfig(epochs=5, patience=2, batch=64, hidden=(32, 16), seeds=2)
+    cv = tmp_path / "cv"
+    run_cv(data, deciders=list(V.TWO_BY_TWO), out=cv, cfg=cfg)
+    res = C.run(data, cv, R.COLLECTORS_2X2, tmp_path / "out")
+    assert list(res) == ["router_hist", "cascader_hist"]
+    for d, c in res.items():
+        folds = [json.loads((cv / f"fold{i}" / d / "result.json").read_text()) for i in range(10)]
+        med = float(np.median([f["best_epoch"] for f in folds]))
+        assert c["median_best_epoch"] == med and c["stop_epoch"] == int(math.floor(med + 0.5))
+        assert c["lambda"] == LAM.median([f["lambda"]["lambda"] for f in folds])
+        keep = ~data.excluded[DC.profile_of(d)]
+        assert c["points"] == {"trained_on": int(keep.sum()), "excluded": int((~keep).sum()), "tasks": list(range(10))}
+        assert c["seeds"] == member_seeds(-1, f"{d}|collector", 2) and c["config"]["seeds"] == 2
+        assert c["config"]["hidden"] == [32, 16]                         # the cross-validation's settings
+        assert not set(c["seeds"]) & {s for f in folds for s in f["training_seeds"]["seeds"]}
+        assert [len(t) for t in c["train_loss"]] == [c["epochs_trained"]] * 2
+        saved = json.loads((tmp_path / "out" / "collectors" / d / "collector.json").read_text(),
+                           parse_constant=lambda t: pytest.fail(f"bare {t}"))
+        assert saved["stop_epoch"] == c["stop_epoch"] and saved["profile"] == DC.profile_of(d) and "model" not in saved
+        ck = tmp_path / "out" / "collectors" / d / "checkpoints"
+        assert sorted(p.name for p in ck.iterdir()) == ["seed0", "seed1"]
+        assert len(list((ck / "seed0").glob("epoch*.pt"))) == c["epochs_trained"]
+        # the collector is the mean of its members, each the fixed-epoch training of its seed on all the rows
+        x = inputs(data.cols, data.remaining_s[DC.profile_of(d)], d)
+        y, ym = data.targets(DC.profile_of(d))
+        w = R.unit_mean(data.weight[keep], int(keep.sum()))
+        alone = [train(x[keep], y[keep], ym[keep], seed=s, cfg=cfg, w_tr=w, stop_epoch=c["stop_epoch"]) for s in c["seeds"]]
+        assert np.array_equal(c["model"].predict(x[:50]), np.mean([t.predict(x[:50]) for t in alone], axis=0))
+    # the entry point: with --variants 2x2 the two history deciders, with the cross-validation's settings
+    R.main(["--synthetic", "--variants", "2x2", "--collectors", str(cv), "--out", str(tmp_path / "cli"), "--seeds", "9"])
+    out = capsys.readouterr().out
+    assert "collector router_hist: stopping epoch" in out and "collector cascader_hist: stopping epoch" in out
+    assert "2 seeds" in out and "profile check:" in out and not (tmp_path / "cli" / "summary.json").exists()
+    assert sorted(p.name for p in (tmp_path / "cli" / "collectors").iterdir()) == ["cascader_hist", "router_hist"]
+    with pytest.raises(SystemExit):
+        R.main(["--synthetic", "--collectors", str(cv), "--out", str(tmp_path / "x")])      # which deciders?
+    with pytest.raises(C.CollectorError, match="fold 0 has no result"):
+        C.run(data, cv, ["cascader_full"], None)

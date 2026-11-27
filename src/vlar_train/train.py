@@ -93,18 +93,29 @@ def unit_mean(w: Optional[np.ndarray], n: int) -> np.ndarray:
     return w / w.mean()
 
 
-def train(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seed: int, cfg: TrainConfig = TrainConfig(),
+def train(x_tr, y_tr, m_tr, x_va=None, y_va=None, m_va=None, *, seed: int, cfg: TrainConfig = TrainConfig(),
           ckpt_dir: Optional[Path] = None, w_tr: Optional[np.ndarray] = None,
-          w_va: Optional[np.ndarray] = None) -> Trained:
+          w_va: Optional[np.ndarray] = None, stop_epoch: Optional[int] = None) -> Trained:
     """`w_tr`, `w_va`: the training and validation rows' sampling weights 1/π_i (amendment 57), in any scale: each
-    is normalised to mean 1 over its own rows here. Without them every weight is 1."""
+    is normalised to mean 1 over its own rows here. Without them every weight is 1.
+
+    `stop_epoch`: train to that epoch (counted from 0, as `best_epoch` is) and keep the model as it then is: no
+    validation rows, no early stopping (§9's collectors, trained on every task). Without it, early stopping on the
+    validation rows as §8 says."""
     import torch
-    if not len(x_tr) or not len(x_va):
-        raise ValueError(f"need training and validation points ({len(x_tr)}, {len(x_va)})")
-    w_tr, w_va = unit_mean(w_tr, len(x_tr)), unit_mean(w_va, len(x_va))
+    fixed = stop_epoch is not None
+    if fixed and int(stop_epoch) < 0:
+        raise ValueError(f"stop_epoch counts from 0, not {stop_epoch}")
+    if not len(x_tr) or (not fixed and (x_va is None or not len(x_va))):
+        raise ValueError(f"need training and validation points ({len(x_tr)}, {0 if x_va is None else len(x_va)})")
+    w_tr = unit_mean(w_tr, len(x_tr))
     m_tr = m_tr.astype(np.float32) * w_tr.astype(np.float32)[:, None]        # mask × w_i
-    m_va = m_va.astype(np.float32) * w_va.astype(np.float32)[:, None]
-    floor = float(min(w_tr.min(), w_va.min()))      # Σ mask × w_i of any non-empty batch is at least this
+    if fixed:
+        floor = float(w_tr.min())
+    else:
+        w_va = unit_mean(w_va, len(x_va))
+        m_va = m_va.astype(np.float32) * w_va.astype(np.float32)[:, None]
+        floor = float(min(w_tr.min(), w_va.min()))  # Σ mask × w_i of any non-empty batch is at least this
     torch.manual_seed(seed)
     g = torch.Generator().manual_seed(seed)
     mean = x_tr.mean(axis=0)
@@ -112,14 +123,15 @@ def train(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seed: int, cfg: TrainConfig = T
     std = np.where(std > 1e-8, std, 1.0)
     norm = lambda x: torch.from_numpy(((x - mean) / std).astype(np.float32))   # noqa: E731
     xt, yt, mt = norm(x_tr), torch.from_numpy(y_tr.astype(np.float32)), torch.from_numpy(m_tr.astype(np.float32))
-    xv, yv, mv = norm(x_va), torch.from_numpy(y_va.astype(np.float32)), torch.from_numpy(m_va.astype(np.float32))
+    if not fixed:
+        xv, yv, mv = norm(x_va), torch.from_numpy(y_va.astype(np.float32)), torch.from_numpy(m_va.astype(np.float32))
     model = make_model(x_tr.shape[1], cfg.hidden, cfg.dropout)
     if n_params(model) > MAX_PARAMS:
         raise ValueError(f"{n_params(model)} parameters > {MAX_PARAMS} (§8)")
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     best, best_epoch, since, tr_hist, va_hist = float("inf"), -1, 0, [], []
     best_state = None
-    for epoch in range(cfg.epochs):
+    for epoch in range(int(stop_epoch) + 1 if fixed else cfg.epochs):
         model.train()
         order = torch.randperm(len(xt), generator=g)
         total, n = 0.0, 0
@@ -132,8 +144,11 @@ def train(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seed: int, cfg: TrainConfig = T
             bw = float(mt[idx].sum())                        # the batch's Σ mask × w_i
             total, n = total + float(loss.detach()) * bw, n + bw
         model.eval()
-        with torch.no_grad():
-            vl = float(_loss(model(xv), yv, mv, floor))
+        if fixed:
+            vl = None
+        else:
+            with torch.no_grad():
+                vl = float(_loss(model(xv), yv, mv, floor))
         tr_hist.append(total / max(n, floor))
         va_hist.append(vl)
         state = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -141,7 +156,9 @@ def train(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seed: int, cfg: TrainConfig = T
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             torch.save({"state": state, "mean": mean, "std": std, "epoch": epoch, "val_loss": vl,
                         "n_in": x_tr.shape[1], "hidden": cfg.hidden}, ckpt_dir / f"epoch{epoch:03d}.pt")
-        if vl < best - 1e-9:
+        if fixed:
+            best_epoch, best_state = epoch, state
+        elif vl < best - 1e-9:
             best, best_epoch, best_state, since = vl, epoch, state, 0
         else:
             since += 1
@@ -150,7 +167,9 @@ def train(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seed: int, cfg: TrainConfig = T
     model.load_state_dict(best_state)
     if ckpt_dir is not None:
         (ckpt_dir / "best.json").write_text(json.dumps({"best_epoch": best_epoch, "val_loss": va_hist,
-                                                        "train_loss": tr_hist, "seed": seed}, indent=1))
+                                                        "train_loss": tr_hist, "seed": seed,
+                                                        **({"stop_epoch": int(stop_epoch)} if fixed else {})},
+                                                       indent=1))
     return Trained(model, mean, std, best_epoch, va_hist, tr_hist)
 
 
@@ -198,13 +217,13 @@ def member_seeds(fold: int, name: str, n: int, base: int = 0) -> list[int]:
     return [seed_for(fold, name, base)] + [seed_for(fold, f"{name}|seed{k}", base) for k in range(1, n)]
 
 
-def train_seeds(x_tr, y_tr, m_tr, x_va, y_va, m_va, *, seeds: Sequence[int], cfg: TrainConfig = TrainConfig(),
-                ckpt_dir: Optional[Path] = None, w_tr: Optional[np.ndarray] = None,
-                w_va: Optional[np.ndarray] = None) -> Averaged:
+def train_seeds(x_tr, y_tr, m_tr, x_va=None, y_va=None, m_va=None, *, seeds: Sequence[int],
+                cfg: TrainConfig = TrainConfig(), ckpt_dir: Optional[Path] = None, w_tr: Optional[np.ndarray] = None,
+                w_va: Optional[np.ndarray] = None, stop_epoch: Optional[int] = None) -> Averaged:
     """`train` once per seed, every member on the same rows and settings. Checkpoints: with one seed in `ckpt_dir`
     as before, with several in `ckpt_dir/seed<k>`."""
     seeds = [int(x) for x in seeds]
-    members = [train(x_tr, y_tr, m_tr, x_va, y_va, m_va, seed=sd, cfg=cfg, w_tr=w_tr, w_va=w_va,
+    members = [train(x_tr, y_tr, m_tr, x_va, y_va, m_va, seed=sd, cfg=cfg, w_tr=w_tr, w_va=w_va, stop_epoch=stop_epoch,
                      ckpt_dir=None if ckpt_dir is None else (ckpt_dir if len(seeds) == 1 else ckpt_dir / f"seed{k}"))
                for k, sd in enumerate(seeds)]
     return Averaged(members, seeds)
