@@ -24,6 +24,7 @@ $43.17, hold $0.366, **line $1.21, stop $0.9812, 11 points/task (110 points, 550
 the 750 STEP_CHECK and STALL_CHECK (runbook 5); `reproject_750.py` at 09:28Z, report only.
 The size_750 launch line does not write `restart.pid`: set by hand to the new watcher's bash (**86550**; its caffeinate 86551 holds PreventSystemSleep), after the waiter's watcher-gone event on the old pid 28971; waiter re-armed.
 **740's download done 09:15:42Z:** CLI rsync 09:04-09:15 (648 s, 20.3 MiB/s) exited 1 (its error line was not kept: `sync_download.py` now keeps gcloud's ERROR lines); the ADC fallback then listed 79,982 objects and fetched the 144 left (1.5 MB; most likely objects that landed or were rewritten during the copy: 750's records, logs, the ledger), 0 failed, no `.part` files. Local folder 36.81 GB. Checked by step 7's download and checks (a) and (b).
+**750 25-min gate + report, 09:29Z (VM-internal state not visible mid-step):** VM RUNNING, runner on 750, 162/550 branch results (last 09:29:12Z, not stalled), 527.8/h this boot -> **$0.884 vs stop $0.9812: every job fits** (no raises in any case). End ~10:20Z. Waiter re-armed (stop, stall, restart).
 
 ## Overnight downloads approved (the user, 2026-11-26 ~23:40Z; 740 running, ends ~08:25Z)
 
