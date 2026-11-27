@@ -8,6 +8,34 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## OSCAR'S HANDOFF PACKAGE BUILT (2026-11-27 ~11:40Z, local only, nothing sent); Phase 1 closed
+
+**Where:** `/Users/miggy/vla-router-handoff-2026-11-27/` (outside the repo): `README.md`, `MANIFEST.md`,
+`SHA256SUMS`, `vla-router-handoff-2026-11-27.index.json` (every file's part, size, SHA-256) and four stored zips in
+priority order (amendment 77), built by `packaging.build_groups` from copy-on-write clones of the verified download
+plus 7 package files:
+| Part | Zip bytes | Files | SHA-256 (first 16) |
+|---|---|---|---|
+| 1 training-data (vla-router/ less images and snapshots; dataset-v1/ MANIFEST + DATACARD; handoff/; README) | 1,780,584,978 | 51,617 | 0d0ab83a23f62f63 |
+| 2 images | 9,984,745,572 | 820 | ea62977c3b63638c |
+| 3 snapshots | 14,352,033,530 | 29,635 | c43416a45801a93b |
+| 4 harness-containers | 10,955,251,866 | 11 | 35cdd914e6c09904 |
+Totals 82,083 files, 37,055,320,340 content bytes. **Checks:** `shasum -c` all OK; `packaging.verify(deep=True)`:
+every file in every part matches the index; the index set equals the staged tree; all 81,551 dataset files'
+SHA-256 equal `dataset-v1/MANIFEST.json`'s. `handoff/`: `final-tier-inclusion.json` (finished_inclusion, 750 points,
+20 strata), `tranche-a-positives-by-episode.json`, the two 11-27 verification reports. The README documents parts,
+verification, layout, counts, the rules (one A+F draw and its inclusion probabilities, group/weight by episode, the
+explore record-full rule, never-mix), the VM export and what it does not record (per-request π0.5 batching; which
+jobs re-ran after preemptions: released leases count no attempt and keep no history), provenance, and what is not
+included (weights: Hugging Face pinned revisions + `weights.SHA256SUMS`). The README is not in the repo (the user:
+local work only). Staging clones removed; 227 GB free.
+**Phase 1 closed:** `outputs/l4-retry/PHASE1_DONE` touched; the `gcloud-signin-daily` reminder deleted (its SKILL.md
+kept). Nothing is running. **Left for the user:** sending the package to Oscar; the bucket (kept a few days as a
+backup; soft delete off, then delete, on the user's OK: `gcloud storage buckets update --clear-soft-delete`, then
+delete); the CLI sign-in needs `gcloud auth login` again (it failed non-interactively from 11:22Z; ADC worked).
+Also kept: `/Users/miggy/vla-router-download-2026-11-26/` (the verified mirror) and
+`/Users/miggy/vla-router-download-2026-11-26-stale/` (one stale queue copy).
+
 ## VM AND BOOT DISK DELETED (2026-11-27 11:33Z); only the bucket remains; next: Oscar's package (local)
 
 **Export boot:** queued through ADC (the CLI needed reauthentication again at 11:22Z: an ADC mirror of
