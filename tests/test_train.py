@@ -1101,6 +1101,11 @@ def test_the_benefit_analysis_by_hand(tmp_path):
     flagged = [(k, m) for k in c for m in c[k] if c[k][m]["primary"]]
     assert flagged == [("xvla_given_memory", "gain_at_10")] and res["primary"]["value"] == pytest.approx(0.0)
     assert res["intervals_reported"] == 4 * 8 + 4 * 8
+    # the rule for the primary contrast: here its interval holds zero
+    assert res["primary"]["ci95"][0] <= 0 <= res["primary"]["ci95"][1] and res["primary"]["verdict"] == "not shown"
+    assert [B.verdict(ci) for ci in ([0.01, 0.2], [-0.2, -0.01], [-0.1, 0.1], [0.0, 0.1], None, [float("nan")] * 2)] == \
+        ["supported", "reversed", "not shown", "not shown", "not shown", "not shown"]
+    assert "VERDICT: not shown" in B.table(res)
     assert res["curve"]["rate"][0] == 0.0 and res["curve"]["rate"][-1] == 0.5
     assert res["curve"]["gain"]["cascader_hist"][20] == pytest.approx(0.05)   # rate 0.2: the pooled gain at 20%
     text = B.write_report(res, tmp_path / "report")

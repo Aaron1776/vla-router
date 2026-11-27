@@ -31,8 +31,13 @@ points come from one episode has nothing to resample and enters every resample u
 
 Contrasts, paired on the same points and resamples: memory (`router_hist` - `router`); X-VLA information given
 memory (`cascader_hist` - `router_hist`); X-VLA information without memory (`cascader_nospread` - `router`); their
-interaction (given minus without). Primary: X-VLA information given memory, gain at the 10% rate. Everything else
-is secondary, reported without a correction for multiple comparisons, and the report counts the intervals.
+interaction (given minus without). Primary: X-VLA information given memory, gain at the 10% rate; it is the
+headline comparison, `cascader_hist` against `router_hist`. Everything else, `cascader_nospread` against `router`
+included, is secondary, reported without a correction for multiple comparisons, and the report counts the intervals.
+
+The inference rule, fixed beforehand, applies to the primary contrast only (`verdict`): "supported" when its 95%
+interval lies wholly above zero, "reversed" when wholly below, "not shown" otherwise (zero inside the interval, or
+no interval). The scores are those the training run saved: each decider's mean over its training seeds.
 
 Every labelled point is one where escalation is offered (the branch plan's eligibility); this is asserted, from the
 saved `can_escalate` where the predictions carry it.
@@ -299,8 +304,18 @@ def analyse(out: Path | str, *, tasks: Sequence[int] = range(F.N_TASKS), variant
     res["primary"] = {"contrast": PRIMARY[0], "metric": PRIMARY[1],
                       **({k: v for k, v in res["contrasts"][PRIMARY[0]][PRIMARY[1]].items() if k != "primary"}
                          if PRIMARY[0] in res["contrasts"] else {"value": None, "ci95": None})}
+    res["primary"]["verdict"] = verdict(res["primary"]["ci95"])
+    res["primary"]["rule"] = ("supported: the 95% interval lies above zero; reversed: below zero; "
+                              "not shown: zero inside the interval, or no interval")
     res["intervals_reported"] = int(len(variants) * M + len(res["contrasts"]) * M)
     return res
+
+
+def verdict(ci: Optional[Sequence[float]]) -> str:
+    """The pre-stated rule for the primary contrast, from its 95% interval."""
+    if not ci or not all(math.isfinite(x) for x in ci):
+        return "not shown"
+    return "supported" if ci[0] > 0 else "reversed" if ci[1] < 0 else "not shown"
 
 
 def _fmt(cell: Mapping) -> str:
@@ -327,6 +342,7 @@ def table(res: Mapping) -> str:
         lines.append(f"{k} | " + " | ".join(_fmt(row[m]) for m in cols))
     p = res["primary"]
     lines += ["", f"PRIMARY: {p['contrast']}, {p['metric']}: {_fmt(p) if p['value'] is not None else 'not available'}",
+              f"VERDICT: {p['verdict']} ({p['rule']})",
               f"every other number is secondary, with no correction for multiple comparisons; "
               f"intervals reported: {res['intervals_reported']}", "",
               "task | points | episodes | positives (episodes) | mean b2-b1 | " + " | ".join(f"gain at 10%, {v}" for v in res["variants"])]
