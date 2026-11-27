@@ -1,9 +1,11 @@
 """Live deciders for the Spark's evaluation (SPEC §8, §10), ops-side: a `vlar_train` checkpoint run live from
-`observe()`. No harness or `vlar_train` code is changed; `vlar_train` (with the history hook, bde8c4a) is imported
-from the source mounted next to the images' copy.
+`observe()`. No harness or `vlar_train` code is changed; `vlar_train` (the history hook and the 2 x 2 variants;
+seed members from cascader-2x2 3094f4a) is imported from the source mounted over the images' copy.
 
-- `TrainedDecider.load(fold_dir)`: `result.json` (decider, profile, best epoch, chosen λ) and the best epoch's
-  checkpoint (`checkpoints/epochNNN.pt`: weights, the training points' mean and std, n_in, hidden sizes).
+- `TrainedDecider.load(fold_dir, min_members=...)`: `result.json` (decider, profile, chosen λ, `training_seeds`) and
+  every member's checkpoint at its own best epoch (`checkpoints/seed<k>/epochNNN.pt`, or `checkpoints/epochNNN.pt`
+  for a one-member fold: weights, the training points' mean and std, n_in, hidden sizes). The decider's
+  probabilities are the members' mean, computed as `vlar_train.train.Averaged.predict` does.
 - `RandomDecider(decider, seed)`: the same model shape with random weights, mean 0, std 1 and λ 0: a dummy for the
   smoke test that still exercises every input column.
 - Inputs: `columns(obs)` builds the decider's point columns from `observe()` with the keys and scales of
@@ -82,10 +84,13 @@ class _Decider:
     lam: float
     meta: dict
 
-    def __init__(self, model, mean, std, decider: str, lam: float, meta: dict):
+    def __init__(self, members: list, decider: str, lam: float, meta: dict):
+        """`members`: [(model, mean, std)], one per training seed; the decider's probabilities are their mean."""
         from vlar_train import deciders as D
         ensure_decider(decider)
-        self.model, self.mean, self.std, self.name, self.lam = model, mean, std, decider, float(lam)
+        if not members:
+            raise ValueError("a decider needs at least one member")
+        self.members, self.name, self.lam = list(members), decider, float(lam)
         self.profile = D.profile_of(decider)
         self.columns = D.COLUMNS[decider]
         self.history_names = [c[len("hist_"):] for c in self.columns if c.startswith("hist_")]
@@ -110,35 +115,66 @@ class _Decider:
         self.last_inputs = ({c: cols[c] for c in self.columns}, x, float(obs.common.time_remaining_s))
         return x
 
-    def decide(self, obs) -> tuple[str, dict[str, Any]]:
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        """(n, 4) probabilities: each member as `vlar_train.train.Trained.predict` (its own mean and std, float32
+        model, sigmoid, float64), and with several members their mean as `vlar_train.train.Averaged.predict`."""
         import torch
+        ps = []
+        for model, mean, std in self.members:
+            with torch.no_grad():
+                z = torch.from_numpy(((x - mean) / std).astype(np.float32))
+                ps.append(torch.sigmoid(model(z)).numpy().astype(np.float64))
+        return ps[0] if len(ps) == 1 else np.mean(ps, axis=0)
+
+    def decide(self, obs) -> tuple[str, dict[str, Any]]:
         x = self.build(obs)
-        with torch.no_grad():
-            z = torch.from_numpy(((x - self.mean) / self.std).astype(np.float32))
-            p = torch.sigmoid(self.model(z)).numpy().astype(np.float64)[0]
+        p = self.predict(x)[0]
         esc = bool(obs.point.can_escalate) and (p[1] - p[0]) > self.lam
         return ("escalate" if esc else "local"), {"p_continue": float(p[0]), "p_one_call": float(p[1])}
 
 
 class TrainedDecider(_Decider):
     @classmethod
-    def load(cls, fold_dir: str | Path) -> "TrainedDecider":
+    def load(cls, fold_dir: str | Path, *, min_members: int = 1) -> "TrainedDecider":
+        """Every training-seed member of a `vlar_train` fold (`result.json` `training_seeds`; checkpoints in
+        `checkpoints/seed<k>/` with several members, in `checkpoints/` with one), each at its own best epoch.
+        Refuses a fold with fewer members than `min_members`, and any member whose checkpoint is missing or whose
+        input count is not the variant's columns + 1: a decider is never loaded with fewer members than it was
+        trained with."""
         import torch
         from vlar_train import deciders as D
         d = Path(fold_dir)
         res = json.loads((d / "result.json").read_text())
-        ck = torch.load(d / "checkpoints" / f"epoch{int(res['best_epoch']):03d}.pt", map_location="cpu",
-                        weights_only=False)                        # a local file this project wrote
         ensure_decider(res["decider"])
+        ts = res.get("training_seeds") or {}
+        seeds = list(ts.get("seeds") or [None])
+        n = len(seeds)
+        if n < min_members:
+            raise ValueError(f"{d}: trained with {n} member(s), {min_members} required")
+        if n == 1:
+            epochs = [int(ts["best_epochs"][0]) if ts.get("best_epochs") else int(res["best_epoch"])]
+            paths = [d / "checkpoints" / f"epoch{epochs[0]:03d}.pt"]
+        else:
+            epochs = [int(e) for e in ts["best_epochs"]]
+            if len(epochs) != n:
+                raise ValueError(f"{d}: {n} training seeds but {len(epochs)} best epochs")
+            paths = [d / "checkpoints" / f"seed{k}" / f"epoch{epochs[k]:03d}.pt" for k in range(n)]
+        missing = [str(p) for p in paths if not p.exists()]
+        if missing:
+            raise ValueError(f"{d}: {len(missing)} of {n} member checkpoints missing, e.g. {missing[0]}")
         want = sum(column_width(c) for c in D.COLUMNS[res["decider"]]) + 1
-        if int(ck["n_in"]) != want:
-            raise ValueError(f"{d}: the checkpoint takes {ck['n_in']} inputs, {res['decider']}'s columns give {want}")
-        model = D.make_model(int(ck["n_in"]), tuple(ck["hidden"]))
-        model.load_state_dict(ck["state"]); model.eval()
+        members = []
+        for p in paths:
+            ck = torch.load(p, map_location="cpu", weights_only=False)      # a local file this project wrote
+            if int(ck["n_in"]) != want:
+                raise ValueError(f"{p}: the checkpoint takes {ck['n_in']} inputs, {res['decider']}'s columns give {want}")
+            model = D.make_model(int(ck["n_in"]), tuple(ck["hidden"]))
+            model.load_state_dict(ck["state"]); model.eval()
+            members.append((model, np.asarray(ck["mean"]), np.asarray(ck["std"])))
         lam = res["lambda"]["lambda"]
-        return cls(model, np.asarray(ck["mean"]), np.asarray(ck["std"]), res["decider"],
-                   math.inf if lam is None else lam,
-                   {"source": str(d), "fold": res.get("fold"), "best_epoch": res["best_epoch"]})
+        return cls(members, res["decider"], math.inf if lam is None else lam,
+                   {"source": str(d), "fold": res.get("fold"), "best_epoch": res["best_epoch"],
+                    "members": n, "training_seeds": seeds, "member_best_epochs": epochs})
 
 
 class RandomDecider(_Decider):
@@ -149,5 +185,5 @@ class RandomDecider(_Decider):
         torch.manual_seed(seed)
         width = n_in or sum(column_width(c) for c in D.COLUMNS[decider]) + 1
         model = D.make_model(width); model.eval()
-        super().__init__(model, np.zeros(width), np.ones(width), decider, 0.0,
-                         {"source": f"dummy random weights, seed {seed}"})
+        super().__init__([(model, np.zeros(width), np.ones(width))], decider, 0.0,
+                         {"source": f"dummy random weights, seed {seed}", "members": 1})

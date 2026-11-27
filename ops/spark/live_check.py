@@ -114,8 +114,9 @@ def cmd_run(a):
     pol = jobs[0]["job"]["spec"]["policy"]
     if pol.get("method") != "decider" or not pol.get("decider_dir"):
         raise SystemExit("the jobs must be a trained decider's (evaluate.py plan --method decider --decider-dir)")
-    policy = TrainedDecider.load(pol["decider_dir"])
-    side = TrainedDecider.load(a.side) if a.side else None
+    mm = int(pol.get("min_members", 1))
+    policy = TrainedDecider.load(pol["decider_dir"], min_members=mm)
+    side = TrainedDecider.load(a.side, min_members=mm) if a.side else None
     if side is not None and (side.profile != policy.profile or side.name == policy.name):
         raise SystemExit(f"the side decider must be another decider of profile {policy.profile} "
                          f"(it is {side.name}, profile {side.profile}): observe() serves the run's own profile")
@@ -259,6 +260,48 @@ def cmd_compare(a):
     raise SystemExit(0 if rep and all(r["equal"] for r in rep.values()) else 1)
 
 
+def cmd_predict_check(a):
+    """The live loader against the trainer's own test predictions: for every trained fold under --train, rebuild the
+    PointSet as `python -m vlar_train` does (`data.from_records`, the 2 x 2 history), take the rows of the fold's
+    `test_predictions.npz` by snapshot id, and require `live.TrainedDecider.load(...).predict` (every member,
+    averaged) to equal the recorded probabilities bit for bit. Exit 1 on any difference."""
+    from live import TrainedDecider, ensure_decider
+    from vlar_train import deciders as D
+    from vlar_train import variants as V
+    from vlar_train.data import from_records
+    V.install()
+    ps = from_records(a.records, a.label_map, history=V.HISTORY)
+    row = {sid: k for k, sid in enumerate(ps.snapshot_id)}
+    rep, ok = [], True
+    for res_path in sorted(Path(a.train).glob("fold*/*/result.json")):
+        fd = res_path.parent
+        npz = fd / "test_predictions.npz"
+        if not npz.exists():
+            continue
+        res = json.loads(res_path.read_text())
+        name = res["decider"]
+        ensure_decider(name)
+        dec = TrainedDecider.load(fd, min_members=int(a.min_members))
+        with np.load(npz, allow_pickle=False) as z:
+            p_rec, sids = z["p"], [str(x) for x in z["snapshot_id"]]
+        idx = [row[s] for s in sids]
+        x = D.inputs({k: np.asarray(v)[idx] for k, v in ps.cols.items()}, ps.remaining_s[dec.profile][idx], name)
+        p_live = dec.predict(x)
+        diff = float(np.max(np.abs(p_live - p_rec))) if p_rec.size else 0.0
+        eq = bool(np.array_equal(p_live, p_rec, equal_nan=True))
+        ok &= eq
+        rep.append({"fold": res.get("fold"), "decider": name, "members": dec.meta["members"], "test_points": len(sids),
+                    "equal": eq, "max_abs_diff": diff})
+    out = {"folds_checked": len(rep), "all_equal": bool(ok and rep), "min_members": int(a.min_members), "rows": rep}
+    if a.out:
+        Path(a.out).write_text(json.dumps(out, indent=1))
+    print(json.dumps({k: v for k, v in out.items() if k != "rows"}))
+    for r in rep:
+        if not r["equal"]:
+            print("DIFFERS:", r)
+    raise SystemExit(0 if out["all_equal"] else 1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -268,8 +311,12 @@ def main():
     r.add_argument("--pi05-port", type=int, default=8779)
     c = sub.add_parser("compare")
     c.add_argument("--run", required=True); c.add_argument("--out", default=None); c.add_argument("--eval", default=None)
+    q = sub.add_parser("predict-check")
+    q.add_argument("--train", required=True); q.add_argument("--records", required=True)
+    q.add_argument("--label-map", nargs="+", required=True); q.add_argument("--min-members", type=int, default=5)
+    q.add_argument("--out", default=None)
     a = ap.parse_args()
-    {"run": cmd_run, "compare": cmd_compare}[a.cmd](a)
+    {"run": cmd_run, "compare": cmd_compare, "predict-check": cmd_predict_check}[a.cmd](a)
 
 
 if __name__ == "__main__":

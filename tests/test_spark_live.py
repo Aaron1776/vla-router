@@ -33,7 +33,7 @@ def obs(index: int, cascader: bool, seed: int = 0):
 def test_dummy_decider_has_the_variant_width_and_builds_its_columns(name):
     from vlar_train import deciders as D
     d = live.RandomDecider(name)
-    assert d.mean.shape == (WIDTH[name],) and d.profile == ("router" if name.startswith("router") else "cascader_nospread")
+    assert d.members[0][1].shape == (WIDTH[name],) and d.profile == ("router" if name.startswith("router") else "cascader_nospread")
     d.new_episode()
     for k in range(3):
         choice, info = d.decide(obs(k, cascader=not name.startswith("router")))
@@ -83,3 +83,49 @@ def test_pack_keeps_one_row_per_observed_point():
     assert z["router_hist|hist_motion"].shape == (3, 10) and z["router|remaining_s"].tolist() == [40.0, 39.0, 37.0]
     assert list(LC.pack([])) == ["index"] and LC.pack([])["index"].size == 0
     assert LC.max_abs(z["router|x"], z["router|x"]) == 0.0 and LC.max_abs(np.zeros(2), np.zeros(3)) == float("inf")
+
+
+def members_fold(tmp_path, name, n_in, n=5, best=(3, 1, 4, 1, 5)):
+    """A fold as vlar_train (3094f4a) writes it with n training seeds: checkpoints/seed<k>/epochNNN.pt per member,
+    result.json `training_seeds`; every member with its own weights, mean and std."""
+    from vlar_train import deciders as D
+    d = tmp_path / name
+    for k in range(n):
+        torch.manual_seed(100 + k)
+        model = D.make_model(n_in)
+        r = np.random.default_rng(k)
+        (d / "checkpoints" / f"seed{k}").mkdir(parents=True)
+        torch.save({"state": model.state_dict(), "mean": r.normal(size=n_in).astype(np.float32),
+                    "std": r.uniform(0.5, 2.0, n_in).astype(np.float32), "n_in": n_in, "hidden": (512, 256)},
+                   d / "checkpoints" / f"seed{k}" / f"epoch{best[k]:03d}.pt")
+    (d / "result.json").write_text(json.dumps({"decider": name, "fold": 0, "best_epoch": float(np.median(best[:n])),
+                                               "training_seeds": {"seeds": list(range(n)), "best_epochs": list(best[:n])},
+                                               "lambda": {"lambda": 0.1}}))
+    return d
+
+
+@pytest.mark.parametrize("name", ["router", "cascader_hist"])
+def test_members_average_bit_for_bit_like_averaged_predict(tmp_path, name):
+    from vlar_train import deciders as D
+    from vlar_train.train import Averaged, Trained
+    fd = members_fold(tmp_path, name, WIDTH[name])
+    dec = live.TrainedDecider.load(fd, min_members=5)
+    assert dec.meta["members"] == 5 and dec.meta["member_best_epochs"] == [3, 1, 4, 1, 5]
+    ref = []
+    for k, e in enumerate((3, 1, 4, 1, 5)):
+        ck = torch.load(fd / "checkpoints" / f"seed{k}" / f"epoch{e:03d}.pt", weights_only=False)
+        m = D.make_model(WIDTH[name]); m.load_state_dict(ck["state"])
+        ref.append(Trained(m, ck["mean"], ck["std"], e))
+    x = np.random.default_rng(7).normal(size=(6, WIDTH[name])).astype(np.float32)
+    assert np.array_equal(dec.predict(x), Averaged(ref, list(range(5))).predict(x))
+
+
+def test_a_fold_with_a_missing_member_or_too_few_members_is_refused(tmp_path):
+    fd = members_fold(tmp_path / "a", "router", WIDTH["router"])
+    (fd / "checkpoints" / "seed3" / "epoch001.pt").unlink()
+    with pytest.raises(ValueError, match="missing"):
+        live.TrainedDecider.load(fd)
+    one = fold_dir(tmp_path / "b", "router", WIDTH["router"])
+    assert live.TrainedDecider.load(one).meta["members"] == 1
+    with pytest.raises(ValueError, match="5 required"):
+        live.TrainedDecider.load(one, min_members=5)

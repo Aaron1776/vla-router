@@ -9,6 +9,9 @@
 # rows and built inputs kept), then `live_check.py compare` (exit 1 if a column differs; the step then exits 76).
 #   LC_DIR    output folder under the Spark root;  LC_TRAIN  the training output folder (fold<i>/<decider>/)
 #   LC_TASKS  default 0,5;  LC_INITS  default 0-3
+#   LC_RECORDS, LC_LABELS  the training's dataset folder and label map(s): then also `live_check.py predict-check`
+#             (every trained fold's averaged live prediction against its recorded test predictions, bit for bit;
+#             LC_MIN_MEMBERS, default 5: a fold with fewer training-seed members is refused)
 # Start-up as step 650: servers at the calibrated geometry, the π0.5 gate on 8779, its /info and startup checks.
 # vlar_train from VLAR_SPARK_VLAR_TRAIN, mounted over the image's copy.
 source /opt/vla-router/ops/vm/phase0/lib.sh
@@ -64,4 +67,11 @@ import json, sys
 log = [json.loads(l) for l in open(sys.argv[1] + "/gate.jsonl")]
 print("gate log: /act", len(log), "non-200", sum(r["status"] != 200 for r in log))
 PY
-(( bad == 0 )) || gate_fail "live inputs differ from the recorded rows (${S}/*/compare.json)"
+if [[ -n "${LC_RECORDS:-}" ]]; then
+  # shellcheck disable=SC2086
+  docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 "${EV[@]}" \
+    -v "${VT}:/opt/vla-router/src/vlar_train:ro" -v "${S}:${S}" "vlar-sim:${C}" python /spark/live_check.py \
+    predict-check --train "${TR}" --records "${LC_RECORDS}" --label-map ${LC_LABELS:?label map(s)} \
+    --min-members "${LC_MIN_MEMBERS:-5}" --out "${S}/predict-check.json" | tail -n 1 || bad=1
+fi
+(( bad == 0 )) || gate_fail "live inputs or averaged predictions differ (${S}/*/compare.json, ${S}/predict-check.json)"

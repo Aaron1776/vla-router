@@ -49,9 +49,10 @@ def cmd_plan(a):
     if a.method == "decider":
         from live import RandomDecider, TrainedDecider
         dec = RandomDecider(a.decider.split(":", 1)[1]) if a.decider and a.decider.startswith("dummy:") \
-            else TrainedDecider.load(a.decider_dir)
+            else TrainedDecider.load(a.decider_dir, min_members=int(a.min_members))
         m["profile"] = dec.profile
-        policy.update({**dec.meta, "decider_arg": a.decider or None, "decider_dir": a.decider_dir})
+        policy.update({**dec.meta, "decider_arg": a.decider or None, "decider_dir": a.decider_dir,
+                       "min_members": int(a.min_members)})
     ns = int(load_collection_config()["rollout_seed_namespaces"]["eval"])
     phase = f"eval_{a.method}" + (f"_{a.tag}" if a.tag else "")
     plan = episode_plan(phase, tasks=span(a.tasks), inits=span(a.inits), namespace=ns, mode=m["mode"],
@@ -147,7 +148,8 @@ def cmd_run(a):
     if pol.get("method") == "decider":
         from live import RandomDecider, TrainedDecider
         arg = pol.get("decider_arg") or ""
-        policy = RandomDecider(arg.split(":", 1)[1]) if arg.startswith("dummy:") else TrainedDecider.load(pol["decider_dir"])
+        policy = RandomDecider(arg.split(":", 1)[1]) if arg.startswith("dummy:") \
+            else TrainedDecider.load(pol["decider_dir"], min_members=int(pol.get("min_members", 1)))
     EvalRunner = make_runner_class()
     out = Path(a.out); res_path = out / f"{phase}-results-{i}.jsonl"
     done = {json.loads(line)["job_id"] for line in open(res_path)} if res_path.exists() else set()
@@ -187,6 +189,8 @@ def main():
     p.add_argument("--tag", default=""); p.add_argument("--tasks", default="0-9"); p.add_argument("--inits", default="0-49")
     p.add_argument("--spacing", type=int, default=5); p.add_argument("--rate", type=float, default=0.1)
     p.add_argument("--decider", default=None); p.add_argument("--decider-dir", default=None)
+    p.add_argument("--min-members", type=int, default=5,
+                   help="refuse a trained decider with fewer training-seed members (vlar_train trains 5)")
     r = sub.add_parser("run")
     r.add_argument("--jobs", required=True); r.add_argument("--out", required=True); r.add_argument("--shard", default="0/1")
     r.add_argument("--limit", type=int, default=None); r.add_argument("--pi05-port", type=int, default=8779)
