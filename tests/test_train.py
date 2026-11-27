@@ -1176,4 +1176,8 @@ def test_the_dry_run_goes_from_training_to_the_benefit_report(tmp_path, capsys, 
         assert res["pooled"][v]["gain_at_10"]["value"] == pytest.approx(
             np.mean([t["values"][v]["gain_at_10"] for t in res["per_task"]]))
     assert res["primary"]["contrast"] == "xvla_given_memory" and res["primary"]["ci95"] is not None
-    assert (out / "benefit.txt").read_text().startswith("Benefit analysis of the 2 x 2")
+    assert (out / "benefit.txt").read_text().startswith("Benefit analysis of the 2 x 2 pre-registration amendment")
+    # the seeds are recorded and do not depend on the amendment's number
+    assert (res["seed_base"], res["seed_label"]) == (0, "2x2-preregistration-bootstrap")
+    assert res["per_task"][4]["bootstrap_seed"] == seed_for(4, "2x2-preregistration-bootstrap", 0)
+    assert not any(ch.isdigit() for ch in res["analysis"].replace("2 x 2", ""))

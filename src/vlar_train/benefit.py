@@ -1,5 +1,6 @@
 """The planned analysis of the 2 x 2 (memory by X-VLA information): the benefit curve and its contrasts
-(SPEC §17 amendment 76, items (5) and (6)).
+(the 2 x 2 pre-registration amendment of SPEC §17, its items (5) and (6); the amendment's number is assigned
+when it is logged, so nothing here depends on it).
 
     python -m vlar_train.benefit --out TRAINING_OUT [--report DIR] [--resamples 1000]
 
@@ -64,7 +65,8 @@ PRIMARY = ("xvla_given_memory", "gain_at_10")
 RATES = (0.10, 0.20)
 CAP = LAM.MAX_RATE                      # the curve is shown up to the budget's share
 FAIL_AT_MOST = 1 / 3                    # branch 1 succeeded in at most one of three seeds
-SEED_BASE = 76                          # the amendment's number: base of the recorded bootstrap seeds
+SEED_BASE = 0                           # base of the recorded bootstrap seeds
+SEED_LABEL = "2x2-preregistration-bootstrap"   # with the task and the base, what each task's seed is derived from
 METRICS = ("gain_at_10", "gain_at_20", "gain_at_lambda", "rate_at_lambda", "excess_at_10", "excess_at_20",
            "excess_at_lambda", "failure_auroc")
 GRID = np.round(np.linspace(0.0, CAP, 51), 4)
@@ -250,7 +252,7 @@ def analyse(out: Path | str, *, tasks: Sequence[int] = range(F.N_TASKS), variant
     for a, t in enumerate(used):
         data = loaded[t]
         pre = prepare(data, variants)
-        seed = seed_for(t, "amendment-76-bootstrap", seed_base)
+        seed = seed_for(t, SEED_LABEL, seed_base)
         counts = resample_counts(data["episode"], seed, resamples)
         d = data["y1"] - data["y0"]
         for b, v in enumerate(variants):
@@ -271,9 +273,9 @@ def analyse(out: Path | str, *, tasks: Sequence[int] = range(F.N_TASKS), variant
                          "values": {v: dict(zip(METRICS, map(float, point[a, b]))) for b, v in enumerate(variants)}})
     pooled, pooled_boot = _mean(point, 0), _mean(boot, 1)                  # (V, M) and (resamples, V, M)
     idx = {v: b for b, v in enumerate(variants)}
-    res = {"analysis": "2 x 2 of memory by X-VLA information: benefit curve and contrasts",
+    res = {"analysis": "the 2 x 2 pre-registration amendment: memory by X-VLA information, benefit curve and contrasts",
            "variants": list(variants), "metrics": list(METRICS), "rates": list(RATES), "curve_cap": CAP,
-           "resamples": int(resamples), "seed_base": int(seed_base), "level": ST.LEVEL,
+           "resamples": int(resamples), "seed_base": int(seed_base), "seed_label": SEED_LABEL, "level": ST.LEVEL,
            "tasks_used": [int(t) for t in used], "tasks_left_out": [int(t) for t in tasks if loaded[t] is None],
            "failure_auroc_undefined_tasks": {v: [int(t) for a, t in enumerate(used) if not np.isfinite(point[a, idx[v], -1])]
                                              for v in variants},
@@ -310,7 +312,7 @@ def _fmt(cell: Mapping) -> str:
 
 def table(res: Mapping) -> str:
     cols = ("gain_at_10", "gain_at_20", "gain_at_lambda", "rate_at_lambda", "failure_auroc")
-    lines = ["Benefit analysis of the 2 x 2 (gain per offered point, inclusion-weighted; unweighted mean over tasks;",
+    lines = ["Benefit analysis of the 2 x 2 pre-registration amendment (gain per offered point, inclusion-weighted; unweighted mean over tasks;",
              f"95% intervals from {res['resamples']} whole-episode resamples within task)", "",
              f"tasks used: {res['tasks_used']}; left out (no usable test point): {res['tasks_left_out'] or 'none'}",
              "", "variant | " + " | ".join(cols)]
