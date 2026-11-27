@@ -8,6 +8,32 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## PHASE 1 COMPUTE DONE (2026-11-27 10:17Z); download verified 10:30Z; waiting for the user's OK to delete the VM and disk
+
+**750 done:** the VM stopped itself 10:17Z, out of queued work; step check **done**: 550/550 jobs with markers, exits
+since 09:03Z [**0**], no restarts. Phase1f VM spend **$0.8467** (stop $0.9812, line $1.21; no raises).
+`phase-close phase1f` 10:19Z. **Ledger total $44.03** (guard $44.75). VM TERMINATED (its disk still bills ~$0.33/day).
+**Finished points:** all **110** (11 per task, t0-t9), every stratum its planned points; `finished_inclusion` (A
+labels, 750 labels, points with all 5 markers): 20 strata, 0 dropped, **750 labelled points** (Tranche A 640 + 110),
+inclusion probabilities 0.016-0.481 by stratum (= the plan's: a full run). Saved
+`outputs/phase1b/750/finished_inclusion.json` (git-ignored).
+**Final download 10:19:36-10:20:13Z** (CLI, exit 0, no errors; `download-750.log`). **Verified (`verify_download.py`,
+every file against the bucket's size, CRC32C and MD5):** (a) the three early prefixes: **16,275 objects,
+24,013,921,528 bytes, all match, none missing, none extra** (unchanged from 11-26 19:58Z); (b) everything
+(`containers/<commit>` + `vla-router/`): **82,061 objects, 37,018,128,521 bytes, every size, CRC32C and MD5 equal (all
+had an MD5), none missing**, one extra local file: `vla-router/phase0/queue/750-phase1f.sh`, fetched at 09:04Z while
+queued; the VM then moved it to `phase0/done/` (byte-identical, SHA-256 equal to the repo's step script). Moved aside
+to `/Users/miggy/vla-router-download-2026-11-26-stale/` (not deleted); `vla-router/phase0` re-verified: 275 objects,
+none extra. JSON: `outputs/l4-retry/verify-download-2026-11-27-{early,all,phase0}.json`. Local 36.81 GB; 262 GB free.
+**Money:** today's download 13.0 GB (~12.1 GiB, ~$1.45 egress, outside the ledger). The final tier left $0.36 of its
+line unspent, so credit left by count is **~$1.0** with the VM and disk deleted this morning and the bucket kept 3 days
+(each day the disk outlives ~16:00Z costs $0.33; the Credits page lags).
+**Waiting for the user:** (1) **OK to delete the VM and its boot disk** (`gcloud compute instances delete $VM_NAME
+--zone us-central1-a --delete-disks=all`; the CLI sign-in expires ~11:53Z: renew it first, or ADC until ~15:53Z needs
+a compute-API path not written yet); then `spend disk-deleted`. (2) Later, the bucket: soft delete off
+(`--clear-soft-delete`), then delete, on the user's OK. (3) After the VM deletion: `touch outputs/l4-retry/PHASE1_DONE`
+and delete the `gcloud-signin-daily` task. Nothing is running: no watcher, no waiter.
+
 ## 740 done 08:59Z; 750 (final tier) running from 09:03Z; 740's download running (2026-11-27)
 
 **740 done:** the VM stopped itself 08:59Z, out of queued work; step check: **done**, re-runs 320/320 and branches
