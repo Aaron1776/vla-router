@@ -8,6 +8,21 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 740 done 08:59Z; 750 (final tier) running from 09:03Z; 740's download running (2026-11-27)
+
+**740 done:** the VM stopped itself 08:59Z, out of queued work; step check: **done**, re-runs 320/320 and branches
+3,840/3,840 with markers, exits since 10:57Z [76 (the first boot, amendment 74), 143 x3 (preemptions), **0**].
+Phase1b VM spend **$13.0976** (stop $13.5412 after raises $2.67 of $3.00; restarts 3/8). `phase-close phase1b` 09:01Z.
+**Hand-over (runbook 2-4):** the Mac's `ops/ops.yaml` `hard_limit_usd` 44.75 (git-ignored); `size_750.py`: ledger
+$43.17, hold $0.366, **line $1.21, stop $0.9812, 11 points/task (110 points, 550 jobs), planned $0.98, ~1.43 h**.
+`plan-f` -> plan_id `c11f011738e4ffcd`: 11 per task in each of t0-t9, no overlap with Tranche A's 640,
+`combined_with` phase1a `b8f1e38ed8c69551`, `finished_inclusion` over a full run: 20 strata, 0 dropped. Uploaded to
+`phase1f/plan/` (sizes checked), `phase-open phase1f` (allocation $0.98, line $1.21, stop $0.9812),
+`31_phase0_queue.sh ops/vm/postfreeze/750-phase1f.sh`: **CURRENT = dabd18f** (the draw-order fix and $44.75 in
+`ops.example.yaml`), watcher `PHASE=phase1f MAX_AUTO=8 WATCH_HOURS=12`: **start issued 09:03:32Z**.
+**4b:** 740's download started ~09:05Z (`download-740.log`, CLI first). Waiter armed `FROM=849 T0=09:03:00Z` with
+the 750 STEP_CHECK and STALL_CHECK (runbook 5); `reproject_750.py` at 09:28Z, report only.
+
 ## Overnight downloads approved (the user, 2026-11-26 ~23:40Z; 740 running, ends ~08:25Z)
 
 **Approval (verbatim):** "Overnight downloads, approved: when 740 ends, download its outputs while 750 runs; when 750
