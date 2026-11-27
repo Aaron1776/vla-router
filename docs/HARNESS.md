@@ -820,6 +820,28 @@ VM re-run list (each in its own image, `MUJOCO_GL=egl`; the first two rows come 
 | main | `pytest tests` | config, queue, spend guard, packaging; network model, clock charges, labels and calibration on synthetic logs |
 | simulator | `pytest tests/test_labels_calibration.py -k numpy` | the pure-Python percentile equals NumPy's bit for bit (the main environment has no NumPy) |
 
+## The L4 VM as run (Phase 1; recorded 2026-11-27 from the VM and its disk before deletion)
+
+Read with `gcloud compute instances/disks/images describe` (VM TERMINATED, 11-27 ~11:15Z) and the VM's own logs in the
+bucket (`phase0/logs/010-load-images.log`, `phase0/logs/system-20261127T090419Z.log`). This VM (`$VM_NAME`) was
+created 2026-11-25 06:27:38Z (amendment 65's zone-move path, `ops/gcp/33_create_retry.sh`) and ran Phase 1 (pilot
+resume, Tranche A, 730/735/740, 750); it replaced the Phase 0 VM, whose disk is archived under
+`phase0/archive/l4-disk-2026-11-23/`.
+
+| Item | Value |
+|---|---|
+| Machine type | `g2-standard-16` (16 vCPU, 64 GiB), zone `us-central1-a`, CPU platform not reported while stopped |
+| GPU | 1 x `nvidia-l4` (24 GB) |
+| Provisioning | Spot (`preemptible: true`), `instanceTerminationAction: STOP`, `onHostMaintenance: TERMINATE`, no automatic restart (the Mac's watcher restarts it) |
+| Boot image | `common-cu129-ubuntu-2404-nvidia-580-v20261111` (project `deeplearning-platform-release`, family `common-cu129-ubuntu-2404-nvidia-580`, image id 8217932720011585578, created 2026-11-11; "Deep Learning VM with CUDA, M132, Ubuntu 24.04, CUDA 12.9, Python 3.12"; DEPRECATED by 11-27, so it may disappear: pick the family's newest and re-run the driver check) |
+| GPU driver | **580.178.04** (`nvidia-smi` on this VM, 2026-11-25 06:29Z: "CUDA Version: 13.0"); packages from the image, 580-server open kernel modules for gcp (`linux-modules-nvidia-580-server-open-gcp`, `nvidia-utils-580-server` 580.178.04-0ubuntu0.24.04.1); no driver change after boot (apt history) |
+| Kernel | `linux-image-gcp` 7.0.0-1017 (in the image, 2026-11-11) |
+| Container runtime | `docker.io` 29.1.3-0ubuntu3~24.04.2, `containerd` 2.2.1-0ubuntu1~24.04.4 (installed at first boot, 11-25 06:29Z); `nvidia-container-toolkit` 1.20.1-1 (in the image); cuDNN 9.13.0 (image) |
+| Boot disk | `pd-balanced`, **100 GB**, NVMe interface, 4096-byte blocks, auto-delete with the VM; the only disk |
+| Network | `default` VPC, ephemeral external IPv4 (one-to-one NAT, premium tier; no static address) |
+| Other | service account scope `cloud-platform`; Shielded VM: integrity monitoring and vTPM on, Secure Boot off; metadata keys `install-nvidia-driver`, `startup-script`, `shutdown-script`, `vlar-runner`, `vlar-storage-url`, `vlar-images-url`, `vlar-disk-gb`, `vlar-disk-usd-per-gb-month`; no labels; deletion protection off |
+| Price billed | $0.6865/h running (amendment 65), disk ~$0.0137/h, IP $0.0025/h running |
+
 ## Calibration file and stage B (amendments 34, 35)
 
 - **File.** `VLAR_CALIBRATION` names it (VM: `/etc/vlar/calibration/calibration.yaml`): `{schema, config, frozen,

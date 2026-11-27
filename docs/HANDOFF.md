@@ -8,6 +8,35 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Pre-deletion checks (the user, ~11:07Z: three read-only checks, then delete the VM and boot disk only)
+
+**Check 1 (code + the verified download): what exists only on the VM's disk.** In the bucket (and verified locally):
+every job's result marker (all plans complete: phase1a 3,200, screen 2,838 (730's 1,974 included), re-runs 320,
+branches 3,840, phase1f 550; the pilot 1,221 of 1,638, its 417 never ran: it stopped at its phase stop by design);
+every job's records, snapshots and images (`worker.upload` puts each and reads it back by SHA-256 before the job's
+marker is written); step reports (rsync on every step exit, trap); runner, step, startup and system logs,
+supervisor summaries, `history.jsonl`, `STATE.json` (`sync_files` after every step and twice in `finish`); the
+guard's ledger (`ops/ledger.json`, written at every tick); golden passes, plan SHA-256s, reorder reports,
+`weights.SHA256SUMS`. **done_local: none** (every phase's supervisor counts: done_local 0, failed 0, no worker
+restarts or give-ups; `run_phase` fails a step with done_local > 0; `queue resume` and `finish` re-upload any).
+**Only on the disk:** (a) the queue database `/var/lib/vlar/queue.sqlite` (job statuses, reconstructible from the
+plans and the results; attempt counts and the last error text of any retried attempt: only here); (b) the containers'
+own output (7 workers, both model servers, the spend daemon) in the VM's system journal (the synced logs are the
+runner's and each step's, not these); (c) local duplicates of uploaded files; (d) the model weights `/opt/weights`:
+public on Hugging Face at the config's pinned revisions, every file's SHA-256 in the bucket; (e) the loaded images
+(from the bucket's tarballs). (a) and (b) are not needed for the data or the handoff; a boot to copy them would be
+~10-15 min (~$0.15-0.20) with a new export step and a small spend phase. **Stopped for the user's call.**
+**Check 2:** the VM's configuration is recorded in `docs/HARNESS.md` ("The L4 VM as run"): g2-standard-16, 1 x L4,
+Spot, `common-cu129-ubuntu-2404-nvidia-580-v20261111` (now DEPRECATED), driver 580.178.04 (CUDA 13.0), pd-balanced
+100 GB boot disk (the only disk).
+**Check 3 (read-only listing, ~11:15Z):** billable now: the VM (TERMINATED: no compute charge), its boot disk (100 GB
+pd-balanced, ~$0.33/day) and the bucket (US-CENTRAL1 STANDARD, soft delete 30 days). None: static addresses,
+snapshots, custom images, machine images, instance templates, reservations, other disks, forwarding rules, routers,
+BigQuery datasets, Firestore databases (API never used), Backup and DR vaults, uptime checks; Artifact Registry,
+Cloud Run/Functions, Pub/Sub, Secret Manager and Cloud SQL Admin are not enabled. Free and left as they are: the
+`default` VPC and its four firewall rules, the `_Default` (30 days) and `_Required` log buckets, budgets and alert
+policies. After the deletion only the bucket remains billable.
+
 ## PHASE 1 COMPUTE DONE (2026-11-27 10:17Z); download verified 10:30Z; waiting for the user's OK to delete the VM and disk
 
 **750 done:** the VM stopped itself 10:17Z, out of queued work; step check **done**: 550/550 jobs with markers, exits
