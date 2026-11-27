@@ -99,8 +99,10 @@ def sync_cli(bucket: str, prefix: str, dest: Path, excludes: list) -> dict:
         cmd[4:4] = ["-x", rx]
     r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                        env={**os.environ, "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"})
-    tail = r.stderr.strip().splitlines()[-3:] if r.returncode else []
-    return {"method": "cli", "rc": r.returncode, "s": round(time.time() - t), "stderr_tail": tail}
+    lines = r.stderr.strip().splitlines() if r.returncode else []
+    errors = [x[:300] for x in lines if "ERROR" in x or "rror:" in x][:5]     # gcloud prints them mid-stream
+    return {"method": "cli", "rc": r.returncode, "s": round(time.time() - t), "errors": errors,
+            "stderr_tail": lines[-3:]}
 
 
 def sync_adc(bkt, prefix: str, dest: Path, excludes: list) -> dict:
