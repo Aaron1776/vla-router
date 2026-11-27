@@ -8,6 +8,18 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## Export boot before deletion (amendment 77, the user ~11:35Z): copy the queue DB and container journal, then delete
+
+`ops/vm/postfreeze/760-vm-export.sh` (tests `tests/test_vm_export.py`, header check in `test_phase0_runner.py`):
+copies only (no docker, systemctl, vlar-ops or lib.sh): `/var/lib/vlar/queue.sqlite` + -wal/-shm byte for byte,
+a consolidated single-file copy made from those copies (integrity check, jobs by phase/status, `retries.jsonl`), the
+journal of `vlar-worker@*`, `vlar-xvla`, `vlar-pi05`, `vlar-spend` (all boots kept; JSON lines, zstd) with per-unit
+counts, boot list and disk usage; `SHA256SUMS`; upload with no-clobber to `vm-export-2026-11-27/`, refused if the
+prefix holds anything; listing read back. Spend phase `vmexport`: line $0.25, margin $0.05 (stop $0.20).
+Then: download + verify (`sync_download.py` again over `vla-router/`, `verify_download.py` over everything), delete
+the VM and boot disk (`gcloud compute instances delete $VM_NAME --zone us-central1-a --delete-disks=all`), `spend
+disk-deleted`, list again (only the bucket), then the package (part 1 gets the export).
+
 ## Pre-deletion checks (the user, ~11:07Z: three read-only checks, then delete the VM and boot disk only)
 
 **Check 1 (code + the verified download): what exists only on the VM's disk.** In the bucket (and verified locally):
