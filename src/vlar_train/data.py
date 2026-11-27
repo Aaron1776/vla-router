@@ -303,7 +303,32 @@ def build(runs: Sequence[Mapping], events: Sequence[Mapping], points: Sequence[M
                     np.array(episode, dtype=str), report)
 
 
-def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None, history: Sequence[str] = ()) -> PointSet:
+def read_label_maps(paths) -> tuple[dict, list[dict]]:
+    """One label map from one file or several (each tranche of the collection has its own). The maps are keyed by
+    snapshot id; a point named by two files must have the same entry in both, else the files disagree about its
+    branches, seeds or sampling and nothing is loaded. Returns the merged map and, per file, its name, its entries
+    and how many of them an earlier file already held."""
+    if isinstance(paths, (str, Path)):
+        paths = [paths]
+    paths = [Path(x) for x in paths]
+    if not paths:
+        raise DataError("no label map given")
+    merged, files = {}, []
+    for path in paths:
+        part = json.loads(path.read_text())
+        if not isinstance(part, dict):
+            raise DataError(f"label map {path.name} is not a JSON object keyed by snapshot id")
+        clash = sorted(k for k, v in part.items() if k in merged and merged[k] != v)
+        if clash:
+            raise DataError(f"label map {path.name} gives {len(clash)} points a different entry than an earlier map "
+                            f"(first: {clash[0]}): the maps disagree, nothing is loaded")
+        files.append({"file": path.name, "entries": len(part), "already_held": sum(k in merged for k in part)})
+        merged.update(part)
+    return merged, files
+
+
+def from_records(root: Path | str, label_map_path, *, cfg=None, history: Sequence[str] = ()) -> PointSet:
+    """`label_map_path`: one label map file or a sequence of them (`read_label_maps`)."""
     from vlar_harness import clock as clk
     from vlar_harness.config import load_config
     from vlar_harness.dataset import read_table
@@ -318,12 +343,14 @@ def from_records(root: Path | str, label_map_path: Path | str, *, cfg=None, hist
     tl = cfg["time_limit"]
     if tl.get("status") != "calibrated" or g.get("status") != "calibrated":
         raise DataError("the calibration file must hold calibrated time limits and gripper thresholds (Phase 0)")
-    label_map = json.loads(Path(label_map_path).read_text())
-    return build(read_table(root, "runs").to_pylist(), read_events(root),
-                 read_table(root, "points").to_pylist(), label_map,
-                 limits_s={int(k): float(v) for k, v in tl["per_task_s"].items()},
-                 thresholds=(float(g["shut_width_m"]), float(g["open_width_m"])),
-                 charges=clk.Charges.from_config(cfg), history=history)
+    label_map, files = read_label_maps(label_map_path)
+    ps = build(read_table(root, "runs").to_pylist(), read_events(root),
+               read_table(root, "points").to_pylist(), label_map,
+               limits_s={int(k): float(v) for k, v in tl["per_task_s"].items()},
+               thresholds=(float(g["shut_width_m"]), float(g["open_width_m"])),
+               charges=clk.Charges.from_config(cfg), history=history)
+    ps.report["label_maps"] = files
+    return ps
 
 
 def synthetic(n_per_task: int = 60, n_tasks: int = 10, seed: int = 0, signal: float = 3.0,

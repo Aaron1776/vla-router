@@ -1194,3 +1194,47 @@ def test_the_dry_run_goes_from_training_to_the_benefit_report(tmp_path, capsys, 
     assert (res["seed_base"], res["seed_label"]) == (0, "2x2-preregistration-bootstrap")
     assert res["per_task"][4]["bootstrap_seed"] == seed_for(4, "2x2-preregistration-bootstrap", 0)
     assert not any(ch.isdigit() for ch in res["analysis"].replace("2 x 2", ""))
+
+
+# ---------------------------------------------------------------- several label maps (one per tranche)
+
+def test_several_label_maps_are_merged_and_refused_when_they_disagree(tmp_path, ps, monkeypatch, capsys):
+    runs, events, points, label_map, kw = _records()
+    a, b = ({k: v for k, v in label_map.items() if k.startswith(ep + "/")} for ep in ("ep", "ep2"))
+    (tmp_path / "a.json").write_text(json.dumps(a))
+    (tmp_path / "b.json").write_text(json.dumps(b))
+    (tmp_path / "all.json").write_text(json.dumps(label_map))
+    one, files = D.read_label_maps(tmp_path / "all.json")                 # one file, as before
+    assert one == json.loads(json.dumps(label_map)) and files == [{"file": "all.json", "entries": 2, "already_held": 0}]
+    assert D.read_label_maps(str(tmp_path / "all.json"))[0] == one
+    both, files = D.read_label_maps([tmp_path / "a.json", tmp_path / "b.json"])
+    assert both == one and [f["entries"] for f in files] == [1, 1]
+    whole, part = D.build(runs, events, points, one, **kw), D.build(runs, events, points, both, **kw)
+    assert whole.snapshot_id == part.snapshot_id and np.array_equal(whole.weight, part.weight)
+    assert all(np.array_equal(whole.y[k], part.y[k], equal_nan=True) for k in whole.y)
+    # a point named twice with the same entry is counted, not doubled; with another entry the maps disagree
+    again, files = D.read_label_maps([tmp_path / "all.json", tmp_path / "a.json"])
+    assert again == one and files[1] == {"file": "a.json", "entries": 1, "already_held": 1}
+    other = {k: {**v, "selection": {"inclusion_prob": 0.5, "by": "point"}} for k, v in a.items()}
+    (tmp_path / "c.json").write_text(json.dumps(other))
+    with pytest.raises(D.DataError, match="c.json gives 1 points a different entry.*first: ep/dp02"):
+        D.read_label_maps([tmp_path / "a.json", tmp_path / "c.json"])
+    (tmp_path / "list.json").write_text("[]")
+    with pytest.raises(D.DataError, match="not a JSON object"):
+        D.read_label_maps([tmp_path / "list.json"])
+    with pytest.raises(D.DataError, match="no label map"):
+        D.read_label_maps([])
+    # the entry point takes one file or several and passes them on
+    seen = {}
+
+    def fake(records, label_maps, history=()):
+        seen.update(records=records, label_maps=label_maps)
+        return D.PointSet(ps.cols, ps.task, ps.snapshot_id, ps.can_escalate, ps.remaining_s, ps.y, ps.excluded,
+                          ps.weight, ps.episode, {"points": len(ps), "label_entries": len(ps), "incomplete": [],
+                                                  "no_points_row": [], "label_maps": files})
+    monkeypatch.setattr(D, "from_records", fake)
+    args = ["--records", "r", "--folds", "0", "--deciders", "router", "--epochs", "1", "--out", str(tmp_path / "o")]
+    R.main(args + ["--label-map", "a.json", "b.json"])
+    assert seen["label_maps"] == ["a.json", "b.json"] and "label map a.json: 1 entries (1 already" in capsys.readouterr().out
+    R.main(args + ["--label-map", "all.json"])
+    assert seen["label_maps"] == ["all.json"]

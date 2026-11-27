@@ -190,7 +190,8 @@ def _range(s: str) -> list[int]:
 def main(argv: Optional[Sequence[str]] = None) -> None:
     ap = argparse.ArgumentParser(prog="python -m vlar_train")
     ap.add_argument("--records", help="local copy of the bucket (records/runs, events, points)")
-    ap.add_argument("--label-map", help="the branch planner's label map (JSON)")
+    ap.add_argument("--label-map", nargs="+", help="the branch planner's label map (JSON); several files, one per "
+                    "tranche, are merged, and refused if they disagree about a point")
     ap.add_argument("--synthetic", action="store_true", help="dry run on synthetic points")
     ap.add_argument("--out", required=True)
     ap.add_argument("--folds", default="0-9")
@@ -222,6 +223,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         from .data import from_records
         ps = from_records(a.records, a.label_map, history=history)   # seeds from each label entry (amendment 49)
         rep = ps.report
+        for f in rep.get("label_maps", []):
+            print(f"label map {f['file']}: {f['entries']} entries ({f['already_held']} already in an earlier map)")
         print(f"points: {rep['points']} of {rep['label_entries']} label entries; left out: {len(rep['incomplete'])} "
               f"incomplete (a branch seed without a finished run), {len(rep['no_points_row'])} without a points row")
         for row in rep["incomplete"][:20]:
