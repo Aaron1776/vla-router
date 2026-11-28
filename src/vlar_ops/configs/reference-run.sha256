@@ -1,0 +1,13 @@
+# SHA-256 of the reference run's per-episode files, as delivered 2026-11-21 (SPEC §2, §11).
+# Verify from the repo root: grep -v '^#' src/vlar_ops/configs/reference-run.sha256 | shasum -a 256 -c
+5b7f41da618a2668b3176af01eac0454131a760c1678e37fbc5c5bed47817992  References/progress.jsonl
+366f7af95a4f54b23a5ec7be20b51ef17956a439e122e2ad0f87e30550af2d36  References/task_0/eval_info.json
+876bf8bd392f944e3095c336c70240f9b14ef9bea80a701e99516227893177b3  References/task_1/eval_info.json
+5e784ea38a91f29f6b5168d6a376f3afa6511505b87abdbd1bb9e465b95f6898  References/task_2/eval_info.json
+44657aefd3a617c6d580b2a67ac37efa8715b3e6a9665b64ee18736404b9a962  References/task_3/eval_info.json
+bf2949ea0beb2e34cd481e75c596083fd0019957cf501883edbbd0c37da1c6d0  References/task_4/eval_info.json
+1ce8e9eeeb7a13c62ce84275d1eccc06f42c67b87a6a08d7a39fd9d888965102  References/task_5/eval_info.json
+5044fd36803adbf22ef861f6ad68a9bd6a98a62fb52d9a4f9e0bad9c3a4702e1  References/task_6/eval_info.json
+a89e95b05199808ec1ab0ba832121331a0fe4a4567942fbba1bf580db76aa4d5  References/task_7/eval_info.json
+81aaaa522081d898c63cf9ffe75931eba0316f261104030c8121e4100679670c  References/task_8/eval_info.json
+01c633adc3a4f8d19fd223ea2a72611ea2b036e687cc7df5f7ec95c1d3fb462b  References/task_9/eval_info.json

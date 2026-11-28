@@ -1,0 +1,7 @@
+# Test-only additions for the in-container tests of the images built on lerobot.lock (pi05 and sim); never installed
+# in the images, whose environment stays exactly lerobot.lock. The servers' HTTP tests (tests/reference/
+# test_server_http.py) use starlette's test client; starlette 1.10.0 (lerobot.lock) imports httpx2 first and falls back
+# to httpx with a deprecation warning, so the test runs install httpx2 as the X-VLA image's do (xvla-test.in).
+# Resolved with lerobot.lock as constraints and reduced to the packages lerobot.lock lacks (containers/lock.sh);
+# installed with hashes into a throwaway container for the test run (ops/gcp/build_vm_startup.sh, the L4 re-run list).
+httpx2>=2.0.0

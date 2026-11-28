@@ -1,0 +1,20 @@
+# The π0.5 server (port 8778) in its image (docs/SPEC.md §3, §15). Weights are mounted read-only from /opt/weights
+# and the gated PaliGemma tokenizer's cache from /opt/hf (envs/README.md); Hugging Face runs offline. VLAR_MAX_BATCH
+# in /etc/vlar/batching.env (written from the calibration file by `python -m vlar_harness.calfile batching-env`,
+# amendment 35) must equal the harness config's servers.batching.max_batch: the workers check /info and
+# refuse anything else. Start by hand: sudo systemctl start vlar-pi05
+[Unit]
+Description=vla-router π0.5 server
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/vlar/images.env
+EnvironmentFile=/etc/vlar/batching.env
+ExecStart=/usr/bin/docker run --rm --name vlar-pi05 --gpus all --network host \
+  -v /opt/weights:/weights:ro -v /opt/hf:/hf:ro -v /etc/vlar:/etc/vlar:ro \
+  vlar-pi05:${VLAR_IMAGE_COMMIT} python -m vlar_harness.servers.pi05_server \
+  --checkpoint /weights/pi05_libero_finetuned --host 127.0.0.1 --port 8778 --max-batch ${VLAR_MAX_BATCH} --wait-window-ms ${VLAR_WAIT_WINDOW_MS}
+ExecStop=/usr/bin/docker stop -t 30 vlar-pi05
+Restart=on-failure
+RestartSec=30

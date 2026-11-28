@@ -1,0 +1,23 @@
+# The X-VLA server image (SPEC §2, §15). Pins: the authors' server environment as the reference notebook
+# installed it (harness config models.xvla.server_pins); torch is Colab's, which the notebook reused
+# (amendment 29). The rest resolved as of the --exclude-newer date in xvla.lock's header.
+# PyPI's torch 2.11.0 / torchvision 0.26.0 Linux x86_64 wheels are PyTorch's CUDA 13.0 builds (they depend on
+# nvidia-cuda-runtime 13.0.x): the notebook's torch 2.11.0+cu130. The in-container check asserts torch.version.cuda
+# == "13.0" (containers/check_env.py).
+torch==2.11.0
+torchvision==0.26.0
+transformers==4.51.3
+peft==0.17.1
+timm==1.0.12
+accelerate==1.2.1
+einops==0.8.1
+uvicorn==0.34.3
+json-numpy==2.1.0
+fastapi
+opencv-python-headless
+pillow
+numpy
+# vla-router's own needs (installed with --no-deps): config, tests
+pyyaml>=6
+requests
+pytest

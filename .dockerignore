@@ -1,0 +1,10 @@
+# Build context for containers/Dockerfile: only what the images copy.
+*
+!pyproject.toml
+!src/
+!tests/
+!References/
+!containers/
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

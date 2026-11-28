@@ -9,7 +9,7 @@ Every claim the project depends on lives here with one of four labels:
 
 An item moves to "Verified" only with evidence: the command run, its output, or a file and line.
 
-Last updated: 2026-10-10.
+Last updated: 2026-11-21.
 
 ## Verified
 
@@ -63,6 +63,65 @@ Caveat: an unrelated CPU workload was running on the server node during these ru
 Both return finite `[50, 7]` action chunks with values inside about plus or minus 1. Whether those actions solve tasks is untested (U1).
 
 On this machine SmolVLA (`lerobot/smolvla_libero`) is 3.0x faster than π0.5 uncompiled and 4.2x faster compiled, which supports A10 here. The checkpoint's own `max-autotune` compile mode was not run. The first compiled call took 112 s for π0.5 and 125 s for SmolVLA (208 s more for a new batch size). Limits of these numbers: one machine; placeholder tokens; the server node is not the edge node, so the SmolVLA figures are not onboard latency.
+
+### Reference run on an NVIDIA L4 (2026-11)
+
+From the cell outputs of `Updates/libero_long_pi05_xvla_eval (1).ipynb`, each model in its authors' harness, 50 episodes per task. These are the parity targets and placeholder clock charges in `docs/SPEC.md` §2.
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V15 | π0.5 (`lerobot/pi05_libero_finetuned`, LeRobot 0.6.1, `n_action_steps=10`, seed 1000, 520 steps) succeeds on 478/500 LIBERO-Long episodes (95.6%, 95% CI 93–97). | Notebook section 8 full run. |
+| V16 | X-VLA-Pt + `2toINF/X-VLA-libero-long-peft` in the authors' client succeeds on 412/500 at 900 steps and 405/500 at 520 steps; successes used a median of 247 steps (90th percentile 387, longest 837). | Notebook sections 9 and 11. |
+| V17 | Median latency: π0.5 435 ms per model call (9.5 GB peak allocated); X-VLA 420 ms per HTTP `/act` request, server process 4,038 MiB. | Notebook latency cell, 20 calls after 3 warm-ups; `nvidia-smi`. |
+| V18 | Weight snapshots used: `pi05_libero_finetuned` 7152f13e…, `X-VLA-libero-long-peft` b6af8e31… (LoRA r=8, alpha 16), `X-VLA-Pt` c1c4a64a…; X-VLA code at 6c4ecfb8…. Full hashes are pinned in `src/vlar_harness/configs/harness-v1.yaml`. | Notebook download cells. |
+
+### Harness adapters against the reference code (2026-11-20, local, CPU MuJoCo)
+
+Details and consequences in `docs/HARNESS.md`. All comparisons are exact equality on one machine.
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V19 | Both reference harnesses build and settle an episode identically except for camera size (X-VLA 256 px, LeRobot 360 px); our setup reproduces the X-VLA client's MuJoCo state and images, and 20 absolute-mode steps after it. | `tests/reference/test_sim_reference.py::test_episode_setup_and_absolute_control_match_xvla_client` |
+| V20 | robosuite samples observations at physics substep 24 of 25 of each step, so a render after the step is not what the models see. | `test_observations_are_sampled_at_substep_24_of_25` |
+| V21 | Our X-VLA adapter (the authors' `ClientModel` with `step()` split into query and pop) sends the same requests and executes the same actions as the authors' client, quirk included. | `test_xvla_query_pop_split_matches_client_step` |
+| V22 | Our π0.5 observation equals LeRobot's own vectorised env built at 360 px, from reset through 25 delta-mode steps. | `test_pi05_observation_and_delta_control_match_lerobot_env` |
+| V23 | The X-VLA server's split encode/denoise path equals the authors' `/act` handler bit for bit given the same noise (random-weight model, CPU). | `test_model_servers.py::test_xvla_act_matches_authors_handler` |
+| S17 | The reference run used hf-libero 0.1.4 (LeRobot's extra allows `>=0.1.4,<0.2.0`; 0.1.5 appeared 2026-11-16, after the run) and `lerobot/libero-assets` at 0b3ea86b (its only commits are from 2025-11-03). | PyPI and Hub metadata |
+| U13 | The π0.5 server equals `lerobot-eval`'s per-step processing with real weights. | `test_pi05_server_matches_lerobot_eval_step` on the VM (needs the gated tokenizer). |
+| U14 | The X-VLA server with the real weights and LoRA on the L4 equals the authors' handler. | `test_model_servers.py -k xvla` on the VM with `VLAR_XVLA_MODEL_PATH`. |
+
+### Snapshot restore and determinism (2026-11-20, local, CPU MuJoCo)
+
+Details in `docs/HARNESS.md`, "Snapshots". Exact equality on one machine; the VM re-run (U15) is what counts.
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V24 | Restoring a decision-point snapshot (through the file format) into the same env, an env that ran another episode with another env seed, or a never-reset env reproduces the rest of the episode exactly: every observation value at both camera sizes, MuJoCo's integration state, actions and success flags. | `tests/reference/test_snapshot_replay.py::test_restore_and_replay_reproduce_the_trajectory_exactly` (9 decision points x 3 targets) |
+| V25 | Identical seeds reproduce identical runs in a reused env; measurement calls and snapshot capture do not change the executed trajectory. | `test_identical_seeds_reproduce_identical_runs_without_measurements_or_snapshots` |
+| V26 | Each of these, if not restored, changes the replay: the solver warm start, fixture placement, the gripper's integrated command, the observation timers; a missing controller state changes both models' requests. The pre-amendment restore (set_init_state + re-render) is caught. | sensitivity tests in the same file |
+| V27 | Fixture positions depend on `env.seed` (NumPy's global RNG at reset), not on the initial state: up to ~19 mm in tasks 2, 3, 5, 8, 9. The reference runs used different seeds (X-VLA 142+k, LeRobot 1000+k). | probe on all 10 tasks, 12 seeds each; `test_each_piece_of_state_matters[fixture_placement]` |
+| U15 | V19-V26 hold on the L4 VM (Linux, EGL, CUDA). | VM re-run list in `docs/HARNESS.md` |
+
+### Handoffs, run modes and the reference files (2026-11-21, local)
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V28 | With the engine's handoff rules, forced handoffs in both directions show no arm jump (π0.5's first goal within one delta step; X-VLA sent the exact measured pose and its first target within 3 cm; every step in its model's controller mode); abandoned escalations charge no budget; 26 escalations fit the budget. Fake policies on the Mac. | `tests/reference/test_handoff.py` |
+| V29 | Routed always-local is identical to `xvla_only`, which is identical to the authors' own rollout loop at the same scene seed. | `test_routed_always_local_is_exactly_xvla_only`, `test_xvla_only_matches_the_authors_client_loop` |
+| V30 | The reference files in `References/` hold 500 episodes per model with π0.5 478/500, X-VLA 412/500 at 900 steps and 405/500 within 520; π0.5 scored 97/100 on initial states 0-9 (the parity subset). | `vlar-ops reference check`; `tests/test_reference_runs.py` |
+| U16 | Handoff continuity holds with the real models (X-VLA's first target after π0.5 near the arm). | `test_model_handoff_continuity_on_the_vm` on the VM |
+
+### Event log, clock, network, labels and time limits (2026-11-21, local; effort step 4)
+
+| ID | Claim | Evidence |
+| --- | --- | --- |
+| V31 | The live clock under every profile equals the offline replay of the event log bit for bit, through network retries, abandoned escalations, both point kinds, a JSON round trip and restores from snapshots; the engine also checks this at the end of every episode. Once the budget is spent no profile pays decision overhead (SPEC amendment 15). | `tests/reference/test_clock_live.py::test_live_clocks_equal_offline_replay_for_every_profile`, `test_no_decision_overhead_once_the_budget_is_spent`; `Episode.verify_clocks` |
+| V32 | The network model's draws match the spec: round-trip median 0.06 s, 2% above 0.3 s, attempt failures at `p_fail` plus timeouts (0.0521 with the placeholder latencies), abandonment at the attempt failure rate cubed. A retry gets fresh draws and can succeed; the same rollout seed reproduces the same failure pattern; draws do not depend on other requests. | `tests/test_network_clock.py` |
+| V33 | Retries never change executed actions: π0.5 alone through a lossy network executes exactly the actions of a perfect network; with every attempt failing it stops after 20 attempts with end reason `network`. | `test_pi05_only_retries_change_only_the_clock`, `test_pi05_only_gives_up_after_20_attempts_with_end_reason_network` |
+| V34 | A live time limit cuts at the same time and step that offline scoring of the uncut run gives, whether the crossing falls inside a run of steps, at a decision point's overhead or at a π0.5 request. | `test_live_time_limit_cuts_where_offline_scoring_says` |
+| V35 | Branch runs reproduce across envs for the same seed index and differ for another; labels from real branch logs equal direct scoring under every profile. | `test_branches_reproduce_and_differ_by_seed_index`, `test_labels_from_real_branch_runs` |
+| A12 | The π0.5 upload is about 20.3 KB of JPEG per request (two 224 px images at quality 90): a Mac estimate from LeRobot's flip and resize on 160 observations, with fake-policy arm motion. Phase 0 step 2 measures it on the server with the policy's own preprocessing. | `config: options.network.choices.default.upload_image_bytes` (status `placeholder`) |
+| U17 | V31-V35 hold on the L4 VM. | VM re-run list in `docs/HARNESS.md` |
 
 ## Third-party pins
 

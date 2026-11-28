@@ -1,0 +1,78 @@
+{
+ "max_batch": 4,
+ "xvla_sample_rows": 20,
+ "workers": 8,
+ "rule": {
+  "headroom_mib": 2048,
+  "memory": "joint peak from nvidia-smi: both servers at the size, 2 x B workers rendering (at most MAX_WORKERS), full batches to both",
+  "near_best": 1.1,
+  "determinism_limit": 1.25,
+  "max_workers": 12
+ },
+ "sizes": {
+  "1": {
+   "feasible": true,
+   "joint_peak_mib": 13864,
+   "total_mib": 23034,
+   "free_mib": 9170,
+   "workers_rendering": 2,
+   "bench_peak_memory_gb": 12.402732372283936,
+   "det_s_per_request": 2.9112553714999194,
+   "nondet_s_per_request": 2.886675899999773,
+   "determinism_cost": 1.0085148012286895,
+   "why": null
+  },
+  "2": {
+   "feasible": true,
+   "joint_peak_mib": 14356,
+   "total_mib": 23034,
+   "free_mib": 8678,
+   "workers_rendering": 4,
+   "bench_peak_memory_gb": 12.638092041015625,
+   "det_s_per_request": 2.2834692635001375,
+   "nondet_s_per_request": 2.231759279750122,
+   "determinism_cost": 1.0231700543240512,
+   "why": null
+  },
+  "4": {
+   "feasible": true,
+   "joint_peak_mib": 14914,
+   "total_mib": 23034,
+   "free_mib": 8120,
+   "workers_rendering": 8,
+   "bench_peak_memory_gb": 13.175961017608643,
+   "det_s_per_request": 2.113458536250107,
+   "nondet_s_per_request": 2.086201254000173,
+   "determinism_cost": 1.0130655094745389,
+   "why": null
+  },
+  "8": {
+   "feasible": true,
+   "joint_peak_mib": 16552,
+   "total_mib": 23034,
+   "free_mib": 6482,
+   "workers_rendering": 12,
+   "bench_peak_memory_gb": 14.24330186843872,
+   "det_s_per_request": 2.028337984312543,
+   "nondet_s_per_request": 2.0191115478749566,
+   "determinism_cost": 1.0045695526070846,
+   "why": null
+  },
+  "16": {
+   "feasible": true,
+   "joint_peak_mib": 19926,
+   "total_mib": 23034,
+   "free_mib": 3108,
+   "workers_rendering": 12,
+   "bench_peak_memory_gb": 16.380998134613037,
+   "det_s_per_request": 2.032982575843789,
+   "nondet_s_per_request": 2.008183950625039,
+   "determinism_cost": 1.012348781699521,
+   "why": null
+  }
+ },
+ "padding_cost_by_fill": {
+  "1": 2.9038449281228442,
+  "2": 1.8510943589497366
+ }
+}

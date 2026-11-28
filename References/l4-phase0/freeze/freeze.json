@@ -1,0 +1,21 @@
+{
+  "harness_version": "1.0.0",
+  "config_hash": "33fe6d52cf5a8367bab1376e0598a1b9cbf9c3d24d97ab02d5e35a041d9175b9",
+  "source_digest": "845d6933bc8fba18f642b1c4eab3b5cc56c854a09b9d7faaffcba17d0e80e8e1",
+  "ops_digest": "c55d17fc62860066b980b22802fe4aba3a967b4188f67bd2e44143faed918ee3",
+  "image_digests": {},
+  "calibration_hash": "b80124b2c19ba8a5e7dcc538eb777a6ca033463020e77b28464b068118c5f51c",
+  "calibration_lineage": [
+    "1d61294a7f511e7fd52298236ac85431bb81c1d7f94c32139e6387b9f5c360bc",
+    "236439b4f06c68e2d4ecef86e8c57d71876f1bbd6dca8e58a75a9f9125c6657c",
+    "aa38aac7fb61850e3550a256885fe634f48810aaeeb7f182f00b9552cf5e3890"
+  ],
+  "golden_set": [
+    "base/t8/i10/dp33",
+    "base/t5/i16/dp13",
+    "base/t6/i14/dp38",
+    "base/t3/i4/dp17",
+    "base/t0/i4/dp32"
+  ],
+  "frozen_at": "2026-11-24T09:46:21+00:00"
+}

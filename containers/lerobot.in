@@ -1,0 +1,25 @@
+# The LeRobot environment, shared by the simulator image and the π0.5 server image (SPEC §15, amendment 28):
+# LeRobot 0.6.1 with LIBERO and π0.5, the harness's simulator side, vlar_ops, and the π0.5 server.
+# Pins from the reference notebook's install output (§2, amendment 29); the rest resolved as of the
+# --exclude-newer date in lerobot.lock's header. Regenerate with containers/lock.sh.
+# PyPI's torch 2.11.0 / torchvision 0.26.0 Linux x86_64 wheels are PyTorch's CUDA 13.0 builds (they depend on
+# nvidia-cuda-runtime 13.0.x): the notebook's torch 2.11.0+cu130. The in-container check asserts torch.version.cuda
+# == "13.0" (containers/check_env.py).
+torch==2.11.0
+torchvision==0.26.0
+lerobot[libero,pi]==0.6.1
+transformers==5.5.4
+hf-libero==0.1.4
+robosuite==1.4.0
+mujoco==3.8.1
+# vla-router's own needs (its package is installed with --no-deps): config, dataset, bucket, clients, server, tests
+pyyaml>=6
+pyarrow==25.0.0
+google-cloud-storage>=2.14
+requests
+json-numpy==2.1.0
+imageio
+tqdm
+fastapi
+uvicorn
+pytest

@@ -29,6 +29,20 @@ outputs/
 checkpoints/
 wandb/
 *.mp4
+*.webm
+*.mov
+*.avi
+*.mkv
 *.safetensors
 *.ckpt
 *.pt
+
+# Ops: account-specific settings and local queue state
+ops/ops.yaml
+ops/gcp/env.sh
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local reference environments
+.venv-*/

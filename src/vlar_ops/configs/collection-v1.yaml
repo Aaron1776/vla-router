@@ -1,0 +1,19 @@
+# Data-collection definitions (docs/SPEC.md §7, §9, §10, §12; amendment 49).
+# Not part of the frozen harness. These settings change what existing records mean, so they are in the data digest
+# (vlar_ops.datadigest): changing one is a new data version. Settings that only choose which work is done are
+# tunables, in collection-v1-tunables.yaml.
+
+schema: 1
+
+# Two seeds per episode (SPEC §3). The scene seed is not chosen here: the harness sets it from the
+# initial state (142 + k; 1000 + k only for the π0.5 parity run, harness option `scene_seed`).
+# Rollout seeds are namespace + 100 * task_id + init_idx. The namespaces are disjoint, so the base,
+# exploration, DAgger and evaluation runs of one task and initial state never share a rollout seed and
+# evaluation's are never used in data collection. Every evaluated method and baseline uses the same
+# `eval` rollout seed for a given task and initial state, so per-episode results pair up (SPEC §10).
+rollout_seed_namespaces:
+  base: 1000000
+  explore: 2000000
+  dagger: 3000000
+  pi05_parity: 5000000
+  eval: 7000000

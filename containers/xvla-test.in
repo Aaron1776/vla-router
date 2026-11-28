@@ -1,0 +1,6 @@
+# Test-only additions for the X-VLA image's in-container tests; never installed in the image, whose environment stays
+# exactly xvla.lock (the reference pins). starlette 1.10.0 (xvla.lock) has no required HTTP client; its `full` extra
+# lists httpx2>=2.0.0 and httpx>=0.27.0,<0.29.0, and starlette.testclient imports httpx2 first (httpx is a deprecated
+# fallback). Resolved with xvla.lock as constraints and reduced to the packages xvla.lock lacks (containers/lock.sh);
+# installed with hashes into a throwaway container for the test run (ops/gcp/build_vm_startup.sh, the L4 re-run list).
+httpx2>=2.0.0

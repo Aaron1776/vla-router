@@ -1,0 +1,15 @@
+# Copy to ops/ops.yaml (git-ignored) on the VM and point VLAR_OPS_CONFIG at it.
+storage_url: gs://REPLACE-WITH-BUCKET/vla-router
+local_root: /var/lib/vlar          # queue database, local copies of results, STOP flag
+
+spend:
+  soft_limit_usd: 42.67            # amendment 65: the hard limit less the 10% reserve (the plan's VM spend used up)
+  hard_limit_usd: 44.75            # amendment 76: from the final tier (750) on; 740 ran under 45.00 (amendment 65: the $50 coupon less ~$5)
+  vm_hourly_usd: 0.6865           # g2-standard-16 Spot with its L4, us-central1 (price catalog 2026-11-25): check before each start
+  boot_allowance_s: 180            # billed time before the kernel starts (sessions count from boot)
+  storage_usd_per_gb_month: 0.020  # Standard storage, regional: check for your region
+  tick_s: 60
+  storage_scan_every_s: 1800
+  drain_grace_s: 900
+
+shutdown_command: ["sudo", "shutdown", "-h", "now"]

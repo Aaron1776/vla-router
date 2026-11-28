@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vla-router"
+version = "0.1.0"
+description = "Budgeted escalation from X-VLA (local) to pi0.5 (remote) on LIBERO-Long: harness, ops and deciders"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+# Cloud Storage access for the job queue, spend ledger and sync (VM only).
+gcs = ["google-cloud-storage>=2.14"]
+dev = ["pytest>=8"]
+# Dataset records (Parquet), in the simulator environment; pinned to LeRobot v0.6.1's uv.lock.
+dataset = ["pyarrow==25.0.0"]
+
+[project.scripts]
+vlar-ops = "vlar_ops.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vlar_harness = ["configs/*.yaml", "configs/*.json"]
+vlar_ops = ["configs/*.yaml", "configs/*.sha256", "datacard-v1.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
