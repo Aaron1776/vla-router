@@ -8,6 +8,14 @@ For a session that starts without the previous conversation. Read this file at s
 design; approved amendments are logged in its §17) and `docs/HARNESS.md` (implementation notes, findings, and the VM
 re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline").
 
+## 2 x 2 PRE-REGISTRATION LOGGED: SPEC §17 amendment 78 (2026-11-28 ~00:10Z)
+Oscar's draft (`docs/amendment-2x2-draft.md`, `spark-port` at `30edcd1`), logged before any Phase 1 label file is
+opened, as drafted except: the number, "the user" for the name, and (8)'s readings (a)-(h) marked confirmed. Pins:
+`cascader-2x2` at `77516ae`; `variants.py` as at `0eafe5b`. The entry's timeline was checked against the commits.
+The user shared Part 1 of the package on 11-27 (between 11:40Z and 21:30Z; the exact time is not recorded yet), so
+"nothing sent" below no longer holds for Part 1. Open: Oscar's disclosure counts 51,916 files in Part 1; the package
+holds 51,617 (not reconciled).
+
 ## OSCAR'S HANDOFF PACKAGE BUILT (2026-11-27 ~11:40Z, local only, nothing sent); Phase 1 closed
 
 **Where:** `/Users/miggy/vla-router-handoff-2026-11-27/` (outside the repo): `README.md`, `MANIFEST.md`,
