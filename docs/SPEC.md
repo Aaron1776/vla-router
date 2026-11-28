@@ -662,10 +662,15 @@ user kept the guard at $44.75 (~23:20Z), accepting ~$0.68 left, below the earlie
       `2x2-preregistration-bootstrap`, in place of 76), `4e7e592` (`benefit.json` as strict JSON) and `3b7729b`
       (one label map per tranche, merged, refused if they disagree).
     - Part 1 of the handoff (the training data) was built on 2026-11-27 (its zip at 11:36Z; the package verified and
-      recorded in HANDOFF at 11:40Z). It was shared on 11-27, after 11:40Z and before 21:30Z, Oscar's first commit
-      that uses its inclusion file. Oscar downloaded it before logging (the disclosure in (4)). Part 1 as built
-      holds 51,617 files (the package's index and MANIFEST.md); the 51,916 in (4) is Oscar's count and is not
-      reconciled here.
+      recorded in HANDOFF at 11:40Z). It became visible to Oscar at 11:04 MST (18:04Z) on 11-27, when the Drive
+      folder was shared, and Oscar downloaded it before logging (the disclosure in (4)). The 51,916 files in (4) are
+      what Oscar verified against: `dataset-v1/MANIFEST.json` lists 81,551 files, and without its 29,635 snapshots
+      (all in part 3) that leaves 51,916, the non-snapshot dataset files across parts 1 and 2. Checked at logging:
+      parts 1 and 2 hold all 51,916 (51,096 in part 1, 820 in part 2), each with the manifest's SHA-256 and size,
+      plus 521 files the manifest does not list (52,437 in all): 7 written for the package (`README.md`,
+      `dataset-v1/`'s MANIFEST.json and DATACARD.md, four `handoff/` files) and 514 bucket files outside the dataset
+      (Phase 0 state and logs, the tranches' plans and reports, calibration, the tokenizer cache, the smoke test, the
+      VM export, the ledger).
     - The five commits after that, on 2026-11-27 (14:30-14:48 -07:00; 21:30-21:48Z), implement only the user's
       review's five requests: inclusion weights (`bdcb1ea`), 5-seed averaging (`3094f4a`), the inference rule
       (`e169812`), refusing records without the inclusion file (`c339a58`), and the collectors' training mode

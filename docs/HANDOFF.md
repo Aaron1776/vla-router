@@ -12,9 +12,10 @@ re-run list) only in the sections the task needs (`CLAUDE.md`, "Usage discipline
 Oscar's draft (`docs/amendment-2x2-draft.md`, `spark-port` at `30edcd1`), logged before any Phase 1 label file is
 opened, as drafted except: the number, "the user" for the name, and (8)'s readings (a)-(h) marked confirmed. Pins:
 `cascader-2x2` at `77516ae`; `variants.py` as at `0eafe5b`. The entry's timeline was checked against the commits.
-The user shared Part 1 of the package on 11-27 (between 11:40Z and 21:30Z; the exact time is not recorded yet), so
-"nothing sent" below no longer holds for Part 1. Open: Oscar's disclosure counts 51,916 files in Part 1; the package
-holds 51,617 (not reconciled).
+Part 1 became visible to Oscar at 11:04 MST (18:04Z) on 11-27, when the user shared the Drive folder, so "nothing
+sent" below no longer holds for Part 1. Oscar's 51,916 files are the dataset manifest's non-snapshot files (81,551
+minus 29,635 snapshots); parts 1 and 2 hold all of them with matching SHA-256 and size, plus 521 files the manifest
+does not list (7 written for the package, 514 bucket files outside the dataset).
 
 ## OSCAR'S HANDOFF PACKAGE BUILT (2026-11-27 ~11:40Z, local only, nothing sent); Phase 1 closed
 
